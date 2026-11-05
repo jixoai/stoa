@@ -157,3 +157,18 @@ json_server_field() {
   # json_server_field <data-dir> <field>
   json_get "$1/server.json" ".$2"
 }
+
+# json_post_fields_by_id <file> <post-id> -> TSV: id parent_id root_id self_thread_id i n
+# Exact-id lookup (body-substring matching is ambiguous when texts repeat).
+json_post_fields_by_id() {
+  jq -s -r --arg id "$2" '
+    [ .[] | .. | objects | select(.id == $id) ] | unique_by(.id) | .[0]
+    | [ .id,
+        (.parent_id // .parentId // ""),
+        (.root_id // .rootId // ""),
+        (.self_thread_id // .selfThreadId // ""),
+        ((.i // "") | tostring),
+        ((.n // "") | tostring) ]
+    | join("|")
+  ' "$1"
+}

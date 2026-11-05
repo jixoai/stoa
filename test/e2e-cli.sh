@@ -243,7 +243,7 @@ db_draft_count() {
   out=$(DB_PATH="$DATA/report.sqlite" DB_ACCT="$acct" bun -e '
     import { Database } from "bun:sqlite";
     const db = new Database(process.env.DB_PATH, { readonly: true });
-    const row = db.query("select count(*) as c from drafts where author = ?").get(process.env.DB_ACCT);
+    const row = db.query("select count(*) as c from drafts where author = ? and status = 'open'").get(process.env.DB_ACCT);
     console.log(Number(row && row.c ? row.c : 0));
   ' 2>/dev/null) || { printf '%s' "-1"; return 0; }
   printf '%s' "${out:--1}"
@@ -289,7 +289,7 @@ check_invisible_via_search() {
     return 0
   fi
   n=$(json_posts_length "$CLI_OUT")
-  check_eq "$label（search 命中数）" "$n" "0"
+  check_eq "${label}（search 命中数）" "$n" "0"
 }
 
 draft_exists() {
@@ -434,7 +434,7 @@ s0_preflight() {
   if [ "$CLI_RC" -eq 0 ] && jq -e . "$CAPS_FILE" >/dev/null 2>&1; then
     pass "capabilities 输出合法 JSON"
   else
-    fail "capabilities" "exit=$CLI_RC（非 JSON 或失败）"
+    fail "capabilities" "exit=${CLI_RC}（非 JSON 或失败）"
   fi
 
   PORT=$(pick_port)
@@ -713,7 +713,7 @@ s6_batch() {
   section S6 "批事务：一次交付全部 / 中途 kill 不可见"
 
   if detect_batch_schema; then
-    pass "6.1 batch JSONL 格式可用（$BATCH_SCHEMA）"
+    pass "6.1 batch JSONL 格式可用（${BATCH_SCHEMA}）"
   else
     fail "6.1 batch JSONL 格式可用" "候选格式全部被拒"
     skip "6.2-6.20 batch 交付与 kill 语义（无可用格式）"
@@ -823,7 +823,7 @@ s6_batch() {
     fail "6.9 两行落盘后即可见 open draft" "poll 6s 未发现 draft"
   fi
   if [ "$DRAFT_ITEMS" -ge 2 ] 2>/dev/null; then
-    pass "6.9a 两行均已逐行落盘（items=$DRAFT_ITEMS）"
+    pass "6.9a 两行均已逐行落盘（items=${DRAFT_ITEMS}）"
   else
     fail "6.9a 两行均已逐行落盘" "items=$DRAFT_ITEMS"
   fi
@@ -839,9 +839,9 @@ s6_batch() {
   rm -f "$FIFO"
 
   if [ "$BRC" -eq 137 ] || [ "$BRC" -eq 9 ]; then
-    pass "6.10 批进程已被 kill（rc=$BRC）"
+    pass "6.10 批进程已被 kill（rc=${BRC}）"
   else
-    fail "6.10 批进程已被 kill" "rc=$BRC（可能提前退出，kill 场景失效）"
+    fail "6.10 批进程已被 kill" "rc=${BRC}（可能提前退出，kill 场景失效）"
   fi
 
   if draft_exists sub-a; then
@@ -906,7 +906,7 @@ s7_naked_eof() {
   cli_run_stdin "$RUN_TMP/naked7.jsonl" post --batch --as sub-a \
     --data-dir "$DATA" --env-files "$(env_files_for sub-a)"
   if [ "$CLI_RC" -ne 0 ]; then
-    pass "7.1 裸 EOF（无终止符）非零退出（rc=$CLI_RC）"
+    pass "7.1 裸 EOF（无终止符）非零退出（rc=${CLI_RC}）"
   else
     fail "7.1 裸 EOF（无终止符）非零退出" "实际 rc=0（被自动提交了）"
   fi
@@ -1033,16 +1033,16 @@ s9_self_thread() {
     fail "9.6 线程视图包含根帖与两条自回复"
   fi
 
-  F9R=$(json_post_fields "$THREAD_FILE" "$BODY9R" | sed -n '1p')
-  F9A=$(json_post_fields "$THREAD_FILE" "$BODY9A" | sed -n '1p')
-  F9B=$(json_post_fields "$THREAD_FILE" "$BODY9B" | sed -n '1p')
+  F9R=$(json_post_fields_by_id "$THREAD_FILE" "$ROOT9")
+  F9A=$(json_post_fields_by_id "$THREAD_FILE" "$R1")
+  F9B=$(json_post_fields_by_id "$THREAD_FILE" "$R2")
 
   ID9R=""; PAR9R=""; ROOTID9R=""; ST9R=""
   ID9A=""; PAR9A=""; ROOTID9A=""; ST9A=""
   ID9B=""; PAR9B=""; ROOTID9B=""; ST9B=""
-  IFS=$'\t' read -r ID9R PAR9R ROOTID9R ST9R _ _ <<<"$F9R" || true
-  IFS=$'\t' read -r ID9A PAR9A ROOTID9A ST9A _ _ <<<"$F9A" || true
-  IFS=$'\t' read -r ID9B PAR9B ROOTID9B ST9B _ _ <<<"$F9B" || true
+  IFS='|' read -r ID9R PAR9R ROOTID9R ST9R I9R N9R <<<"$F9R" || true
+  IFS='|' read -r ID9A PAR9A ROOTID9A ST9A I9A N9A <<<"$F9A" || true
+  IFS='|' read -r ID9B PAR9B ROOTID9B ST9B I9B N9B <<<"$F9B" || true
 
   if [ -n "$ID9R" ] && [ -n "$ID9A" ] && [ -n "$ID9B" ]; then
     pass "9.7 线程视图带 id/parent_id/root_id/self_thread_id"
@@ -1255,8 +1255,8 @@ s11_auth() {
   if [ -n "$WRITE_PATH" ]; then
     pass "11.4 定位写端点 $WRITE_PATH"
     case "$WRITE_PROBE_CODE" in
-      401|403) pass "11.5 无 token 的写请求被拒（$WRITE_PROBE_CODE）" ;;
-      *) fail "11.5 无 token 的写请求被拒" "status=$WRITE_PROBE_CODE（认证未生效或是错误端点）" ;;
+      401|403) pass "11.5 无 token 的写请求被拒（${WRITE_PROBE_CODE}）" ;;
+      *) fail "11.5 无 token 的写请求被拒" "status=${WRITE_PROBE_CODE}（认证未生效或是错误端点）" ;;
     esac
   else
     fail "11.4 定位写端点" "候选 /api/post /api/posts /api/timeline/post 全部 404/405"
@@ -1293,7 +1293,7 @@ s11_auth() {
     done
   fi
   if [ "$AUTHED_OK" = "1" ]; then
-    pass "11.8 登录后带 Bearer 的写请求成功（字段 $AUTHED_FIELD）"
+    pass "11.8 登录后带 Bearer 的写请求成功（字段 ${AUTHED_FIELD}）"
   else
     fail "11.8 登录后带 Bearer 的写请求成功" "最后 status=$AUTHED_CODE"
   fi
@@ -1307,7 +1307,7 @@ s11_auth() {
       -H 'content-type: application/json' \
       -H "Authorization: Bearer $ACCESS_TOKEN" --data "$payload")
     case "$code" in
-      401|403) pass "11.9 改 FDE2E_REPORT_AUTH 后旧 access token 立即失效（$code）" ;;
+      401|403) pass "11.9 改 FDE2E_REPORT_AUTH 后旧 access token 立即失效（${code}）" ;;
       *) fail "11.9 改 FDE2E_REPORT_AUTH 后旧 access token 立即失效" "status=$code" ;;
     esac
   else
@@ -1318,7 +1318,7 @@ s11_auth() {
     -H 'content-type: application/json' \
     --data "{\"secret\":\"$AUTH_SECRET_1\"}" "$URL/api/auth/login" 2>/dev/null) || OLD_LOGIN="000"
   case "$OLD_LOGIN" in
-    401|403) pass "11.10 旧密码登录被拒（$OLD_LOGIN）" ;;
+    401|403) pass "11.10 旧密码登录被拒（${OLD_LOGIN}）" ;;
     *) fail "11.10 旧密码登录被拒" "status=$OLD_LOGIN" ;;
   esac
 
