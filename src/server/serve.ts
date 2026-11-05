@@ -107,6 +107,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     startedAt,
     openExposed: exposed && mode === "open",
     port: null as number | null,
+    uiDir: join(import.meta.dir, "..", "..", "dist"),
   };
   const app = createApp(deps);
 

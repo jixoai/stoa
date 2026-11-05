@@ -11,6 +11,7 @@ import type { AuthManager } from "./auth.ts";
 import type { Presence } from "./presence.ts";
 import type { Store } from "./store.ts";
 import { runExport } from "./export.ts";
+import { join, resolve } from "node:path";
 
 export interface AppDeps {
   store: Store;
@@ -21,6 +22,23 @@ export interface AppDeps {
   startedAt: number;
   openExposed: boolean;
   port: number | null;
+  /** built static UI (same-origin); served when present */
+  uiDir?: string | null;
+}
+
+/**
+ * CORS headers for a given origin. Raw `Response` objects bypass Hono middleware,
+ * so every handler that builds its own response must apply this too.
+ */
+export function corsHeaders(origin: string | undefined): Record<string, string> {
+  if (!origin || !isAllowedOrigin(origin)) return {};
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "authorization, content-type, x-report-account",
+    "Access-Control-Max-Age": "600",
+    Vary: "Origin",
+  };
 }
 
 const ALLOWED_ORIGINS = new Set(["https://report.worker.fde2e.com"]);
@@ -101,13 +119,8 @@ export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
 
   app.use("*", async (c, next) => {
-    const origin = c.req.header("origin");
-    if (origin && isAllowedOrigin(origin)) {
-      c.header("Access-Control-Allow-Origin", origin);
-      c.header("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-      c.header("Access-Control-Allow-Headers", "authorization, content-type, x-report-account");
-      c.header("Access-Control-Max-Age", "600");
-    }
+    const headers = corsHeaders(c.req.header("origin"));
+    for (const [k, v] of Object.entries(headers)) c.header(k, v);
     c.header("Vary", "Origin", { append: true });
     if (c.req.method === "OPTIONS") {
       return c.body(null, 204);
@@ -576,12 +589,37 @@ export function createApp(deps: AppDeps): Hono {
     if (!(await file.exists())) fail("NOT_FOUND", "media file missing");
     return new Response(file, {
       headers: {
+        ...corsHeaders(c.req.header("origin")),
         "content-type": EXT_CONTENT_TYPE[media.ext] ?? "application/octet-stream",
         "cache-control": "public, max-age=31536000, immutable",
         "x-content-type-options": "nosniff",
       },
     });
   });
+
+  // Same-origin static UI (design §1: the local instance serves the same build the
+  // shell hosts). Hash routing means no rewrite rules are required.
+  if (deps.uiDir) {
+    const root = resolve(deps.uiDir);
+    app.get("*", async (c) => {
+      const pathname = decodeURIComponent(new URL(c.req.url).pathname);
+      const rel = pathname === "/" ? "/index.html" : pathname;
+      if (rel.includes("..")) return c.text("bad path", 400);
+      const file = Bun.file(join(root, rel));
+      if (await file.exists()) {
+        const headers: Record<string, string> = { ...corsHeaders(c.req.header("origin")) };
+        if (rel.endsWith(".html")) headers["cache-control"] = "no-cache";
+        return new Response(file, { headers });
+      }
+      if (rel.startsWith("/api/")) {
+        return c.json({ ok: false, error: "not found", code: "NOT_FOUND" }, 404);
+      }
+      return new Response(Bun.file(join(root, "index.html")), {
+        headers: { ...corsHeaders(c.req.header("origin")), "cache-control": "no-cache" },
+      });
+    });
+  }
+
 
   return app;
 }
