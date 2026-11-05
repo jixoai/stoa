@@ -339,7 +339,6 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
 
 | 项 | 处置 |
 |---|---|
-| ~~celld fleet 就绪度~~ | 不再相关：本期不部署线上形态，无运行时依赖 |
 | `file://` 下搜索 | 内联索引 + 内存搜索（不经 fetch） |
 | 隧道下 SSE 稳定性 | 15s 心跳 + 前端自动重连（断线补拉游标） |
 | 附件体积膨胀 | 10MB/件；导出前可选压缩（后续 change） |
