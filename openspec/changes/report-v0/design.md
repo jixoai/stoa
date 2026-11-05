@@ -6,7 +6,7 @@
 ## 1. 形态总览
 
 ```
-浏览器 ──https──▶ report.worker.fde2e.com（公网壳，celld 部署，无数据）
+浏览器 ──https──▶ 静态前端（同一份构建产物；现在由本地实例 serve，将来可托管到任意静态域名）
                         │  ?ep=https://local-<host>-report.fde2e.com
                         ▼
                  本地本体（bun 直跑 TS）
@@ -298,23 +298,22 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
 - 子代理中途对齐：`--as <自己的id>` 发帖/评论/`wait-notifications`；`@` 即绑定参与者。
 - 索引口径：归档按主仓报告纪律给 pin 公网链接；产物不入库、索引只留文字行。
 
-## 17. 部署与上线（公网壳）
+## 17. 静态前端的托管形态（本期不部署）
 
-- 产物：`apps/report/worker/dist/`（静态资产）＋ `wrangler.json`（celld 直接可跑）。
-- **壳是纯 assets，不引 Hono**：`not_found_handling: "single-page-application"` 提供 `/p/<id>`
-  等深链回退；壳内没有任何需要路由的 API（它无数据）。`packages/shared` 只放类型与
-  fetch 客户端，**禁止**静态 import 任何 server-only 依赖（`bun:sqlite` 等），否则 worker
-  bundle 构建即失败。
-- 上线路径：**优先 celld**（`report.worker.fde2e.com` 绑定到 celld 节点）；celld fleet 未就绪时，
-  先按既有静态托管把壳落到同域名（登记变更记录与证书/DNS 产物），**上线形态不得成为规格债**：
-  两种托管下壳的行为完全一致（壳无数据、纯静态）。
-- `*.worker.fde2e.com` 通配 DNS/TLS 与 vhost 属基础设施，随实现期对表 `fde2e-ops` skill。
+- 产物：`src/ui` 的构建结果 `dist/`，**纯静态**：无后端依赖、无环境变量、无硬编码地址。
+- **hash 路由**（`#/`、`#/p/<id>`、`#/search`、`#/notifications`、`#/compose`）——任意静态
+  服务器（含 `file://`）零配置可用，不依赖 SPA fallback / rewrite。
+- **本期不做线上部署**：`report.worker.fde2e.com` 的真实托管要等 Hive 的认证服务就绪
+  （Owner 2026-11-05：目前还没有带认证服务的工具集，这套先私下用）。本 change 只保证
+  "产物可被任意静态宿主直接托管"，不写部署脚本、不申请域名、不引入 celld/Workers 运行时。
+- 将来的在线形态＝把这份 `dist/` 放到某个域名下；数据仍由用户自己的 `ep` 提供。
 
 ## 18. 技术栈与仓库结构
 
-- TS 全栈；本地 runtime＝**bun**（`bun:sqlite`）；HTTP 层用 **Hono**——但**只在 `server/`**，
-  壳侧是纯静态资产（无 API、无路由）；`core` 保持运行时无关。
-- UI：Vite ＋ React 19 ＋ Tailwind v4 ＋ shadcn 官方收编件（`packages/shared` 收编）。
+- TS 全栈；本地 runtime＝**bun**（`bun:sqlite`）；HTTP 层用 **Hono**（只在 `src/server`）；
+  `src/core` 保持运行时无关。
+- UI：Vite ＋ React ＋ Tailwind v4 ＋ shadcn 官方收编件 ＋ **solid-glass** 主题材质。
+- **单仓单产品**：`src/{core,server,cli,ui}` ＋ `scripts/`；不设多 worker 的 `apps/` 与 registry。
 - 测试：`bun test`（core/server/cli）＋ Playwright 真浏览器（跨域、锚点恢复、SSG `file://`
   断言、视觉走查）。
 
@@ -340,7 +339,7 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
 
 | 项 | 处置 |
 |---|---|
-| celld fleet 就绪度 | 上线依赖；不阻塞本地交付与导出归档 |
+| ~~celld fleet 就绪度~~ | 不再相关：本期不部署线上形态，无运行时依赖 |
 | `file://` 下搜索 | 内联索引 + 内存搜索（不经 fetch） |
 | 隧道下 SSE 稳定性 | 15s 心跳 + 前端自动重连（断线补拉游标） |
 | 附件体积膨胀 | 10MB/件；导出前可选压缩（后续 change） |

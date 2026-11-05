@@ -12,18 +12,19 @@ worker 系列的每个成员 SHALL 使用统一命名：产品名 `<name>`（小
 - **THEN** 其包名/二进制为 `fde2e-foo-worker`、域名为 `foo.worker.fde2e.com`、
   环境变量形如 `FDE2E_FOO_AUTH`，无例外
 
-### Requirement: 双形态与同源代码
-每个 worker SHALL 同时支持两种运行形态：①**本地本体**（CLI：本地 HTTP 服务 + 数据目录 +
-长连接能力）；②**公网壳**（部署 celld，默认不持数据，经 `?ep=` 指向任一后端）。
-壳与本体的 UI SHALL 是同一份代码；禁止为壳单独维护第二套 UI。
+### Requirement: 双端形态与同源代码
+本仓 SHALL 是 **report 一个产品**的单一仓库，同时提供两种入口：①**本地后端**（CLI：本地
+HTTP 服务 + 数据目录 + 长连接能力）；②**纯静态前端**（同一份构建产物，`?ep=` 指向任一后端）。
+前端 SHALL NOT 硬编码任何后端地址，SHALL NOT 依赖 SPA fallback（用 hash 路由）。
+本期 SHALL NOT 做线上部署（认证服务随 Hive 之后）。
 
 #### Scenario: 本地免壳调试
-- **WHEN** 开发者本地起本体服务并直接打开其同源 UI
-- **THEN** 不需要经过公网壳、不需要配置 `ep` 即可完整使用
+- **WHEN** 开发者本地起后端服务并直接打开其同源 UI
+- **THEN** 不需要经过任何托管壳、不需要配置 `ep` 即可完整使用
 
-#### Scenario: 壳指向本地后端
-- **WHEN** 用户打开 `https://<name>.worker.fde2e.com?ep=https://local-<host>-<name>.fde2e.com`
-- **THEN** 壳加载本地本体的数据并完全可用；且壳内不存在任何硬编码的后端地址
+#### Scenario: 静态产物随处可跑
+- **WHEN** 把 `dist/` 放到任意静态服务器（含 `file://`）
+- **THEN** 页面可加载、hash 路由可跳转，输入 `ep` 后即可连上任一后端；不依赖任何 rewrite 配置
 
 ### Requirement: 认证通则（live-read refresh）
 worker SHALL 以 `FDE2E_<NAME>_AUTH` 作为认证**二值开关**：env-files 中该键（按序覆盖后）有
@@ -63,14 +64,15 @@ SHALL 遵守主仓「UI 组件禁手写仿制」与「视觉语言同源」（lu
 - **WHEN** 对 worker UI 做组件来源审计
 - **THEN** 全部可交互组件可追溯到 shadcn 官方 registry 收编件（含来源注释），无视图级手写仿制
 
-### Requirement: 仓库结构与共享单源
-worker 系列 SHALL 聚合在本仓（`apps/<name>/{core,server,cli,ui,worker}`）；跨 worker 的公共件
-SHALL 收在 `packages/shared`，禁止各 worker 复刻第二份。
+### Requirement: 单仓单产品结构
+本仓 SHALL 是 **report 一个产品**的仓库（`src/{core,server,cli,ui}` ＋ `scripts/`），
+SHALL NOT 为"系列/多 worker"预置 `apps/` 与 registry；跨端公共件 SHALL 放 `src/core`，
+禁止同一能力写两份实现。
 
-#### Scenario: 第二个 worker 复用公共件
-- **WHEN** 系列新增第二个 worker
-- **THEN** 其 env-files 解析/认证基座/CLI 基座/UI 收编件直接引用 `packages/shared`，
-  仓内不存在这些能力的第二份实现
+#### Scenario: 不预置多产品脚手架
+- **WHEN** 检查仓库结构
+- **THEN** 只有 report 一个产品的目录，没有 apps/ 列表、没有 worker registry、
+  没有为第二个产品预留的空壳
 
 ### Requirement: CLI 通用契约
 worker 的 CLI SHALL 支持通用参数 `--env-files=a,b`（逗号分隔、**按序覆盖**、后盖前）与
@@ -87,4 +89,4 @@ TypeScript 源。CI 就绪后 SHALL 走主仓发布纪律（一切可编译发�
 
 #### Scenario: 本地消费
 - **WHEN** 主仓或其他仓库需要在本地消费 report worker
-- **THEN** 通过 `bun <本仓>/apps/report/cli/main.ts` 直跑，而非从 registry 安装
+- **THEN** 通过 `bun <本仓>/src/cli/main.ts` 直跑，而非从 registry 安装

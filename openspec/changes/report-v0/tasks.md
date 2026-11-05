@@ -6,10 +6,10 @@
 
 ## P0 · 仓骨架与工具链
 
-- [ ] 0.1 `pnpm`/`bun` workspace 骨架：`package.json`、`tsconfig.base.json`、`packages/shared`、`apps/report/{core,server,cli,ui,worker}` 目录与最小入口
-- [ ] 0.2 `bun` 直跑 TS 的约定落地：`bun apps/report/cli/main.ts` 可执行；`.env.example` 模板（含 `FDE2E_REPORT_AUTH`/`FDE2E_REPORT_SECRET`/`FDE2E_REPORT_TOKEN_<ID>`）
+- [ ] 0.1 骨架：`package.json`、`tsconfig.base.json`、`src/{core,server,cli,ui}` 目录与最小入口（**不预置 apps/ 与 registry**）
+- [ ] 0.2 `bun` 直跑 TS 的约定落地：`bun src/cli/main.ts` 可执行；`.env.example` 模板（含 `FDE2E_REPORT_AUTH`/`FDE2E_REPORT_SECRET`/`FDE2E_REPORT_TOKEN_<ID>`）
 - [ ] 0.3 `scripts/check.mjs`：类型检查 + lint（interface-lint 风格：CLI/HTTP 契约一致性静态门）
-- **验证门**：`bun run check` 全绿；`bun apps/report/cli/main.ts --version` 输出正确
+- **验证门**：`bun run check` 全绿；`bun src/cli/main.ts --version` 输出正确
 
 ## P1 · core：领域模型与协议（运行时无关）
 
@@ -46,7 +46,7 @@
 
 ## P4 · UI（X 复刻，与壳同源）
 
-- [ ] 4.1 Vite + React 19 + TW4 + shadcn 官方收编件（`packages/shared`）；主题令牌、lucide 图标
+- [ ] 4.1 Vite + React + TW4 + shadcn 官方收编件 + **solid-glass** 主题；主题令牌、lucide 单色图标
 - [ ] 4.2 三栏版式 + 窄屏单列 + **四导航（主页/搜索/通知/发帖）**；无 DM
 - [ ] 4.3 逆序时间线：锚点恢复（localStorage，按线程/主页）＋顶部自动 prepend ＋非顶部「N 条新帖」提示条 ＋向下历史分页
 - [ ] 4.4 线程页 `/p/<id>`（回复树）、发帖箱（markdown 预览、附件、@ 补全含离线）
@@ -65,13 +65,13 @@
 - **验证门**：`file://` 打开 `index.html` 断言可浏览＋搜索可用；导出失败注入（只读目录）后
   `wait-notifications` 仍交付消息且 exit 0
 
-## P6 · worker 壳（celld 形态）
+## P6 · 静态前端产物（本期不部署）
 
-- [ ] 6.1 `worker/`：**纯静态资产**（不引 Hono）+ `wrangler.json`（`not_found_handling: single-page-application` 提供 `/p/<id>` 深链回退，celld 直接可跑）；SPA 构建产物走经典 bundle
-- [ ] 6.2 `scripts/deploy-shell.sh`：构建 → celld 部署（或按 design §17 兜底静态托管）；域名 `report.worker.fde2e.com`
-- [ ] 6.3 域名/DNS/TLS 与 vhost：对表主仓 `fde2e-ops` skill；登记变更记录
-- **验证门**：公网 `https://report.worker.fde2e.com` 打开落地页 → 输入 `ep` → 跨域联通本地后端
-  （真浏览器，带 token 登录）；壳内无任何后端地址硬编码断言
+- [ ] 6.1 `bun run build` 产出 `src/ui/dist`：纯静态、**hash 路由**、无环境变量、无硬编码后端地址
+- [ ] 6.2 宿主无关性验证：任意静态服务器（`python -m http.server`）打开 → 落地页/路由/`ep`
+      输入全部可用；再以 `file://` 打开验证 hash 路由同样可用
+- [ ] 6.3 **不做线上部署**：不写 deploy 脚本、不申请域名；README/design §17 明示"等 Hive 认证后再上线"
+- **验证门**：`dist/` 在两种宿主下行为一致；产物内 grep 无任何后端地址/域名硬编码
 
 ## P7 · 主仓集成（主仓 change `report-worker-v0`）
 
