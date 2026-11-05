@@ -1,0 +1,58 @@
+/*
+ * report 静态壳全局样式 —— Tailwind v4 + shadcn（base-nova）+ solid-glass。
+ *
+ * 导入顺序严格沿用 solid-glass.css 文件头约定：
+ *   tailwindcss → tw-animate-css → shadcn/tailwind.css → solid-glass.css
+ * solid-glass 为官方原件逐字收编（src/ui/theme/solid-glass.css）。
+ *
+ * source("./") 收窄扫描面：TW4 默认会扫整个 git 仓，把 openspec/README
+ * 里的类名字符串当源；本壳只消费 src/ui 下的真实类名。
+ */
+@import "tailwindcss" source("./");
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "./theme/solid-glass.css";
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    overflow: hidden;
+  }
+}
+
+@layer utilities {
+  /* 详情页 focal 锚点：数据到位后滚到视口顶部时避开吸顶栏（design §12.3） */
+  .scroll-mt-app-header {
+    scroll-margin-top: 3.75rem;
+  }
+  /* 时间线新插入卡片：200ms 高度/透明度过渡（design §12.2） */
+  @keyframes report-row-in {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  .report-row-in {
+    animation: report-row-in 200ms ease-out;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .report-row-in {
+      animation: none;
+    }
+  }
+  /* 正文截断（feed 卡片 6 行；focal 永不截断） */
+  .report-clamp-6 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 6;
+    overflow: hidden;
+  }
+}
