@@ -229,7 +229,15 @@ export async function runCli(
     stdin: opts.stdin === undefined ? "ignore" : "pipe",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, ...(opts.env ?? {}) },
+    env: {
+      ...process.env,
+      // isolate: a developer shell with report env vars would otherwise redirect
+      // every test CLI invocation to a real data directory
+      FDE2E_REPORT_DATA_DIR: undefined,
+      FDE2E_REPORT_ENV_FILES: undefined,
+      FDE2E_REPORT_ACCOUNT: undefined,
+      ...(opts.env ?? {}),
+    },
   });
   if (opts.stdin !== undefined && proc.stdin) {
     proc.stdin.write(opts.stdin);

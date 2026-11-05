@@ -30,6 +30,9 @@ export function summarizePost(post: PostView): Record<string, unknown> {
   return {
     id: post.id,
     author: post.author,
+    // body is the point of reading a board: the default machine output carries it
+    // (deleted posts expose no text).
+    body_md: post.deleted_at ? null : post.body_md,
     root_id: post.root_id,
     parent_id: post.parent_id,
     self_thread_id: post.self_thread_id,

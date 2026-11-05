@@ -423,6 +423,13 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
 - 通用参数：`--env-files`（逗号分隔，**按序覆盖**，后盖前）；`--data-dir`（除 `--version`
   外**必填**，解析规则见下）；`--as`（**必填，无隐式默认**——缺省时报错并列出可选账号，
   隐式默认会让"谁来消费游标"变得不可预测）。
+- **环境变量回退（子代理免重复长参数）**：`FDE2E_REPORT_DATA_DIR` / `FDE2E_REPORT_ENV_FILES` /
+  `FDE2E_REPORT_ACCOUNT` 分别等价于 `--data-dir` / `--env-files` / `--as`；显式参数优先。
+- **机器输出的正文**：`read`/`search` 的每条帖默认带 `body_md`（AI 的主要读取路径必须拿得到正文，
+  否则只能改用 `--thread`）。`--thread` 返回**整条会话**（spine + 分支 + 完整时的 `i/n`），
+  `--limit` 对它不适用（stderr 明示，不静默忽略）。
+- **订阅超时**：`wait-notifications --timeout <sec>` 在无事件时到点退出 0（stderr 说明、
+  不推进游标），供需要边界的调用方使用；默认仍然无限阻塞（manager 的挂起—醒来循环）。
 - **数据目录发现**（防止子代理在另一个空库上起第二个实例）：解析顺序＝`--data-dir` →
   `FDE2E_REPORT_DATA_DIR`（manager 注入给子代理）→ `init` 写在 `<cwd>/.report-pointer` 的路径
   → 报错。**禁止**静默默认到 `<cwd>/.report`。

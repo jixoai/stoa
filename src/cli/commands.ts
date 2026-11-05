@@ -38,7 +38,8 @@ export interface CliContext {
 }
 
 function context(args: ParsedArgs, dataDir: string, cwd: string): CliContext {
-  const explicit = flagValue(args, "env-files");
+  const explicit =
+    flagValue(args, "env-files") ?? process.env.FDE2E_REPORT_ENV_FILES ?? null;
   const envFiles =
     explicit !== null
       ? explicit
@@ -69,7 +70,8 @@ function resolveAccount(
   ctx: CliContext,
   opts: { required?: boolean; defaultOwner?: boolean } = {},
 ): string {
-  const explicit = flagValue(ctx.args, "as");
+  const explicit =
+    flagValue(ctx.args, "as") ?? process.env.FDE2E_REPORT_ACCOUNT ?? null;
   if (explicit && explicit.trim()) return explicit.trim();
   if (opts.defaultOwner) return "owner";
   fail(
@@ -675,6 +677,13 @@ async function cmdRead(ctx: CliContext): Promise<number> {
   const thread = flagValue(args, "thread");
   if (thread) {
     params.set("thread", thread);
+    if (flagValue(args, "limit") !== null) {
+      // The whole conversation is needed for spine assembly; a page limit would
+      // silently produce a broken tree. Say so instead of ignoring it quietly.
+      process.stderr.write(
+        "[report] --limit does not apply to --thread (the whole conversation is returned)\n",
+      );
+    }
     const res = await client.get<{ thread: { posts: Array<Record<string, unknown>>; collapsed: unknown[] } }>(
       `/api/read?${params.toString()}`,
     );
@@ -736,6 +745,8 @@ async function cmdWaitNotifications(ctx: CliContext): Promise<number> {
   const account = resolveAccount(ctx, { required: true });
   const { client } = await makeClient(ctx, account);
   const noExport = hasFlag(ctx.args, "no-export");
+  const timeoutSec = flagInt(ctx.args, "timeout");
+  const deadline = timeoutSec !== null && timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : null;
   let cursor: number | null = flagInt(ctx.args, "cursor");
   let role: string | null = null;
   for (;;) {
@@ -748,7 +759,13 @@ async function cmdWaitNotifications(ctx: CliContext): Promise<number> {
       role: string;
     }>(`/api/notifications?${params.toString()}`, 35_000);
     role = res.role ?? role;
-    if (!res.events || res.events.length === 0) continue;
+    if (!res.events || res.events.length === 0) {
+      if (deadline !== null && Date.now() >= deadline) {
+        process.stderr.write("[report] no notifications within --timeout; exiting without advancing\n");
+        return 0;
+      }
+      continue;
+    }
     try {
       for (const line of res.events) writeLineSync(JSON.stringify(line));
     } catch (err) {

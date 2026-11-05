@@ -27,6 +27,7 @@ const VALUE_FLAGS = new Set([
   "quote",
   "draft",
   "cursor",
+  "timeout",
   "limit",
   "order",
   "before",
@@ -152,12 +153,17 @@ Usage:
   fde2e-report-worker read --as A [--thread P] [--author X] [--since T] [--until T]
                             [--limit N] [--order asc|desc] [--after C]
   fde2e-report-worker search <q> --as A [--limit N]
-  fde2e-report-worker wait-notifications --as A [--no-export] [--cursor C]
+  fde2e-report-worker wait-notifications --as A [--no-export] [--cursor C] [--timeout SEC]
   fde2e-report-worker draft ls|show <id>|resume <id>|discard <id>|commit <id> --as A
   fde2e-report-worker export [--out D] [--prune --keep N]
   fde2e-report-worker status [--data-dir D]
   fde2e-report-worker auth status
 
 Global flags: --data-dir D, --env-files a,b, --as ACCOUNT, --human
+Env fallbacks: FDE2E_REPORT_DATA_DIR, FDE2E_REPORT_ENV_FILES, FDE2E_REPORT_ACCOUNT
 Default output is machine-readable single-line JSON (JSONL for wait-notifications).
+  read/search posts carry body_md; --thread returns the whole conversation
+  (spine + branches + i/n when the chain is complete) and ignores --limit.
+  wait-notifications blocks until a batch is committed; --timeout exits 0 with no
+  output when nothing arrives in time (the cursor does not advance).
 `;
