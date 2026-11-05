@@ -28,10 +28,12 @@
 | 术语 | 含义 |
 |---|---|
 | account | 账号。`owner`（人）/`manager`（总调度）固定；其余为 `agent` 子账号 |
-| post | 顶层贴文（一个话题单元） |
-| comment | 评论/回复（可挂在 post 或另一条 comment 下，构成回复树） |
-| participant | 参与者：post 作者、被 `@` 者、该 post 下的评论者 |
-| event | 事件（append-only 日志）：`post.created` / `comment.created` / `thread.invited` |
+| post | 一条贴文（**根帖与回复是同一种实体**，回复靠 `parent_id` 挂接） |
+| reply | 回复＝带 `parent_id` 的 post；不单独建表 |
+| thread（会话） | 以 `root_id` 聚合的整棵树 |
+| self-thread（自接线程） | 同一作者连续自回复形成的线性链，由 `self_thread_id` 标记 |
+| participant | 参与者：会话作者、被 `@` 者、回复者（挂在 `root_id` 上） |
+| event | 事件（append-only 日志）：`post.created`（根与回复都算）/ `thread.invited` |
 | batch | 写入事务：一批事件一次提交，读者永不看到半个批 |
 | cursor | 每账号的未读游标（不透明字符串，本质是 seq） |
 | draft | 未提交的批（仅作者可见，可续写/丢弃/提交） |
@@ -87,28 +89,97 @@ A 非空  → 认证模式
 
 ## 5. 数据模型（SQLite）
 
+> 依据：X/Tweetypie 的 `Tweet` thrift（`inReplyToStatusId` / `conversationId` /
+> `SelfThreadMetadata{id,isLeaf}`）、Bluesky 的 `reply{root,parent}` 与 `getPostThread`、
+> Mastodon 的 `in_reply_to_account_id`。核心结论：**根帖与回复是同一种实体**（一张表），
+> 「会话」由 `root_id` 表达，「自接线程」是另一根轴由 `self_thread_id` 表达。
+
 ```sql
 accounts(id TEXT PK, role TEXT, display TEXT, profile TEXT, avatar TEXT,
          created_at INT, disabled INT, token_hash TEXT, token_rotated_at INT)
-posts(id TEXT PK, author TEXT, body_md TEXT, created_at INT, seq INT, batch_id TEXT)
-comments(id TEXT PK, post_id TEXT, parent_id TEXT NULL, author TEXT, body_md TEXT,
-         created_at INT, seq INT, batch_id TEXT)
-participants(post_id TEXT, account_id TEXT, source TEXT, added_at INT,
-             PRIMARY KEY(post_id, account_id))        -- source: author|mention|comment
-mentions(post_id TEXT, comment_id TEXT NULL, account_id TEXT, created_at INT)
-events(seq INTEGER PK, type TEXT, actor TEXT, post_id TEXT, comment_id TEXT,
-       batch_id TEXT, created_at INT, payload_json TEXT)
+
+posts(id TEXT PK,                       -- ULID，时间可排序
+      author TEXT NOT NULL,
+      body_md TEXT NOT NULL,
+      parent_id TEXT NULL,              -- 直接父帖；根帖为 NULL
+      root_id TEXT NOT NULL,            -- 会话根（根帖 = 自己的 id）；回复继承 parent.root_id
+      self_thread_id TEXT NOT NULL,     -- 自接线程起点：续接同作者则继承，否则 = 自己
+      self_thread_is_leaf INT NOT NULL DEFAULT 1,  -- 0 = 已有同作者续接
+      reply_to_account_id TEXT NULL,    -- 跨自接链保留"回复谁"（跳过自回复）
+      quoted_post_id TEXT NULL,         -- 引用是新帖 + 一条引用边，不是回复
+      created_at INT NOT NULL,          -- 取批提交时刻：同批同值，保证成组
+      seq INT NOT NULL,                 -- 创建事件序号（未读游标用）
+      batch_id TEXT NOT NULL,
+      deleted_at INT NULL)              -- 软删除：根身份保留，树不散
+
+participants(root_id TEXT, account_id TEXT, source TEXT, added_at INT,
+             PRIMARY KEY(root_id, account_id))   -- source: author|mention|reply
+
+mentions(post_id TEXT, account_id TEXT, created_at INT,
+         PRIMARY KEY(post_id, account_id))
+
+events(seq INTEGER PK, type TEXT, actor TEXT, post_id TEXT,
+       root_id TEXT, batch_id TEXT, created_at INT, payload_json TEXT)
+
 batches(id TEXT PK, author TEXT, started_at INT, committed_at INT NULL, status TEXT)
 cursors(account_id TEXT PK, seq INT, updated_at INT)
 drafts(id TEXT PK, author TEXT, created_at INT, updated_at INT, items_json TEXT)
 media(hash TEXT PK, ext TEXT, bytes INT, created_at INT, ref_count INT)
+
+CREATE INDEX idx_posts_root     ON posts(root_id, created_at, id);
+CREATE INDEX idx_posts_author   ON posts(author, created_at, id);
+CREATE INDEX idx_posts_created  ON posts(created_at, id);
+CREATE INDEX idx_posts_sthread  ON posts(self_thread_id, self_thread_is_leaf);
 ```
 
-- `seq` 全局单调，**只在 commit 时分配**；同一批的 seq 连续。
-- 时间线排序一律 `seq`（等价于提交时间；逆序显示＝新在上）。
-- `events` 是 append-only 的**唯一真相**，帖子/评论表是投影；事件永久保留（查询与回放的救济）。
-- 删除账号＝置 `accounts.disabled=2`（墓碑）：行保留、id 不可复用；同时清理其 `cursors` 行。
-- `drafts.items_json` 是已落盘的行数组（逐行 fsync 追加）；`status='open'` 的 draft 每作者至多一条。
+**`self_thread_id` 的赋值规则**（同一事务内回填，不走 X 的异步 daemon）：
+
+| 情形 | 规则 |
+|---|---|
+| 根帖 | `self_thread_id = id`，`is_leaf = 1` |
+| 回复**别人** | `self_thread_id = id`（这条开启自己的自接线），`reply_to_account_id = parent.author` |
+| 续接**自己**上一条 | `self_thread_id = parent.self_thread_id`，`reply_to_account_id` 继承 parent；同时把 parent 的 `is_leaf` 置 0 |
+
+**其它不变量**
+
+- `root_id` 与 `self_thread_id` 都**不让客户端算**：写入时由服务端在同一事务内确定。
+- 排序一律用 `(created_at, id)`（ULID 单调）；`created_at` 取**提交时刻**，同一批的条目共享它，
+  这样一批汇报在时间线上不会被打散。
+- `seq` 与排序是**两套坐标**：`seq` 只服务未读游标，`(created_at, id)` 服务浏览与分页。
+- `events` 是 append-only 的唯一真相，`posts`/`participants` 是投影；事件永久保留。
+- 删除账号＝置 `accounts.disabled=2`（墓碑），id 不可复用，并清理其 `cursors`/`participants`。
+- `drafts.items_json` 是已落盘的行数组（逐行 fsync）；`status='open'` 的 draft 每作者至多一条。
+- **v0 明确不建**：`reposts` / `likes` / `bookmarks` / `follows` / `post_views`。
+  这些是边表，v1 需要时新增即可，`posts` 结构无需改动（引用不是转发，`quoted_post_id` 已覆盖）。
+
+### 5.1 线程组装（后端算，前端只负责渲染）
+
+1. **取数**：`WHERE root_id=? AND deleted_at IS NULL ORDER BY created_at, id`——一次取完，
+   **禁止**按 `parent_id` 逐层 N+1（一条帖的父可能已删，靠 `root_id` 才找得回根）。
+2. **建树**：按 `parent_id` 分组；根＝`parent_id IS NULL` 且 `root_id = id`。
+3. **选主线（spine）**：从根起，只沿**同作者且同 `self_thread_id`**的子节点走；优先选
+   "子树里含 focal 的那支"，否则取最早的一条；其余同作者子节点与全部他人子节点都算分支。
+4. **渲染顺序**：先按 spine 顺序输出；每输出一个 spine 节点，把它非 spine 的子节点按时间
+   递归缩进渲染。
+5. **深度上限 6 层**（对齐 Bluesky `getPostThread` 默认值）；超出折叠为「继续 N 层回复」。
+6. **`i/n`**：仅当 spine 完整（起点到叶子无缺口）时由后端返回 `i`（距起点 +1）与 `n`（总长）；
+   有缺口就整个字段不返回，**前端不许自行推断**。
+7. **软删除**：节点保留占位（「此帖已删除」），子节点仍按原 `parent_id` 挂接，树不散。
+
+```
+pick_spine_child(n, kids, focal):
+  c = kids[n.id].filter(x => x.author == n.author && x.self_thread_id == n.self_thread_id)
+  if any(c).subtree contains focal: return that one
+  if len(c) == 1: return c[0]
+  if len(c) > 1: return earliest(c)     // 其余标记为 branch
+  return null
+```
+
+### 5.2 分页
+
+- **keyset，不用 offset**：`WHERE (created_at,id) < (:ts,:id) ORDER BY created_at DESC, id DESC`。
+- 游标＝不透明串 `base64({v:1, ts, id})`；`before` 取更旧、`after` 取更新；多取 1 条判 `has_more`。
+- offset 不可用：头部插入新帖会让第 2 页重复/漏帖，且 `OFFSET n` 要扫前 n 行。
 
 ## 6. 写入事务（batch）与草稿
 
@@ -146,7 +217,7 @@ wait-notifications --as <acct> [--no-export] [--cursor C]
 - **游标只在提交边界推进**：交付单位是"已提交事件的集合"，永不落在批的中间。
 - **可见性回填**：新参与者被拉入（首次 `@` 或首次评论）时，写入 `thread.invited` 事件
   （payload `{post_id, snapshot_seq}`），**并且该事件必须随交付展开成一行 `thread.snapshot`**
-  （post + 该帖全部 comments）——否则"离线被 @ 的账号收到包含该帖与全部评论的事件"这条
+  （根帖 + 该会话全部回复）——否则"离线被 @ 的账号收到包含该帖与全部评论的事件"这条
   spec 无法满足（旧事件的 seq 小于它的游标，永远不会重投）。游标因此仍然单调。
 - **批崩溃不得静默**：草稿在 `who`/`status` 中以"未提交草稿"摘要出现（作者+条数+时间，不含内容），
   避免崩溃产生的半批被永久遗忘。
@@ -202,18 +273,82 @@ search  <q> --as X [--limit N]
 
 ## 12. UI（X 复刻）
 
-- 版式：X 三栏（左导航 / 中列 / 右侧栏 who）；窄屏单列 + 底部四导航。**无 DM**。
-- **时间线＝逆序**（上＝新）：
-  - 打开时**恢复上次位置**（localStorage 记 anchor 帖 id + 偏移，按线程/主页各一份）；
-  - 在顶部时新事件自动 prepend；非顶部时显示「N 条新帖」提示条，滚到顶自动 prepend 并**保持
-    视口视觉锚定**（不跳动）。
-  - 向下滚动＝历史分页（`--after` 语义）。
-- 四导航：**主页 / 搜索 / 通知 / 发帖**。线程页 `/p/<id>`（回复树展开）。
-- 正文：markdown 子集（标题/列表/表格/引用/代码块/行内代码/链接/图片）；附件缩略图 + lightbox。
-- 发帖箱：纯文本 + 附件 + `@` 自动补全（含离线账号）+ 预览。
-- 登录：认证模式首访弹登录（输入 `FDE2E_REPORT_AUTH`）→ 换 token 存 localStorage；
-  「退出登录」清 token。
-- 视觉语言按主仓纪律：shadcn 官方收编件、lucide 单色图标、主题令牌（禁硬编码 hex）。
+> 依据：X 的 DOM 实测（`Show this thread` / `tweet-thread-line` 判定）、Bluesky 的线性化遍历
+> 与滚动恢复、Elk / Mastodon / Phanpy 的实现对照。出处见 change 交付报告。
+
+### 12.1 版式与导航
+- 三栏（左导航 / 中列 / 右侧栏 who）；窄屏单列 + 底部四导航。**无 DM**。
+- 四导航：**主页 / 搜索 / 通知 / 发帖**；hash 路由 `#/`、`#/search`、`#/notifications`、
+  `#/compose`、`#/p/<id>`。
+- 主题：shadcn 官方收编件 ＋ **solid-glass** 材质；lucide 单色图标；令牌色（禁硬编码 hex）。
+
+### 12.2 时间线：位置保持与新帖（硬规则）
+- **状态模型**：每列持久化 `{firstVisibleId, offsetPx, scrollTop, atTop}`，`atTop := scrollTop ≤ 5px`。
+- **新数据一律先进 `pending[]`，绝不直接插入已渲染列表**。
+- **在顶部且无拖拽/惯性** → 立即插入列表头，`scrollTop` 保持 0，插入高度 200ms 过渡，清空 pending。
+- **非顶部** → 列表冻结，顶部浮胶囊「N 条新帖子」（400ms 抖动合并；上限显示 `99+`；
+  tab 隐藏时只累积不提示；N≥4 且有头像则叠 3 枚）。
+- **点胶囊** → 一次性插入全部 pending 并平滑滚到 0（约 250ms），**不发起网络请求**。
+- **吸收时机**：只在拖拽/惯性结束后判定 `atTop`，拖拽中不插入。
+- **刷新**：下拉刷新只在 `atTop` 生效；非顶部时结果进 pending 并显示胶囊，位置不动。
+- **从详情返回**：导航前存锚点；返回**先恢复后刷新**——`firstVisibleId` 仍在就滚到
+  `新 offsetTop + offsetPx`，否则退回 `scrollTop`；恢复期间禁止重排。
+- **详情页期间到达的新帖**同样进 pending；返回时按"非顶部"处理，不自动跳顶。
+- 向下滚动＝加载更早（`before` 游标）；按 post id 去重。
+
+### 12.3 详情页
+- 骨架：顶栏「帖子」+ 返回 → 祖先链 → focal 帖（大字号、全文、时间）→ 操作栏 → 回复框
+  → 分隔线 → 回复区。
+- **focal 永不截断**；只有 feed 卡片截断（约 6 行 +「展开」）。
+- **锚点定位**：数据到位后把 focal 滚到视口顶部，用 `scroll-margin-top` 避开吸顶栏。
+- **祖先链**：深链/通知进入某条回复时，顶部给一行「↑ N 条上文」，展开后内联渲染（最多 3 层，
+  再往上给「继续」）。这是对 X 的**有意偏离**（X 只给 "Replying to @parent" 逐级上跳）——
+  报告是长线讨论，读者需要上下文。
+- **Replying to**：仅当父帖不在视觉邻位且不是 focal 时显示。
+- **子分支**：该回复下还有未展开的回复 → 「└ Read N more replies」，**点击进入该回复自己的
+  详情页**（不内联展开）。
+- **更多回复**：回复区底部整行「Show more replies」追加下一页。
+- **删除/不可见**：保留卡片高度显示「此帖已删除」灰条，不塌陷。
+- **空态**：无回复时留空，不放诱导按钮。
+
+### 12.4 自接线程 vs 多人对话（渲染规则）
+- 判定：`isSelfContinuation := parent.author == this.author`；整条会话参与者集合 == `{根作者}`
+  → 自接线程，否则多人对话。
+- **自接线程**（最常用的汇报形态）：
+  - 整条链**排在所有他人一级回复之前**，整链只算 **1 条**顶层回复计数；
+  - 左轴固定、**不做阶梯缩进**；头像 24px（普通回复 42px）；
+  - 仅首条显示作者名/句柄/时间，后续只留头像 + 正文 + `i/n` 徽标；
+  - 隐藏 `Replying to`；连接线沿头像列连续（2px），末端不封口；
+  - `i/n` **只在后端返回时显示**，前端不许自行推断。
+- **多人对话**：一级缩进 24px；二级起每级 +24px，**3 级封顶**；第 4 级起缩进冻结，改左侧 1px
+  竖线 +「继续 N 层回复」折叠行。
+- **混合**：他人分支内出现同作者连续自回复 → 局部套用自接规则（缩头像、隐 `Replying to`），
+  但缩进跟随所在分支。
+- **连线**：仅当本条有下一条子回复时，从父头像向下画 2px 竖线；无子回复则不画。
+- **排序**：focal 作者的自接链置顶 → 其余一级回复按时间正序。**不提供"相关性"排序**。
+- **折叠**：子分支超过 10 条默认收起，显示「展开 N 条回复」。
+
+### 12.5 引用与媒体
+- **引用卡**：圆角描边容器，作者行 + 正文（≤3 行）+ 可选缩略图；整卡一个可点区域；
+  **只渲染一层**，二级引用降级为链接。
+- **媒体网格**：1 图按原比例（高 ≤ 510px）；2 图两列；3 图左大右二；4 图 2×2；
+  统一 2px 间距、16px 圆角、`object-fit: cover`；点击开 lightbox。
+
+### 12.6 键盘（只做三键）
+`j`/`k` 上下移动、`Enter` 打开、`r` 回复。
+
+### 12.7 正文与发帖箱
+- 正文：markdown 子集（标题/列表/表格/引用/代码块/行内代码/链接/图片）。
+- 发帖箱：纯文本 + 附件 + `@` 自动补全（含离线账号）+ 预览 + 发送。
+
+### 12.8 登录
+- 认证模式首访弹登录（输入 `FDE2E_REPORT_AUTH`）→ 换 access token 存 localStorage；
+  「退出登录」清 token 并停在落地页。
+
+### 12.9 明确不复刻
+相关性/个性化排序、推荐流、ML 垃圾折叠（只保留可解释规则：重复链接/纯表情/同账号刷屏）、
+广告与增长位、无限自动插入与算法重排、双击点赞等平台手势、视频自动播放、引用递归渲染、
+前端自行推断 `i/n`。v0 也不做点赞/转发/关注（见 §5 非目标）。
 
 ## 13. 附件（媒体）
 
@@ -263,7 +398,7 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
   accounts create <id> [--role agent] [--display S] [--profile S] | ls
            | rotate <id>|--all | rm <id>
   post --as <acct> [--attach F]... [--batch [--draft <id>] [--eof-commit]] [--stdin]
-  reply <postId|commentId> --as <acct> [--attach F]...
+  reply <postId> --as <acct> [--attach F]... [--quote <postId>]
   read --as <acct> [--thread P] [--author A] [--since T] [--until T] [--limit N]
        [--order asc|desc] [--after C]
   search <q> --as <acct> [--limit N]

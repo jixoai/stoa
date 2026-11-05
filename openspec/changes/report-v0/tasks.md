@@ -13,17 +13,21 @@
 
 ## P1 · core：领域模型与协议（运行时无关）
 
-- [ ] 1.1 实体与 schema：account/post/comment/participant/mention/event/batch/cursor/draft/media（类型 + JSON schema）
-- [ ] 1.2 事件与 seq：commit 时分配、批内连续；时间线投影（posts/comments ← events）
-- [ ] 1.3 批语义：begin/append/commit 纯逻辑 + 草稿态机（draft: open→committed|discarded）
-- [ ] 1.4 可见性计算：`V(account)`＝相关集（作者/被@/评论者）与全局集（owner/manager）
-- [ ] 1.5 markdown 子集解析（标题/列表/表格/引用/代码/链接/图片/行内代码）
-- **验证门**：core 单测覆盖批原子性、游标单调、可见性回填（`thread.invited`）
+- [ ] 1.1 实体与 schema：account/post（根与回复同表）/participant/mention/event/batch/cursor/draft/media（类型 + JSON schema）
+- [ ] 1.2 线程模型：`parent_id`/`root_id`/`self_thread_id`/`is_leaf`/`reply_to_account_id` 的赋值规则（同事务回填）+ 软删除
+- [ ] 1.3 线程组装：spine 选择（同作者 + 同 self_thread_id + 通向 focal）＋分支递归缩进＋深度上限 6 层＋软删除占位
+- [ ] 1.4 `i/n`：spine 完整才返回序号，有缺口整个字段不返回（前端不猜）
+- [ ] 1.5 分页：keyset `(created_at, id)`、不透明游标（v/ts/id）、before/after、多取一条判 has_more
+- [ ] 1.6 批语义：begin/append/commit 纯逻辑 + 草稿态机（draft: open→committed|discarded）
+- [ ] 1.7 可见性计算：`V(account)`＝会话级相关集（作者/被@/回复过）与全局集（owner/manager）
+- [ ] 1.8 markdown 子集解析（标题/列表/表格/引用/代码/链接/图片/行内代码）
+- **验证门**：core 单测覆盖批原子性、游标单调、可见性回填（`thread.invited`）、
+  自接链/分支组装、`i/n` 缺口不返回、keyset 头部插入不重复
 
 ## P2 · server：本地服务
 
 - [ ] 2.1 SQLite 落地（`bun:sqlite`）＋迁移；`DATA_PATH/{report.sqlite,media/,export/,server.json,.env}`
-- [ ] 2.2 HTTP API（Hono，bun 适配）：timeline / thread / post / comment / media / who / search / health
+- [ ] 2.2 HTTP API（Hono，bun 适配）：timeline / thread / post / reply / media / who / search / health
 - [ ] 2.3 认证：env-files 解析（按序覆盖，未传时默认 `./.env.personal,<dataDir>/.env`）+ `FDE2E_REPORT_AUTH` live-read（≤1s 缓存）+ 登录下发 access token（HMAC key 派生自 A）+ account token 校验（sha256，**每账号独立 `accounts/<id>.env` 0600**）+ `rotate --all` + **对外暴露且认证为空时 fail-closed 拒绝启动**（`--allow-open-expose` 才放行并常驻 OPEN MODE 横幅）
 - [ ] 2.4 CORS（**完整 origin 精确匹配**，防 `local-x.fde2e.com.evil.com`）+ SSE（`/api/stream`，15s 心跳，`POST /api/stream/ticket` 换 60s 一次性票据，**不用 `?token=`**；认证失败返 204 停止重连；`X-Accel-Buffering: no` + 关 gzip）
 - [ ] 2.5 presence：连接注册 + 90s TTL + `who`
@@ -47,14 +51,18 @@
 ## P4 · UI（X 复刻，与壳同源）
 
 - [ ] 4.1 Vite + React + TW4 + shadcn 官方收编件 + **solid-glass** 主题；主题令牌、lucide 单色图标
-- [ ] 4.2 三栏版式 + 窄屏单列 + **四导航（主页/搜索/通知/发帖）**；无 DM
-- [ ] 4.3 逆序时间线：锚点恢复（localStorage，按线程/主页）＋顶部自动 prepend ＋非顶部「N 条新帖」提示条 ＋向下历史分页
-- [ ] 4.4 线程页 `/p/<id>`（回复树）、发帖箱（markdown 预览、附件、@ 补全含离线）
-- [ ] 4.5 SSE 订阅 + 断线重连（游标补拉，去重）
-- [ ] 4.6 `ep` 处理：落地页（输入/历史/用法）＋持久化 ＋ https 校验；认证模式登录/退出
-- [ ] 4.7 媒体：上传（拖拽/选择）、缩略图、lightbox
+- [ ] 4.2 三栏版式 + 窄屏单列 + **四导航（主页/搜索/通知/发帖）**；无 DM；hash 路由
+- [ ] 4.3 时间线位置保持：`pending[]` 暂存 / `atTop≤5px` 判定 / 「N 条新帖子」胶囊（400ms 合并、99+、tab 隐藏只累积）/ 点胶囊插顶不请求 / 拖拽惯性结束才吸收 / 下拉刷新仅 atTop
+- [ ] 4.4 详情页：focal 不截断 + scroll-margin-top 定位 + 可展开祖先链（≤3 层）+ `Replying to` 条件显示 + 「Read N more replies」跳转 + 删除占位不塌陷
+- [ ] 4.5 自接线程渲染：置顶、24px 头像、仅首条显作者、隐 `Replying to`、连续连接线、`i/n` 徽标（后端给了才显示）
+- [ ] 4.6 多人对话渲染：一级 24px 缩进、每级 +24px、3 级封顶、第 4 级折叠「继续 N 层」、子分支 >10 折叠
+- [ ] 4.7 发帖箱（markdown 预览、附件、@ 补全含离线）＋ 媒体网格 1/2/3/4 布局 ＋ 引用卡（仅一层）
+- [ ] 4.8 键盘 `j`/`k`/`Enter`/`r`
+- [ ] 4.9 SSE 订阅 + 断线重连（游标补拉，去重）
+- [ ] 4.10 `ep` 处理：落地页（输入/历史/用法）＋持久化 ＋ https 校验；认证模式登录/退出
+- [ ] 4.11 媒体：上传（拖拽/选择）、缩略图、lightbox
 - **验证门**：Playwright 走查——跨域（壳 origin → 本地后端）真浏览器联通；锚点恢复断言；
-  「N 条新帖」与 prepend 断言；390/768/1440 三档零横向溢出、零 console error
+  胶囊与插顶断言；自接链渲染断言（i/n、隐藏 Replying to）；390/768/1440 三档零横向溢出、零 console error
 
 ## P5 · SSG 导出（归档）
 
