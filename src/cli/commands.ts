@@ -620,8 +620,18 @@ async function cmdPostBatch(
       itemCount = appended.items;
     }
   } catch (err) {
+    // Any handled failure (bad JSON line, rejected op, network) means the batch was
+    // not committed. Discard the draft so it cannot block the next batch; only a
+    // bare EOF (handled above) and a hard kill keep a draft on purpose.
+    if (draftId) {
+      try {
+        await client.delete(`/api/drafts/${draftId}`);
+      } catch {
+        // best effort: surface the original error
+      }
+    }
     if (err instanceof ReportError) {
-      throw new CliError(err.message, draftId ? { draft_id: draftId, items: itemCount } : undefined);
+      throw new CliError(err.message, draftId ? { draft_id: draftId, discarded: true } : undefined);
     }
     throw err;
   } finally {
@@ -639,7 +649,20 @@ async function cmdPostBatch(
     return 1;
   }
 
-  const result = await client.post<Record<string, unknown>>(`/api/drafts/${draftId}/commit`);
+  // A rejected commit is not a crash: the terminator WAS seen, so the content is
+  // not a recoverable half-batch. Drop the draft so it cannot block the next batch
+  // (an open draft is single-per-author by design).
+  let result: Record<string, unknown>;
+  try {
+    result = await client.post<Record<string, unknown>>(`/api/drafts/${draftId}/commit`);
+  } catch (err) {
+    try {
+      await client.delete(`/api/drafts/${draftId}`);
+    } catch {
+      // best effort: the original commit error is what matters
+    }
+    throw err;
+  }
   outputCommit(ctx, result, sawTerminator ? "committed" : "committed (eof-commit)");
   return 0;
 }

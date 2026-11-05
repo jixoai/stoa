@@ -101,10 +101,13 @@ export interface PostOp {
   quote?: string | null;
   /** content-addressed media hashes already uploaded via /api/media */
   media?: string[];
+  /** in-batch reference name; later ops address it as "$ref:<name>" */
+  ref?: string | null;
 }
 
 export interface ReplyOp {
   op: "reply";
+  /** post id, or "$prev" | "$root" | "$ref:<name>" resolved inside the same batch */
   parent: string;
   body: string;
   media?: string[];

@@ -102,8 +102,8 @@ export function validateWriteOp(input: unknown): WriteOp {
   if (op === "post") {
     const body = assertBody(obj.body);
     const media = normalizeMedia(obj.media);
-    const quote = typeof obj.quote === "string" && obj.quote ? obj.quote : null;
-    return { op: "post", body, quote, media };
+    const quote = typeof obj.quote === "string" && obj.quote ? assertRefSpec(obj.quote) : null;
+    return { op: "post", body, quote, media, ref: normalizeRef(obj.ref) };
   }
   if (op === "reply") {
     if (typeof obj.parent !== "string" || !obj.parent) {
@@ -111,9 +111,34 @@ export function validateWriteOp(input: unknown): WriteOp {
     }
     const body = assertBody(obj.body);
     const media = normalizeMedia(obj.media);
-    return { op: "reply", parent: obj.parent, body, media };
+    return { op: "reply", parent: assertRefSpec(obj.parent), body, media };
   }
   fail("BAD_REQUEST", `unknown op ${JSON.stringify(op)} (expected "post" or "reply")`);
+}
+
+const REF_NAME = /^[A-Za-z0-9_-]{1,32}$/;
+
+/** `ref` names a post created earlier in the same batch. */
+function normalizeRef(value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") fail("BAD_REQUEST", "ref must be a string");
+  if (!REF_NAME.test(value)) fail("BAD_REQUEST", "ref must match [A-Za-z0-9_-]{1,32}");
+  return value;
+}
+
+/**
+ * Parent/quote targets may address a post created earlier in the same batch:
+ * `$prev` (the last one), `$root` (the first one), or `$ref:<name>`.
+ */
+function assertRefSpec(value: string): string {
+  if (value === "$prev" || value === "$root") return value;
+  if (value.startsWith("$ref:")) {
+    const name = value.slice(5);
+    if (!REF_NAME.test(name)) fail("BAD_REQUEST", `invalid batch ref "${value}"`);
+    return value;
+  }
+  if (value.startsWith("$")) fail("BAD_REQUEST", `unknown batch reference "${value}"`);
+  return value;
 }
 
 export function isCommitLine(input: unknown): boolean {

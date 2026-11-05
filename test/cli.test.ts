@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BUN,
@@ -69,10 +70,73 @@ describe("CLI surface (design §15, P3)", () => {
     const parsed = JSON.parse(caps.stdout) as { product: string; protocol: number };
     expect(parsed.product).toBe("fde2e-report-worker");
     expect(parsed.protocol).toBe(1);
-    // --data-dir is required except for --version
-    const missing = await runCli(["capabilities"]);
-    expect(missing.code).not.toBe(0);
+    // --data-dir is required except for --version.
+    // Run in an isolated cwd: a .report-pointer left by a previous init in the
+    // repo root would otherwise satisfy the lookup and make this assertion
+    // environment-dependent.
+    const bare = mkdtempSync(join(tmpdir(), "report-nocwd-"));
+    try {
+      const missing = await runCli(["capabilities"], {
+        cwd: bare,
+        env: { FDE2E_REPORT_DATA_DIR: undefined },
+      });
+      expect(missing.code).not.toBe(0);
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
+    }
   }, 30000);
+
+  test("batch: one transaction can build a whole self-thread via $prev / $ref", async () => {
+    const jsonl = [
+      JSON.stringify({ op: "post", ref: "r", body: "report part 1/3 @b" }),
+      JSON.stringify({ op: "reply", parent: "$prev", body: "part 2/3" }),
+      JSON.stringify({ op: "reply", parent: "$prev", body: "part 3/3" }),
+      JSON.stringify({ commit: true }),
+    ].join("\n") + "\n";
+    const run = await runCli(["post", "--batch", ...base(), "--as", "a"], { stdin: jsonl });
+    expect(run.code).toBe(0);
+    const res = JSON.parse(run.stdout) as {
+      posts: Array<{ id: string; parent_id: string | null; self_thread_id: string }>;
+    };
+    expect(res.posts).toHaveLength(3);
+    const [root, second, third] = res.posts;
+    expect(second!.parent_id).toBe(root!.id);
+    expect(third!.parent_id).toBe(second!.id);
+    expect(new Set(res.posts.map((p) => p.self_thread_id))).toEqual(new Set([root!.id]));
+
+    // one wake delivers the whole committed batch as a single chain
+    const waited = await runCli(["wait-notifications", ...base(), "--as", "b"], { timeoutMs: 30_000 });
+    expect(waited.code).toBe(0);
+    const created = parseJsonLines(waited.stdout).filter((l) => l.type === "post.created");
+    expect(created).toHaveLength(3);
+    expect(new Set(created.map((l) => l.batch_id)).size).toBe(1);
+
+    const thread = await runCli(["read", "--thread", root!.id, ...base(), "--as", "a"]);
+    const body = JSON.parse(thread.stdout) as {
+      thread: { spine_complete: boolean; posts: Array<{ i?: number; n?: number; is_spine: boolean }> };
+    };
+    const spine = body.thread.posts.filter((p) => p.is_spine);
+    expect(spine.map((p) => p.i)).toEqual([1, 2, 3]);
+    expect(spine.map((p) => p.n)).toEqual([3, 3, 3]);
+  }, 60000);
+
+  test("a rejected batch discards its draft and does not block the next batch", async () => {
+    const bad = [
+      JSON.stringify({ op: "post", body: "first ok" }),
+      JSON.stringify({ op: "reply", parent: "__missing__", body: "nope" }),
+      JSON.stringify({ commit: true }),
+    ].join("\n") + "\n";
+    const rejected = await runCli(["post", "--batch", ...base(), "--as", "a"], { stdin: bad });
+    expect(rejected.code).not.toBe(0);
+
+    const drafts = await runCli(["draft", "ls", ...base(), "--as", "a"]);
+    expect(drafts.code).toBe(0);
+    const listed = JSON.parse(drafts.stdout) as { drafts: unknown[] };
+    expect(listed.drafts).toHaveLength(0);
+
+    const retry = await runCli(["post", "after rejection", ...base(), "--as", "a"]);
+    expect(retry.code).toBe(0);
+  }, 60000);
 
   test("end-to-end: post → wait-notifications → reply → read --thread → export", async () => {
     const posted = await runCli([

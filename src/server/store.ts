@@ -563,6 +563,26 @@ export class Store {
       }
 
       const created: PostRow[] = [];
+      const batchOrder: string[] = [];
+      const batchRefs = new Map<string, string>();
+      const resolveBatchRef = (spec: string): string => {
+        if (spec === "$prev") {
+          const id = batchOrder[batchOrder.length - 1];
+          if (!id) fail("BAD_REQUEST", "$prev has no earlier post in this batch");
+          return id;
+        }
+        if (spec === "$root") {
+          const id = batchOrder[0];
+          if (!id) fail("BAD_REQUEST", "$root has no earlier post in this batch");
+          return id;
+        }
+        if (spec.startsWith("$ref:")) {
+          const id = batchRefs.get(spec.slice(5));
+          if (!id) fail("BAD_REQUEST", `unknown batch ref "${spec}" in this batch`);
+          return id;
+        }
+        return spec;
+      };
       for (const rawOp of opts.ops) {
         const op = rawOp;
         if (op.op === "post") {
@@ -570,7 +590,7 @@ export class Store {
           const id = newUlid(now);
           let quoted: PostRow | null = null;
           if (op.quote) {
-            quoted = this.postRow(op.quote);
+            quoted = this.postRow(resolveBatchRef(op.quote));
             if (!quoted || quoted.deleted_at) fail("NOT_FOUND", "quoted post not found");
             if (!this.canViewRoot(opts.author, quoted.root_id)) {
               fail("NOT_FOUND", "quoted post not found");
@@ -605,13 +625,19 @@ export class Store {
           this.addParticipant(post.root_id, opts.author, "author", now);
           this.processMentions(post, opts.author, now);
           if (quoted) this.mergeQuotedParticipants(post, quoted, opts.author, now);
+          batchOrder.push(post.id);
+          if (op.ref) {
+            if (batchRefs.has(op.ref)) fail("BAD_REQUEST", `duplicate batch ref "${op.ref}"`);
+            batchRefs.set(op.ref, post.id);
+          }
         } else if (op.op === "reply") {
           const body = assertBody(op.body);
-          const parent = this.postRow(op.parent);
-          if (!parent) fail("BAD_REQUEST", `parent post "${op.parent}" not found`);
+          const parentId = resolveBatchRef(op.parent);
+          const parent = this.postRow(parentId);
+          if (!parent) fail("BAD_REQUEST", `parent post "${parentId}" not found`);
           if (parent.deleted_at) fail("BAD_REQUEST", "cannot reply to a deleted post");
           if (!this.canViewRoot(opts.author, parent.root_id)) {
-            fail("NOT_FOUND", `parent post "${op.parent}" not found`);
+            fail("NOT_FOUND", `parent post "${parentId}" not found`);
           }
           const sameAuthor = parent.author === opts.author;
           const id = newUlid(now);
@@ -648,6 +674,7 @@ export class Store {
           created.push(post);
           this.addParticipant(post.root_id, opts.author, "reply", now);
           this.processMentions(post, opts.author, now);
+          batchOrder.push(post.id);
         } else {
           fail("BAD_REQUEST", "unknown operation");
         }
@@ -669,7 +696,11 @@ export class Store {
       }
       return {
         batch_id: opts.batchId,
-        posts: this.hydratePosts(created, { id: opts.author, role: this.roleOf(opts.author) }),
+        // re-read: earlier rows may have been updated in this transaction (is_leaf)
+        posts: this.hydratePosts(
+          created.map((p) => this.postRow(p.id)!),
+          { id: opts.author, role: this.roleOf(opts.author) },
+        ),
         idempotent: false,
       };
     });
