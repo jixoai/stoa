@@ -24,8 +24,9 @@ change 全部任务完成且验证通过后立即归档；停滞超 3 天主动�
    永不落日志（掩码显示）。
 4. **端口与暴露**：本地服务默认绑 **127.0.0.1**，默认端口在 **13680~13699**（worker 专属窄段；
    避开 13610 网关、13620 预留、13670 manager-reports、13731~13739 omni e2e）内随机；
-   **数据目录严禁放进任何对外静态服务根**（先例：`.agents/reports/manager` 被静态服务
-   公网曝光）——放进去等于把 `.env`/数据库/账号 token 挂到公网目录列表。
+   **数据目录规范路径＝`<workspace>/.agents/workers/<name>/<session>/`，严禁放进任何对外
+   静态服务根**（先例：`.agents/reports/manager` 被静态服务公网曝光）——放进去等于把
+   `.env`/数据库/账号 token 挂到公网目录列表。
    对外/隧道暴露走主仓 `pnpm tunnel:expose`（HTTP 服务域名免登记 PORT.md）。
    禁止段外新开对外端口。
 5. **UI 组件零手写仿制**：组件只从 shadcn/ui 官方 registry 收编（逐字保留 + 文件头注明出处 +

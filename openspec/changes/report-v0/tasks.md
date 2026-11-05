@@ -33,7 +33,7 @@
 ## P3 · CLI
 
 - [ ] 3.1 命令骨架 + 通用参数（`--env-files` 按序覆盖 / `--data-dir` / `--as` / `--human`）+ 机器可读输出约定
-- [ ] 3.2 `init`（建目录/建 owner+manager/生成 secret/首启 provision `FDE2E_REPORT_AUTH` 并打印一次）
+- [ ] 3.2 `init`（建目录/建 owner+manager/**为两者各生成 account token 到 `accounts/<id>.env`**/生成 secret/首启 provision `FDE2E_REPORT_AUTH` 并打印一次；拒绝把数据目录建在公开静态根）
 - [ ] 3.3 `serve`（前台 + `--daemon/--stop/--status`；stdout 首行 `REPORT_URL=`）
 - [ ] 3.4 `post` / `reply` / `--attach` / `--batch`（stdin JSONL；**只认显式终止符**，裸 EOF 视为失败保留草稿；**首行即建 draft 并逐行 fsync**；`--draft <id>` 跨进程续写；提交按 batch_id 幂等）
 - [ ] 3.5 `read` / `search`（thread/author/since/until/limit/order/after；与游标正交）
@@ -88,5 +88,6 @@
   （只读目录）后 `pending-export` 重试
 - [ ] 8.3 视觉走查（子代理交叉复核；UI 组件来源审计＝shadcn 官方收编，无手写仿制）
 - [ ] 8.4 变更文件前后截图审计（新建仓：新文件按"新建基线与实现"成对；UNCOVERED=0 显式登记）
-- [ ] 8.5 聚合图文报告（HTML，落主仓 `.agents/reports/manager/<会话>/`，公网链接按交付纪律）
+- [ ] 8.5 聚合图文报告（HTML 终稿，落主仓 `.agents/reports/manager/<报告名>/`——这棵树是报告产物，
+  **不是** report 的数据目录；公网链接按交付纪律）
 - [ ] 8.6 change 归档（本仓 + 主仓指针同步）

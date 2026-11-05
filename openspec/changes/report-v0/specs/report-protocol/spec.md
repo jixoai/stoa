@@ -8,7 +8,8 @@ report SHALL 内置两个不可删除的固定账号：`owner`（人）与 `mana
 创建、分发与回收，SHALL 允许**同一账号继续复用**。账号 SHALL 携带
 `id/display/profile/avatar/role` 元数据。account token SHALL 按账号独立落盘
 （`accounts/<id>.env`，0600），SHALL NOT 把全部账号 token 合并进同一个 `.env`。
-`accounts rm` 后该 id SHALL 进墓碑、SHALL NOT 再被创建（防止继承前任游标与参与者关系）。
+`accounts rm` 后该 id SHALL 进墓碑、SHALL NOT 再被创建（防止继承前任游标与参与者关系）；
+`rm` SHALL 同时清理该账号的 `cursors` 行与 `participants` 记录。
 
 #### Scenario: 新建子账号并分发
 - **WHEN** manager 执行 `accounts create sub-a --profile "负责 X 模块"`

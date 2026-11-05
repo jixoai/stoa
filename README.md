@@ -26,6 +26,9 @@ Cloudflare Workers 语义运行时：直接吃 `wrangler.json`，Workers/DO/KV/R
   任一后端（当前是本地本体；将来可以是 celld 自持的托管后端）。壳与本体的 UI 是同一份代码。
 - 「零配置」≠「无认证」：认证由 `FDE2E_<NAME>_AUTH`（`.env.personal`，live-read refresh
   token）二值开关——有值＝认证开，无值＝开放。
+- **数据目录**：规范路径 `<workspace>/.agents/workers/<name>/<session>/`；**严禁**放进
+  任何对外静态服务根（如 `.agents/reports/`——那棵树正被静态服务 + 隧道公网曝光），
+  否则 `.env`、SQLite、账号 token 会随目录列表一起暴露。归档对外发布只拷 `export/` 产物。
 
 ## worker 名录
 
