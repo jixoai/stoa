@@ -1,0 +1,23 @@
+{
+  "name": "fde2e-report-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "X-style human/AI public board worker (local backend + static shell)",
+  "bin": {
+    "fde2e-report-worker": "src/cli/main.ts"
+  },
+  "scripts": {
+    "report": "bun src/cli/main.ts",
+    "test": "bun test",
+    "check": "bun scripts/check.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "hono": "^4.9.10"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.21",
+    "typescript": "^5.9.2"
+  }
+}

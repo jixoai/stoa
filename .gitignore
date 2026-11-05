@@ -20,3 +20,6 @@ export/
 # 编辑器与系统
 .DS_Store
 *.log
+
+# report worker local pointer (per working directory; contains a local path)
+.report-pointer
