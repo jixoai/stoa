@@ -60,12 +60,12 @@ A 为空  → 开放模式：不校验；身份由请求声明（默认 owner）
 A 非空  → 认证模式
 ```
 
-认证模式下的三条凭据线：
+认证模式下的三条凭据线与一条 env-file 解析规则：
 
 1. **refresh**：`A` 本身（人在 `.env.personal` 里维护，例如 `FDE2E_REPORT_AUTH=****`）。
 2. **access token**（网页会话）：`POST /api/auth/login {secret}` → 常数时间比对 `secret == A`
    → 下发 `v1.<b64url(payload)>.<b64url(hmac)>`，`payload={sub:"owner",iat,exp}`，exp 默认 7 天；
-   HMAC key = `HMAC(FDE2E_REPORT_SECRET, A)` ⇒ **改 A 即刻使全部已发 token 失效**（无需失效表）。
+   HMAC key = `HMAC(FDE2E_REPORT_SECRET, A)` ⇒ **改 A 即刻使全部已发 access token 失效**（无需失效表）。
 3. **account token**（机器/子账号/owner/manager）：随机 32B，DB 存 `sha256`，明文只落
    **该账号自己的 env 文件**（`accounts/<id>.env`，0600）。
    `FDE2E_REPORT_AUTH` 改值**只失效 access token**；account token 由
@@ -106,6 +106,8 @@ media(hash TEXT PK, ext TEXT, bytes INT, created_at INT, ref_count INT)
 - `seq` 全局单调，**只在 commit 时分配**；同一批的 seq 连续。
 - 时间线排序一律 `seq`（等价于提交时间；逆序显示＝新在上）。
 - `events` 是 append-only 的**唯一真相**，帖子/评论表是投影；事件永久保留（查询与回放的救济）。
+- 删除账号＝置 `accounts.disabled=2`（墓碑）：行保留、id 不可复用；同时清理其 `cursors` 行。
+- `drafts.items_json` 是已落盘的行数组（逐行 fsync 追加）；`status='open'` 的 draft 每作者至多一条。
 
 ## 6. 写入事务（batch）与草稿
 
