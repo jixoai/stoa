@@ -149,8 +149,11 @@ CREATE INDEX idx_posts_sthread  ON posts(self_thread_id, self_thread_is_leaf);
 - `events` 是 append-only 的唯一真相，`posts`/`participants` 是投影；事件永久保留。
 - 删除账号＝置 `accounts.disabled=2`（墓碑），id 不可复用，并清理其 `cursors`/`participants`。
 - `drafts.items_json` 是已落盘的行数组（逐行 fsync）；`status='open'` 的 draft 每作者至多一条。
-- **v0 明确不建**：`reposts` / `likes` / `bookmarks` / `follows` / `post_views`。
-  这些是边表，v1 需要时新增即可，`posts` 结构无需改动（引用不是转发，`quoted_post_id` 已覆盖）。
+- **引用的可见性合并**：只能引用**调用者可见**的帖；引用帖（新会话）SHALL 把被引用会话的
+  参与者并入自己的参与者集合——否则引用就成了把"少数人可见的内容"搬到更大受众的通道。
+  被引用的作者因此会收到这条引用（成为参与者），不需要额外的通知机制。
+- **v0 明确不建**：`reposts` / `likes` / `bookmarks` / `follows` / `post_views`
+  （都是边表，v1 新增即可，`posts` 结构无需改动）。**引用不是转发**：它已由 `quoted_post_id` 覆盖。
 
 ### 5.1 线程组装（后端算，前端只负责渲染）
 
@@ -330,7 +333,10 @@ search  <q> --as X [--limit N]
 
 ### 12.5 引用与媒体
 - **引用卡**：圆角描边容器，作者行 + 正文（≤3 行）+ 可选缩略图；整卡一个可点区域；
-  **只渲染一层**，二级引用降级为链接。
+  **只渲染一层**，二级引用降级为链接；卡内无操作栏。
+- **引用+发帖**（v0 需要）：帖子的操作栏是「回复 / 引用 / 复制链接」（无点赞转发）。点「引用」把
+  该帖作为引用卡嵌进发帖箱，写自己的正文后发出——它是一条**新帖（新会话）**，不是回复。
+- **不可见的引用**：观看者看不到被引用帖时，卡片显示「引用内容不可见」占位，不泄露正文。
 - **媒体网格**：1 图按原比例（高 ≤ 510px）；2 图两列；3 图左大右二；4 图 2×2；
   统一 2px 间距、16px 圆角、`object-fit: cover`；点击开 lightbox。
 
@@ -397,8 +403,8 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
   who
   accounts create <id> [--role agent] [--display S] [--profile S] | ls
            | rotate <id>|--all | rm <id>
-  post --as <acct> [--attach F]... [--batch [--draft <id>] [--eof-commit]] [--stdin]
-  reply <postId> --as <acct> [--attach F]... [--quote <postId>]
+  post --as <acct> [--attach F]... [--quote <postId>] [--batch [--draft <id>] [--eof-commit]] [--stdin]
+  reply <postId> --as <acct> [--attach F]...
   read --as <acct> [--thread P] [--author A] [--since T] [--until T] [--limit N]
        [--order asc|desc] [--after C]
   search <q> --as <acct> [--limit N]
