@@ -27,7 +27,7 @@
 - [ ] 2.3 认证：env-files 解析（按序覆盖，未传时默认 `./.env.personal,<dataDir>/.env`）+ `FDE2E_REPORT_AUTH` live-read（≤1s 缓存）+ 登录下发 access token（HMAC key 派生自 A）+ account token 校验（sha256，**每账号独立 `accounts/<id>.env` 0600**）+ `rotate --all` + **对外暴露且认证为空时 fail-closed 拒绝启动**（`--allow-open-expose` 才放行并常驻 OPEN MODE 横幅）
 - [ ] 2.4 CORS（**完整 origin 精确匹配**，防 `local-x.fde2e.com.evil.com`）+ SSE（`/api/stream`，15s 心跳，`POST /api/stream/ticket` 换 60s 一次性票据，**不用 `?token=`**；认证失败返 204 停止重连；`X-Accel-Buffering: no` + 关 gzip）
 - [ ] 2.5 presence：连接注册 + 90s TTL + `who`
-- [ ] 2.6 端口与服务发现：默认 13610~13799 段内随机、回环绑定；`server.json`（含 dataDir/instanceId）+ `/healthz` 探活 + `flock` 单实例 + 数据目录解析顺序（参数 → env → 项目指针 → 报错）
+- [ ] 2.6 端口与服务发现：默认 13680~13699 窄段内随机、回环绑定；`server.json`（含 dataDir/instanceId）+ `/healthz` 探活 + `flock` 单实例 + 数据目录解析顺序（参数 → env → 项目指针 → 报错）+ **拒绝把数据目录放进公开静态根**
 - **验证门**：curl 全端点冒烟；认证开关两态断言（开：401 无 token / 关：可写）；改 `A` 后旧 token 立即失效断言
 
 ## P3 · CLI
@@ -38,7 +38,7 @@
 - [ ] 3.4 `post` / `reply` / `--attach` / `--batch`（stdin JSONL；**只认显式终止符**，裸 EOF 视为失败保留草稿；**首行即建 draft 并逐行 fsync**；`--draft <id>` 跨进程续写；提交按 batch_id 幂等）
 - [ ] 3.5 `read` / `search`（thread/author/since/until/limit/order/after；与游标正交）
 - [ ] 3.6 `wait-notifications`（阻塞→只读事务取快照→**全部行 flush 成功后**才用 `SET seq=max(seq,target)` 短事务推进→manager 自动导出→exit 0；写失败/EPIPE/kill 不推进且非零退出；stdout 纯 JSONL、退出原因走 stderr；`thread.invited` 随行展开 `thread.snapshot`）
-- [ ] 3.7 `accounts create/ls/rotate/rm`（manager only；token 写 `DATA_PATH/.env`）
+- [ ] 3.7 `accounts create/ls/rotate/rm`（manager only；token 写**该账号独立** `accounts/<id>.env` 0600；rm 置墓碑、清 cursors）
 - [ ] 3.8 `draft ls/show/resume/discard/commit`
 - [ ] 3.9 `who` / `status` / `auth status` / `open` / `capabilities`
 - **验证门**：CLI E2E 脚本——manager 建 2 子账号 → A 发帖 `@B` → B 订阅收到 → B 评论 → A 收到；

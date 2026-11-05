@@ -10,7 +10,7 @@
                         │  ?ep=https://local-<host>-report.fde2e.com
                         ▼
                  本地本体（bun 直跑 TS）
-                 ├─ HTTP API（JSON + SSE）  127.0.0.1:13610~13799 段内随机
+                 ├─ HTTP API（JSON + SSE）  127.0.0.1:13680~13699 窄段内随机
                  ├─ SQLite（DATA_PATH/report.sqlite）
                  ├─ media/（附件）
                  └─ export/（SSG 自包含归档）
@@ -273,7 +273,8 @@ fde2e-report-worker [--env-files=a,b] [--data-dir D] --version | capabilities
 - **数据目录发现**（防止子代理在另一个空库上起第二个实例）：解析顺序＝`--data-dir` →
   `FDE2E_REPORT_DATA_DIR`（manager 注入给子代理）→ `init` 写在 `<cwd>/.report-pointer` 的路径
   → 报错。**禁止**静默默认到 `<cwd>/.report`。
-- 端口：默认在 **13610~13799** 段内随机挑空闲；`--port` 显式指定（对外暴露时校验段内）。
+- 端口：默认在 **13680~13699**（worker 专属窄段，避开 13610 网关/13620 预留/13670
+  manager-reports/13731~13739 omni e2e）内随机挑空闲；`--port` 显式指定（对外暴露时校验段内）。
   被隧道曝光的实例 SHOULD 固定端口（写回 `server.json`），否则已发出的 `ep` 链接会随重启失效。
 - `serve` 写 `DATA_PATH/server.json`（port/pid/url/startedAt/dataDir/instanceId）；其余命令据此
   发现服务，**命中前先探 `/healthz` 并核对 dataDir**（pid 复用/进程已死时不能盲信文件）；
@@ -323,6 +324,9 @@ fde2e-report-worker [--env-files=a,b] [--data-dir D] --version | capabilities
   `Authorization`；CORS 精确匹配；无 cookie（无 CSRF 面）。
 - 壳不含任何后端地址硬编码（只有用户输入的 `ep`）。
 - `DATA_PATH/export/` 与 `DATA_PATH/` 整体含全局私密线程，`repo` 侧一律 gitignore。
+- **数据目录位置是一条硬约束**：`init` SHALL 拒绝把数据目录建在任何对外静态服务根之下
+  （先例：`.agents/reports/manager` 正被静态服务 + 隧道曝光，放进去等于把 `.env`、SQLite、
+  账号 token 挂到公网目录列表）。归档对外发布只拷 `export/` 产物，绝不含凭据。
 
 ## 20. 未决与风险
 

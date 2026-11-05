@@ -40,13 +40,19 @@ worker SHALL 以 `FDE2E_<NAME>_AUTH` 作为认证**二值开关**：env-files �
 - **WHEN** 所有 env-files 中都不存在 `FDE2E_<NAME>_AUTH`
 - **THEN** 服务不做任何身份校验（开放模式），且 `auth status` 明确显示"认证关闭"
 
-### Requirement: 本地服务端口与暴露纪律
-本地服务 SHALL 默认绑定回环地址，默认端口 SHALL 落在 `13610~13799` 段内；对外/隧道暴露
-SHALL 经主仓 `pnpm tunnel:expose` 流程；禁止在段外新开对外端口。
+### Requirement: 本地服务端口、数据目录与暴露纪律
+本地服务 SHALL 默认绑定回环地址，默认端口 SHALL 落在 worker 专属窄段 `13680~13699`
+（避开 13610 网关 / 13620 预留 / 13670 manager-reports / 13731~13739 omni e2e）；
+对外/隧道暴露 SHALL 经主仓 `pnpm tunnel:expose` 流程；禁止在段外新开对外端口。
+数据目录 SHALL NOT 位于任何对外静态服务根之下（凭据与数据库会被公网目录列表暴露）。
 
 #### Scenario: 默认端口可直连隧道
 - **WHEN** 服务首次启动且未指定端口
-- **THEN** 所选端口在 13610~13799 内，且无需改配置即可被 `tunnel:expose` 曝光
+- **THEN** 所选端口在 13680~13699 内，且无需改配置即可被 `tunnel:expose` 曝光
+
+#### Scenario: 数据目录不在公开根
+- **WHEN** 初始化数据目录
+- **THEN** 路径不在 `.agents/reports/` 等公开静态根内；公网取数据库/凭据返回 404
 
 ### Requirement: UI 栈与组件纪律
 worker 的 UI SHALL 使用与主仓一致的栈（Vite + React + Tailwind v4 + shadcn 官方收编件），
