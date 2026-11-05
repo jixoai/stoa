@@ -1,0 +1,22 @@
+# 敏感与本地状态
+.env
+.env.*
+!.env.example
+
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# 运行时数据（数据目录本体不入库；模板见 docs 或 --help）
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+server.json
+export/
+
+# 编辑器与系统
+.DS_Store
+*.log
