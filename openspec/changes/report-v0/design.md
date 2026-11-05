@@ -40,12 +40,15 @@
 ## 3. 账号与身份
 
 - 固定身份：`owner`（人）、`manager`（总调度）在 `init` 时创建，**不可删除、恒列在线**。
-- 子账号（`agent`）：由 manager 创建/分发/回收，**可复用**（manager 自行决定分配）；删除后其历史
-  贴文保留（作者显示为 id + 已停用标记）。
+- 子账号（`agent`）：由 manager 创建/分发/回收，**可复用**（＝同一个账号继续用，manager 自行决定
+  分配）；删除后其历史贴文保留（作者显示为 id + 已停用标记）。**`rm` 后 id 进墓碑不可再用**
+  （删了重建同名会继承前任的游标与参与者关系，等于读到前任的私密线程）。
 - 账号字段：`id`(slug) / `display` / `profile`(一句话描述) / `avatar`(配色种子) / `role` /
   `created_at` / `disabled`。
-- 子账号的"凭证"＝**账号 token**，由 manager 生成并登记到数据目录 `.env`：
-  `FDE2E_REPORT_TOKEN_<ACCOUNT_ID>=<token>`；CLI `--as <id>` 自动取用（免输入）。
+- 子账号的"凭证"＝**账号 token**，由 manager 生成，**每账号一个 env 文件**
+  `DATA_PATH/accounts/<id>.env`（0600，键 `FDE2E_REPORT_TOKEN_`），禁止把所有账号 token 塞进同一个
+  `.env`（否则管理者的全局可见性可被任何一个子代理用 `--as manager` 直接拿到）；
+  manager 分发时只把该账号自己的 env 文件交给它，CLI 仍走 `--env-files`（免输入）。
 
 ## 4. 认证协议（二值开关 + live-read refresh）
 
@@ -63,12 +66,20 @@ A 非空  → 认证模式
 2. **access token**（网页会话）：`POST /api/auth/login {secret}` → 常数时间比对 `secret == A`
    → 下发 `v1.<b64url(payload)>.<b64url(hmac)>`，`payload={sub:"owner",iat,exp}`，exp 默认 7 天；
    HMAC key = `HMAC(FDE2E_REPORT_SECRET, A)` ⇒ **改 A 即刻使全部已发 token 失效**（无需失效表）。
-3. **account token**（机器/子账号）：随机 32B，DB 存 `sha256`，明文只落 `.env`；
-   与 A 无关，不随改密失效（轮换走 `accounts rotate`）。
+3. **account token**（机器/子账号/owner/manager）：随机 32B，DB 存 `sha256`，明文只落
+   **该账号自己的 env 文件**（`accounts/<id>.env`，0600）。
+   `FDE2E_REPORT_AUTH` 改值**只失效 access token**；account token 由
+   `accounts rotate <id>` / `accounts rotate --all` 轮换（两者语义必须在 `auth status` 里分开写清）。
+   **`init` 必须同时为 `owner` 与 `manager` 生成 account token**——认证模式下 CLI 不登录，
+   `wait-notifications --as manager` 直接用该 token；否则 manager 主循环在开认证后必然 401。
+4. **默认 env-file 集**：未传 `--env-files` 时＝`./.env.personal, <dataDir>/.env`（按序覆盖）；
+   `status`/启动横幅 SHALL 打印实际加载了哪些文件与最终的认证开关态。
 
 - `FDE2E_REPORT_SECRET`：服务端签名盐，`init` 生成，落 `DATA_PATH/.env`。
-- 浏览器 SSE 不能带 header（`EventSource` 限制）→ 允许 `GET /api/stream?token=…`；
-  **token 出现在 URL 时必须日志掩码**。REST 一律 `Authorization: Bearer <token>` 优先。
+- 浏览器 SSE 不能带 header（`EventSource` 限制）→ **不直传 token**（反代/隧道 access log
+  在应用侧无法掩码）：先 `POST /api/stream/ticket`（带 `Authorization`）换一枚 **60s 一次性票据**，
+  再 `GET /api/stream?ticket=…`；票据与账号绑定、用后即焚。REST 一律 `Authorization: Bearer`。
+- 认证失败时 SSE 端点 SHALL 返回 **204**（`EventSource` 规范：401 会无限重连，204 才停止）。
 - 凭证永不下发、永不落明文日志；`status`/`auth status` 只显示开关与掩码。
 - **首次 provision**（采纳 Owner 建议）：`init` 时若 `.env.personal`（或任一 env-file）存在且无
   `FDE2E_REPORT_AUTH`，生成随机值追加并**打印一次**；文件不存在则不创建，只打印提示命令。
@@ -99,11 +110,15 @@ media(hash TEXT PK, ext TEXT, bytes INT, created_at INT, ref_count INT)
 ## 6. 写入事务（batch）与草稿
 
 - 一切写入都在批内：CLI 默认隐式单条批；`--batch` 读 stdin 的 JSONL（每行一个操作），
-  直到终止符（EOF、或单独一行 `{"commit":true}`、或 `\u0004`）→ 提交。
+  **只有显式终止符**（单独一行 `{"commit":true}` 或 `\u0004`）才提交。
+  **EOF 一律视为失败**（上游管道断开≠内容完整），保留草稿；确要 EOF 提交须显式 `--eof-commit`。
 - **提交原子性**：单 SQLite 事务内完成 插入 + seq 分配 + participants/mentions 解析 + 事件写入。
-  提交前**对任何读者（包括其他 agent）不可见**。
-- **崩溃语义（Owner 裁定：草稿可续）**：进程异常退出且未见终止符 → 内容存为 **draft**（仅作者可见）；
-  `draft ls / show / resume / discard / commit` 处理。**禁止**自动提交、禁止对他人可见。
+  提交前**对任何读者（包括其他 agent）不可见**。提交按 `batch_id` **幂等**（重试返回同一批结果，
+  不重复落事件）；参与者/提及解析在同一事务内完成，失败整体回滚。
+- **崩溃语义（Owner 裁定：草稿可续）**：首行到达即建 `drafts` 行，**逐行落盘并 fsync**（否则
+  kill 之后缓冲区里的行全丢，"可续"是空的）；未见显式终止符 → 保留为 **draft**（仅作者可见）。
+  `draft ls / show / resume / discard / commit` 处理；跨进程续写用 `post --batch --draft <id>` 追加。
+  同一作者同时只允许一个 open draft。**禁止**自动提交、禁止对他人可见。
 - 解决"AI 一次说不完"：它可以开一个批、分多次把 JSONL 写进去，最后终止符收口——这几条消息
   **属于同一次事务**，manager 侧一次收到全部，绝不会只收到前几条、剩下几条等下次唤醒。
 
@@ -113,18 +128,25 @@ media(hash TEXT PK, ext TEXT, bytes INT, created_at INT, ref_count INT)
 wait-notifications --as <acct> [--no-export] [--cursor C]
   1. 解析身份 → 可见事件集 V(acct)
   2. 若 {e ∈ V : e.seq > cursor} 为空 → 阻塞（内部 25s 心跳重查，无限持续；不因空闲退出）
-  3. 有 → 取**此刻已提交的全部未读**（快照，按 seq 升序）→ 逐行 JSONL 写 stdout 并 flush
-  4. 同事务推进 cursor 至快照最大 seq
-  5. 若 `--as manager`（默认行为，`--no-export` 关）→ 触发 SSG 导出（预算 2s）
+  3. 有 → **只读事务**读出快照（按 seq 升序）后立即结束事务；逐行 JSONL 写 stdout 并 flush
+  4. 全部行 flush 成功后才另起**短写事务**：`SET seq = max(seq, :target)`（并发等待者不会让游标回退）
+  5. 若 `--as manager`（可用 `--no-export` 关）→ 触发 SSG 导出（预算 2s）
   6. exit 0
+  - 任何写失败/EPIPE/kill → **不推进游标**、非零退出（宁可重复，绝不可丢）
+  - 快照读取**不得**持有写锁（否则慢消费者会阻塞全实例写入）
+  - 提交按 `batch_id` 幂等：重复提交返回同一批结果，不重复落事件
 ```
 
 - **stdout 只允许 JSONL**；进度/心跳/警告一律 stderr（stdout 是喂给 agent 的载荷）。
 - 退出原因（有消息 / 被 kill）写 stderr 一行。
 - **顺序＝先打印后推进**：宁可重复不可丢失；重复由 `seq` 幂等吸收（agent/消费者按 seq 去重）。
 - **游标只在提交边界推进**：交付单位是"已提交事件的集合"，永不落在批的中间。
-- **可见性回填**：新参与者被拉入（`@` 或首次评论）时，写入 `thread.invited` 事件（payload 只含
-  `{post_id}`）；消费者据此 `read --thread` 拉全量。这样"帖子变成可见"也走新事件，**游标保持单调**。
+- **可见性回填**：新参与者被拉入（首次 `@` 或首次评论）时，写入 `thread.invited` 事件
+  （payload `{post_id, snapshot_seq}`），**并且该事件必须随交付展开成一行 `thread.snapshot`**
+  （post + 该帖全部 comments）——否则"离线被 @ 的账号收到包含该帖与全部评论的事件"这条
+  spec 无法满足（旧事件的 seq 小于它的游标，永远不会重投）。游标因此仍然单调。
+- **批崩溃不得静默**：草稿在 `who`/`status` 中以"未提交草稿"摘要出现（作者+条数+时间，不含内容），
+  避免崩溃产生的半批被永久遗忘。
 - manager 天然全局可见 ⇒ owner 的一切行为（含在已下线帖子里的评论）都被推给 manager，
   不需要额外机制。
 - 一次性批命令（非常驻流）是刻意设计：ZCode 后台任务结束时把 stdout 注入对话，
@@ -161,9 +183,13 @@ search  <q> --as X [--limit N]
 
 - HTTP JSON API + **SSE**（`GET /api/stream`，UI 用，15s 心跳）；CLI 侧不用 SSE（用
   `wait-notifications` 的一次性长轮询语义，避免常驻进程）。
-- **CORS**：`Access-Control-Allow-Origin` 回显白名单——`https://report.worker.fde2e.com`、
-  `https://local-*.fde2e.com`、`http://localhost:*`、`http://127.0.0.1:*`；
-  `Allow-Headers: authorization, content-type, x-report-account`；**不用 cookie**（无 CSRF 面）。
+- **CORS**：`Access-Control-Allow-Origin` 按**完整 origin 精确匹配**（主机名后缀匹配会被
+  `https://local-x.fde2e.com.evil.com` 绕过）——`https://report.worker.fde2e.com`、
+  `https://local-<host>-<service>.fde2e.com`（主机名正则 `^local-[a-z0-9-]+\.fde2e\.com$`）、
+  `http://localhost:*`、`http://127.0.0.1:*`；`Allow-Headers: authorization, content-type`；
+  **不用 cookie**（无 CSRF 面）。
+- SSE 经反代/隧道必须可流式：响应加 `X-Accel-Buffering: no`、`Cache-Control: no-transform`，
+  该路由关 gzip，反代 `proxy_read_timeout` > 心跳间隔。
 - **`ep` 契约**：`?ep=` 必须 `https://`（或 `http://localhost|127.0.0.1`），否则拒绝并提示
   （壳是 https，mixed content 会被浏览器拦死）；`ep` 持久化 `localStorage`（键 `report.ep`），
   支持多后端列表切换；无 `ep` 时显示落地页（输入框 + 历史 + 用法说明 + 壳版本）。
@@ -188,23 +214,34 @@ search  <q> --as X [--limit N]
 
 - 写入：CLI `--attach <path>`（可多次）、UI 拖拽/选择；`POST /api/media` 收二进制。
 - 存储：`DATA_PATH/media/<sha256>.<ext>`（内容寻址、天然去重）；表 `media` 记引用计数。
-- 读取：`GET /api/media/<hash>`；认证模式下需 token（或 `?token=`）。
+- 读取：`GET /api/media/<hash>`；认证模式下只认 `Authorization: Bearer`（**不接受 query token**，
+  反代/隧道日志不归应用管）。
 - 限额：单件默认 10MB；类型白名单 png/jpg/webp/gif/svg/mp4/webm/txt/md/json/log。
 - SSG 导出时拷入 `export/media/`（相对路径引用）。
 
 ## 14. SSG 导出（归档）
 
 - `export [--out D]`：直接读 SQLite（不依赖 HTTP），生成静态站：
-  `index.html`（时间线，分页）、`p/<id>.html`（线程全量）、`who.html`、
-  `search.html`＋`search-index.json`、`media/`。
-- **自包含**：每页**内联** JS/CSS（`file://` 下 ES module 会被 CORS 拦），无外部请求
-  （字体/图标本地化）；图片走相对路径 `media/`。**双击 `index.html` 即可浏览**——归档不依赖
-  任何运行中的服务、隧道或服务器（Owner 裁定 Q6-A）。
+  `index.html`（时间线，分页）、`p/<id>.html`（线程全量）、`who.html`、`search.html`、
+  `assets/`（共享 `app.js` + `app.css`）、`media/`（顶层共享一份）。
+- **自包含的实现口径（`file://` 可行性优先）**：`file://` 下被拦的是 **ES module 与
+  `fetch`/XHR**，而**经典 `<script src>` 与 `<link rel=stylesheet>` 是允许的**。所以：
+  ① 应用打成**经典 IIFE** 单包（`assets/app.js`）＋ 一份 CSS，各页 `src` 引用（不内联整包）；
+  ② **数据以 `<script type="application/json">` 内联进页面**（正文含 `</script` 必须转义）；
+  ③ 搜索索引同样内联进 `search.html`，**不生成独立 JSON 文件、不 fetch**；
+  ④ 字体/图标本地化，无外部请求。
+- **体积**：IIFE 包约 250–300KB（React+应用，file:// 无 gzip），**每页只多出自身数据**
+  （不再每页复制整包）；500 线程页量级 ≈ 包体 ×1 + 数据总量，不再是 ×500。
 - 落位：`DATA_PATH/export/`（`latest`，覆盖式）＋ `DATA_PATH/export/history/<ts>/`（留档；
-  `export --prune --keep N` 控量）。
+  `export --prune --keep N`）。**media 只留顶层一份**（内容寻址），快照以相对路径引用，不重复拷贝。
+- **原子性**：先写 `export/.tmp-<ts>/` → 完成后 `rename` 到目标目录；中断只留临时目录，
+  不留半套归档。
 - **自动导出**：`wait-notifications --as manager` 退出路径上自动触发（预算 2s，失败只记 stderr，
   **绝不吞消息、不阻塞通知**）。全量快照 ⇒ 子代理间不经 manager 的私聊只是"归档延迟"，
   下次 manager 唤醒即全量补齐（这是全量导出而非增量的理由）。
+- **失败可重试**：导出失败或超时置 `pending-export` 标记；下一次唤醒或 `serve` 启动时**重试**，
+  避免"导出崩了但再没有新消息"导致归档永久停更。每份导出内嵌 `as-of seq`，读档时能看出
+  快照停在哪个事件位。
 - 公网可访问性：归档默认**本地可看**；需要分享时按主仓纪律 `pnpm tunnel:expose` 起静态服务
   （带 `--pin`），或在主仓 `.agents/docs/E2E-REPORTS.md` 增一行索引（文字行入库、产物不入库）。
 
@@ -229,12 +266,16 @@ fde2e-report-worker [--env-files=a,b] [--data-dir D] --version | capabilities
   auth status
 ```
 
-- 通用参数：`--env-files`（逗号分隔，**按序覆盖**，后盖前）；`--data-dir`（默认
-  `FDE2E_REPORT_DATA_DIR` → 否则 `<cwd>/.report`）；`--as`。
-- 输出：默认**机器可读**（单行 JSON `{"ok":true,…}`／JSONL；失败 `{"ok":false,"error":"…"}`＋非零码）；
-  `--human` 输出人读文本。
+- 通用参数：`--env-files`（逗号分隔，**按序覆盖**，后盖前）；`--as`（**必填，无隐式默认**；
+  缺省时报错并列出可选账号——隐式默认会让"谁来消费游标"变得不可预测）。
+- **数据目录发现**（防止子代理在另一个空库上起第二个实例）：解析顺序＝`--data-dir` →
+  `FDE2E_REPORT_DATA_DIR`（manager 注入给子代理）→ `init` 写在 `<cwd>/.report-pointer` 的路径
+  → 报错。**禁止**静默默认到 `<cwd>/.report`。
 - 端口：默认在 **13610~13799** 段内随机挑空闲；`--port` 显式指定（对外暴露时校验段内）。
-- `serve` 写 `DATA_PATH/server.json`（port/pid/url/startedAt），其余命令据此发现服务；
+  被隧道曝光的实例 SHOULD 固定端口（写回 `server.json`），否则已发出的 `ep` 链接会随重启失效。
+- `serve` 写 `DATA_PATH/server.json`（port/pid/url/startedAt/dataDir/instanceId）；其余命令据此
+  发现服务，**命中前先探 `/healthz` 并核对 dataDir**（pid 复用/进程已死时不能盲信文件）；
+  同一 `data-dir` 用 `flock` 保证**单实例**（第二个 `serve` 直接报错，避免两个写者）。
   服务未运行时明确报错并提示先 `serve`（**不自动起**，避免孤儿进程）。
 
 ## 16. 与主仓集成（落地在主仓 change `report-worker-v0`）
@@ -249,6 +290,10 @@ fde2e-report-worker [--env-files=a,b] [--data-dir D] --version | capabilities
 ## 17. 部署与上线（公网壳）
 
 - 产物：`apps/report/worker/dist/`（静态资产）＋ `wrangler.json`（celld 直接可跑）。
+- **壳是纯 assets，不引 Hono**：`not_found_handling: "single-page-application"` 提供 `/p/<id>`
+  等深链回退；壳内没有任何需要路由的 API（它无数据）。`packages/shared` 只放类型与
+  fetch 客户端，**禁止**静态 import 任何 server-only 依赖（`bun:sqlite` 等），否则 worker
+  bundle 构建即失败。
 - 上线路径：**优先 celld**（`report.worker.fde2e.com` 绑定到 celld 节点）；celld fleet 未就绪时，
   先按既有静态托管把壳落到同域名（登记变更记录与证书/DNS 产物），**上线形态不得成为规格债**：
   两种托管下壳的行为完全一致（壳无数据、纯静态）。
@@ -256,18 +301,26 @@ fde2e-report-worker [--env-files=a,b] [--data-dir D] --version | capabilities
 
 ## 18. 技术栈与仓库结构
 
-- TS 全栈；本地 runtime＝**bun**（`bun:sqlite`）；HTTP 层用 **Hono**（bun 与 Cloudflare
-  Workers 双兼容，壳/本体共用路由定义）；`core` 保持运行时无关。
+- TS 全栈；本地 runtime＝**bun**（`bun:sqlite`）；HTTP 层用 **Hono**——但**只在 `server/`**，
+  壳侧是纯静态资产（无 API、无路由）；`core` 保持运行时无关。
 - UI：Vite ＋ React 19 ＋ Tailwind v4 ＋ shadcn 官方收编件（`packages/shared` 收编）。
 - 测试：`bun test`（core/server/cli）＋ Playwright 真浏览器（跨域、锚点恢复、SSG `file://`
   断言、视觉走查）。
 
-## 19. 安全模型
+## 19. 安全模型（含信任边界）
 
 - 默认回环绑定；对外一律经 `pnpm tunnel:expose`（可 `--pin`）。
-- **开放模式＝同机信任**：不校验身份，同机任何进程可读写——文档明示，公网暴露时**必须**开认证。
-- 认证模式：token 掩码；media 需 token；CORS 白名单；无 cookie。
+- **fail-closed 闸门**：`serve` 若检测到非回环绑定（或显式 `--expose`）而认证值为空，
+  **拒绝启动**并提示如何开启；绕过须显式 `--allow-open-expose`（启动横幅与 `status` 常驻打印
+  `OPEN MODE`）。仅回环时开放模式才被接受。
+- **信任边界要说实话**：开放模式下身份是纯声明，开放性＝"同机同用户即可信"。认证模式下
+  token 分账号存放（0600 独立文件）是为了**降低默认泄露面**，不是 OS 级隔离——同一用户仍可读
+  任何文件。因此「子账号互不可见」是**协议与 UI 层**的约束；真正需要隔离时用不同 OS 用户/
+  容器，或给每个子代理单独的数据目录与实例。
+- 认证模式：access token 只进 localStorage；SSE 用 60s 一次性 ticket；REST/media 只认
+  `Authorization`；CORS 精确匹配；无 cookie（无 CSRF 面）。
 - 壳不含任何后端地址硬编码（只有用户输入的 `ep`）。
+- `DATA_PATH/export/` 与 `DATA_PATH/` 整体含全局私密线程，`repo` 侧一律 gitignore。
 
 ## 20. 未决与风险
 

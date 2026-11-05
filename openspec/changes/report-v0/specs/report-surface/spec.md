@@ -4,21 +4,40 @@
 
 ### Requirement: 本地服务生命周期
 `serve` SHALL 在前台运行并输出 `REPORT_URL=` 首行；SHALL 支持 `--daemon/--stop/--status`；
-SHALL 在数据目录写 `server.json`（port/pid/url/startedAt）。其余 CLI 命令 SHALL 通过
-`server.json` 发现服务；服务未运行时 SHALL 明确报错并提示先启动，不得静默自动起进程。
+SHALL 在数据目录写 `server.json`（port/pid/url/startedAt/dataDir/instanceId）。
+数据目录解析顺序 SHALL 为：`--data-dir` → `FDE2E_REPORT_DATA_DIR` → `init` 写的项目指针文件
+→ 报错（**禁止**静默默认到 `<cwd>/.report`）。其余 CLI 命令 SHALL 通过 `server.json` 发现服务，
+**命中前先探 `/healthz` 并核对 dataDir**；服务未运行时 SHALL 明确报错并提示先启动，不得静默
+自动起进程。同一 data-dir SHALL 以 `flock` 保证**单实例**（第二个 `serve` 直接失败）。
 
 #### Scenario: 多命令共享一个服务
 - **WHEN** manager 起服务后依次在多个终端执行 `post`、`read`、`wait-notifications`
 - **THEN** 全部命令命中同一实例，无需重复指定端口或数据目录
 
+#### Scenario: 子代理漏参不另起库
+- **WHEN** 子代理未传 `--data-dir`
+- **THEN** 它通过 `FDE2E_REPORT_DATA_DIR` 或项目指针文件解析到 manager 的同一实例；
+  解析不到时报错，不会在空目录上悄悄起第二个服务
+
+#### Scenario: 死端口不被盲信
+- **WHEN** `server.json` 指向的进程已被 kill（或 pid 被复用）
+- **THEN** `/healthz` 探测失败，命令报"服务不可用"而不是把请求发给错误的进程
+
 ### Requirement: HTTP API 与跨域
 服务 SHALL 提供 JSON API（timeline/thread/post/comment/media/who/search/health）与 SSE
-`/api/stream`（15s 心跳）；SHALL 按白名单回显 CORS（`report.worker.fde2e.com`、
-`local-*.fde2e.com`、`localhost`/`127.0.0.1` 任意端口）；SHALL NOT 使用 Cookie。
+`/api/stream`（15s 心跳）；SSE 鉴权 SHALL 用 `POST /api/stream/ticket` 换 **60s 一次性票据**
+（SHALL NOT 用 `?token=`）；认证失败时 SSE SHALL 返回 **204**（停止 EventSource 无限重连）。
+CORS SHALL 按**完整 origin** 精确匹配（`report.worker.fde2e.com`、
+`^local-[a-z0-9-]+\.fde2e\.com$`、`localhost`/`127.0.0.1` 任意端口），SHALL NOT 使用 Cookie；
+媒体读取 SHALL 只认 `Authorization`。SSE 响应 SHALL 带 `X-Accel-Buffering: no` 且该路由关 gzip。
 
 #### Scenario: 公网壳跨域调用本地后端
 - **WHEN** 浏览器在 `https://report.worker.fde2e.com` 页面里请求 `ep` 指向的本地后端
 - **THEN** 预检通过、请求被接受、SSE 连接建立并收到心跳
+
+#### Scenario: 相似域名不可绕过
+- **WHEN** 请求来自 `https://local-x.fde2e.com.evil.com`
+- **THEN** 该 origin 不被回显、浏览器侧请求失败
 
 ### Requirement: 公网壳与 ep 契约
 壳 SHALL 不持任何数据、不硬编码后端；`?ep=` SHALL 只接受 `https://`（或
@@ -56,14 +75,25 @@ SHALL 支持缩略图与 lightbox；单件默认上限 10MB，类型白名单可
 - **THEN** 两条附件入库并按序展示，时间线/线程页/SSG 导出中均可见
 
 ### Requirement: SSG 自包含导出
-`export` SHALL 直接读数据库生成静态站（时间线分页 / 线程页 / who / 搜索 + 索引 + 媒体），
-每页 SHALL 内联 JS/CSS 且无外部请求，**SHALL 可通过 `file://` 双击浏览（含搜索）**；
-产物 SHALL 落 `DATA_PATH/export/`（latest 覆盖）并留档 `history/<ts>/`，支持 `--prune --keep N`。
+`export` SHALL 直接读数据库生成静态站（时间线分页 / 线程页 / who / 搜索 / 媒体），
+**SHALL 可通过 `file://` 双击浏览（含搜索）**。实现口径 SHALL 为：应用打成**经典 IIFE**
+单包（`assets/app.js`）＋ 一份 CSS，各页以 `src`/`href` 相对引用；数据与搜索索引 SHALL
+**内联为 `<script type="application/json">`**（正文中的 `</script` 必须转义）；
+SHALL NOT 使用 ES module、SHALL NOT 用 `fetch`/XHR 取数据；媒体 SHALL 在导出根共享一份
+（内容寻址，不按快照重复拷贝）。产物 SHALL 先写 `.tmp-<ts>/` 再原子 `rename` 到
+`DATA_PATH/export/`（latest 覆盖）并留档 `history/<ts>/`，支持 `--prune --keep N`；
+每份导出 SHALL 内嵌 `as-of seq`。
 
 #### Scenario: 断网归档
 - **WHEN** 服务已停止、机器断网，用户双击 `export/index.html`
 - **THEN** 时间线与线程页可正常浏览、搜索可用、图片加载正常，无任何请求失败提示
 
+#### Scenario: 导出中断不留半套
+- **WHEN** 导出进行到一半被 kill
+- **THEN** 目标目录仍是上一次完整快照（或不存在），临时目录可被下次导出清理，
+  不会出现"新 index 配旧线程页"的混合归档
+
 #### Scenario: 自动导出不阻断通知
 - **WHEN** manager 的 `wait-notifications` 醒来并触发导出，而导出目录被设为只读
-- **THEN** 消息照常交付到 stdout、游标照常推进、退出码为 0，stderr 记一行导出失败原因
+- **THEN** 消息照常交付到 stdout、游标照常推进、退出码为 0，stderr 记一行导出失败原因，
+  并置 `pending-export` 供下次唤醒或服务启动时重试
