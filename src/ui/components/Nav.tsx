@@ -168,10 +168,13 @@ export function MobileNav() {
   const active = useActiveKey();
   const { unread } = useNotifications();
   const { staticMode } = useConnection();
+  // 底部导航是壳的 flex 子元素（不是 position: fixed）：祖先的 transform /
+  // 转场快照都不会把它挤出视口，首屏与路由切换始终走同一套布局。
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-40 flex h-14 items-stretch border-t border-border/60 bg-background/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden"
+      className="flex h-[calc(3.5rem+env(safe-area-inset-bottom))] shrink-0 items-stretch border-t border-border/60 bg-background/90 backdrop-blur-md lg:hidden"
       aria-label="主导航"
+      data-testid="mobile-nav"
       style={{ viewTransitionName: "bottom-nav" }}
     >
       {ITEMS.map((item) => {
@@ -185,7 +188,7 @@ export function MobileNav() {
             aria-current={isActive ? "page" : undefined}
             aria-disabled={staticMode && item.key === "compose" ? true : undefined}
             className={cn(
-              "relative flex h-auto flex-1 flex-col items-center justify-center gap-0.5 rounded-none px-0 text-[11px] font-normal transition-colors hover:bg-transparent dark:hover:bg-transparent",
+              "relative flex h-full flex-1 flex-col items-center justify-center gap-0.5 rounded-none px-0 text-[11px] font-normal transition-colors hover:bg-transparent dark:hover:bg-transparent",
               isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
               staticMode && item.key === "compose" && "opacity-60",
             )}

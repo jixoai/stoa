@@ -6,7 +6,7 @@
  * - 页面打开期间用 SSE `author=<acct>` **技术订阅**该成员事件：新帖即时进入时间线，
  *   断线重连按 after 游标补拉、按 id 去重。浏览不产生 follows 边，关注只有按钮。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Loader2Icon,
   RadioIcon,
@@ -21,12 +21,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/PageHeader";
+import { ProfileCardSkeleton } from "@/components/Skeletons";
 import { toast } from "@/components/ui/toast";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { useConnection } from "@/state/connection";
 import { useAuthorStream } from "@/state/author-stream";
 import { useHomeFeeds, usePostFeed } from "@/state/feed";
+import {
+  getCachedAuthorRoots,
+  getCachedIdentity,
+  getCachedProfile,
+  rememberProfile,
+} from "@/state/cache";
 import { goBack, routeSource, useRoute } from "@/lib/router";
 import { toastReadOnly } from "@/lib/readonly";
 import { dateTimeShort, roleLabel, timeShort } from "@/lib/format";
@@ -43,10 +50,12 @@ export function ProfilePage() {
   const route = useRoute();
   const account = route.name === "profile" ? route.account : "";
   const source = routeSource(route);
-  const { client, account: me, staticMode } = useConnection();
+  const { client, account: me, staticMode, who, accounts } = useConnection();
   const { following: followingFeed } = useHomeFeeds();
 
-  const [profile, setProfile] = useState<ProfileAccountView | null>(null);
+  const [profile, setProfile] = useState<ProfileAccountView | null>(() =>
+    account ? getCachedProfile(account) : null,
+  );
   const [profileError, setProfileError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [followBusy, setFollowBusy] = useState(false);
@@ -57,6 +66,7 @@ export function ProfilePage() {
       try {
         const page = await client.profile(account, query);
         setProfile(page.account);
+        rememberProfile(page.account);
         setProfileError(null);
         return {
           posts: page.posts,
@@ -74,7 +84,17 @@ export function ProfilePage() {
 
   // `account` becomes "" for one render while the route is leaving the member
   // page; a null loader prevents a stray `/api/profile/` request in that tick.
-  const feed = usePostFeed(account ? loader : null, { resetKey: account, realtime: false });
+  // 首帧种子：该成员已见过的根帖（时间线里出现过的），配合 cacheKey 写回快照。
+  const seedPosts = useMemo(
+    () => (account ? getCachedAuthorRoots(account) : []),
+    [account],
+  );
+  const feed = usePostFeed(account ? loader : null, {
+    resetKey: account,
+    realtime: false,
+    initialPosts: seedPosts,
+    cacheKey: account ? `profile:${account}` : undefined,
+  });
 
   // SSE author filter: technical live subscription for this member page only.
   const streamState = useAuthorStream(account, () => feed.refreshNew());
@@ -84,13 +104,33 @@ export function ProfilePage() {
   }, [streamState, refreshNew]);
 
   useEffect(() => {
-    setProfile(null);
+    setProfile(account ? getCachedProfile(account) : null);
     setProfileError(null);
     setActionError(null);
   }, [account]);
 
   const isSelf = Boolean(me && me.id === account);
-  const following = profile?.following ?? false;
+  // 首帧身份：完整资料 > 已见身份缓存（帖子作者/推荐成员/上次资料）> presence/账号表。
+  // 头像、名字、简介、在线态、粉丝数都能在第一帧给出；未知派生字段才用骨架占位。
+  const knownWho = useMemo(() => who.find((row) => row.id === account) ?? null, [who, account]);
+  const knownAccount = useMemo(
+    () => accounts.find((row) => row.id === account) ?? null,
+    [accounts, account],
+  );
+  const knownIdentity = useMemo(
+    () => (account ? getCachedIdentity(account) : null),
+    [account],
+  );
+  const identity = profile ?? knownIdentity ?? knownWho ?? knownAccount;
+  const presence =
+    profile ??
+    (knownIdentity?.online !== undefined
+      ? { online: knownIdentity.online, last_seen: knownIdentity.lastSeen ?? null }
+      : knownWho);
+  const following = profile?.following ?? knownIdentity?.following ?? false;
+  const followers = profile?.follower_count ?? knownIdentity?.followers ?? null;
+  const joinedAt =
+    profile?.created_at ?? knownIdentity?.createdAt ?? knownAccount?.created_at ?? 0;
 
   const toggleFollow = async () => {
     if (staticMode) {
@@ -139,31 +179,31 @@ export function ProfilePage() {
         </div>
       ) : null}
 
-      {profile ? (
+      {identity ? (
         <section
           data-testid="profile-card"
           className="border-b border-border/60 px-4 pb-4 pt-3"
         >
           <div className="flex items-start gap-3">
             <AuthorAvatar
-              account={profile}
-              fallbackId={profile.id}
+              account={identity}
+              fallbackId={identity.id}
               size="large"
-              sharedId={`account-${profile.id}`}
+              sharedId={`account-${identity.id}`}
             />
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <h2 className="truncate text-lg font-semibold leading-tight">
-                    {profile.display}
+                    {identity.display}
                   </h2>
-                  <p className="truncate text-sm text-muted-foreground">@{profile.id}</p>
+                  <p className="truncate text-sm text-muted-foreground">@{identity.id}</p>
                 </div>
                 {isSelf ? (
                   <Badge variant="secondary" className="shrink-0">
                     这是你
                   </Badge>
-                ) : (
+                ) : profile ? (
                   <Button
                     type="button"
                     size="sm"
@@ -192,27 +232,35 @@ export function ProfilePage() {
                     )}
                     {following ? "已关注" : "关注"}
                   </Button>
+                ) : (
+                  <Skeleton className="h-8 w-[74px] shrink-0 rounded-md" />
                 )}
               </div>
 
               <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                 <Badge variant="secondary" className="h-5 px-1.5">
-                  {roleLabel(profile.role)}
+                  {roleLabel(identity.role)}
                 </Badge>
-                <span className="inline-flex items-center gap-1">
-                  <span
-                    className={cn(
-                      "size-1.5 rounded-full",
-                      profile.online ? "bg-success" : "bg-muted-foreground/40",
-                    )}
-                  />
-                  {profile.online ? "在线" : "离线"}
-                </span>
-                {!profile.online && profile.last_seen ? (
-                  <span title={new Date(profile.last_seen).toLocaleString("zh-CN")}>
-                    最近活跃 {timeShort(profile.last_seen)}
-                  </span>
-                ) : null}
+                {presence ? (
+                  <>
+                    <span className="inline-flex items-center gap-1">
+                      <span
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          presence.online ? "bg-success" : "bg-muted-foreground/40",
+                        )}
+                      />
+                      {presence.online ? "在线" : "离线"}
+                    </span>
+                    {!presence.online && presence.last_seen ? (
+                      <span title={new Date(presence.last_seen).toLocaleString("zh-CN")}>
+                        最近活跃 {timeShort(presence.last_seen)}
+                      </span>
+                    ) : null}
+                  </>
+                ) : (
+                  <Skeleton className="h-3 w-16" />
+                )}
                 <span
                   className="inline-flex items-center gap-1"
                   title={`事件流订阅：${STREAM_LABEL[streamState]}`}
@@ -228,26 +276,31 @@ export function ProfilePage() {
                 </span>
               </div>
 
-              {profile.profile ? (
-                <p className="text-sm leading-relaxed">{profile.profile}</p>
+              {identity.profile ? (
+                <p className="text-sm leading-relaxed">{identity.profile}</p>
               ) : (
                 <p className="text-sm text-muted-foreground">（未填写简介）</p>
               )}
 
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                <span data-testid="follower-count">
-                  <strong className="font-semibold text-foreground">{profile.follower_count}</strong>{" "}
-                  粉丝
-                </span>
-                <span>
-                  <strong className="font-semibold text-foreground">
-                    {profile.following_count}
-                  </strong>{" "}
-                  关注
-                </span>
-                {profile.created_at > 0 ? (
-                  <span>加入于 {dateTimeShort(profile.created_at)}</span>
-                ) : null}
+                {followers !== null ? (
+                  <span data-testid="follower-count">
+                    <strong className="font-semibold text-foreground">{followers}</strong> 粉丝
+                  </span>
+                ) : (
+                  <Skeleton className="h-3 w-14" />
+                )}
+                {profile ? (
+                  <span>
+                    <strong className="font-semibold text-foreground">
+                      {profile.following_count}
+                    </strong>{" "}
+                    关注
+                  </span>
+                ) : (
+                  <Skeleton className="h-3 w-14" />
+                )}
+                {joinedAt > 0 ? <span>加入于 {dateTimeShort(joinedAt)}</span> : null}
               </div>
             </div>
           </div>
@@ -259,16 +312,7 @@ export function ProfilePage() {
           ) : null}
         </section>
       ) : !profileError ? (
-        <section className="border-b border-border/60 p-4">
-          <div className="flex items-start gap-3">
-            <Skeleton className="size-16 rounded-full" />
-            <div className="flex flex-1 flex-col gap-2">
-              <Skeleton className="h-5 w-40" />
-              <Skeleton className="h-4 w-24" />
-              <Skeleton className="h-4 w-full" />
-            </div>
-          </div>
-        </section>
+        <ProfileCardSkeleton />
       ) : null}
     </>
   );

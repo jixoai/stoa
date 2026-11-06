@@ -19,6 +19,7 @@ import {
 } from "react";
 import type { PostView } from "@core/types";
 import { postCursor } from "@/lib/cursor";
+import { rememberPosts, readFeedCache, writeFeedCache } from "@/state/cache";
 import { useConnection } from "@/state/connection";
 
 export interface TimelineAnchor {
@@ -75,6 +76,10 @@ export interface UsePostFeedOptions {
   /** Change this to reset all state and reload (e.g. member account id). */
   resetKey?: string;
   limit?: number;
+  /** 首帧种子（已在别处见过的帖子）；缺省时按 `cacheKey` 读上次快照。 */
+  initialPosts?: PostView[];
+  /** 时间线快照键：加载成功后写回，下次进入同一路由/标签/成员页立即排版。 */
+  cacheKey?: string;
 }
 
 const EMPTY_STATE: FeedState = {
@@ -88,6 +93,12 @@ const EMPTY_STATE: FeedState = {
   error: null,
   asOfSeq: 0,
 };
+
+/** 首帧种子：有已见数据时直接排版，`initialLoading` 仍为 true（网络结果会替换）。 */
+function seedState(seed: PostView[] | undefined): FeedState {
+  if (!seed || seed.length === 0) return EMPTY_STATE;
+  return { ...EMPTY_STATE, posts: mergePosts(seed) };
+}
 
 export function mergePosts(...groups: PostView[][]): PostView[] {
   const byId = new Map<string, PostView>();
@@ -108,11 +119,25 @@ export function usePostFeed(
   loader: FeedLoader | null,
   options: UsePostFeedOptions = {},
 ): FeedController {
-  const { realtime = true, autoLoad = true, resetKey = "", limit = 30 } = options;
+  const {
+    realtime = true,
+    autoLoad = true,
+    resetKey = "",
+    limit = 30,
+    initialPosts,
+    cacheKey,
+  } = options;
   const { subscribeEvents, sseState } = useConnection();
-  const [state, setState] = useState<FeedState>(EMPTY_STATE);
+  const [state, setState] = useState<FeedState>(() =>
+    seedState(initialPosts ?? (cacheKey ? readFeedCache(cacheKey) : [])),
+  );
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  const seedRef = useRef<PostView[] | undefined>(initialPosts);
+  seedRef.current = initialPosts;
+  const cacheKeyRef = useRef<string | undefined>(cacheKey);
+  cacheKeyRef.current = cacheKey;
 
   const loaderRef = useRef<FeedLoader | null>(loader);
   loaderRef.current = loader;
@@ -251,8 +276,18 @@ export function usePostFeed(
       window.clearTimeout(refreshTimer.current);
       refreshTimer.current = null;
     }
-    setState(EMPTY_STATE);
+    const key = cacheKeyRef.current;
+    setState(seedState(seedRef.current ?? (key ? readFeedCache(key) : [])));
   }, [resetKey]);
+
+  // 时间线快照写回：任何一批可见帖子（含 pending 吸收）都更新缓存，
+  // 下次进入同一路由/标签/成员页时首帧就有内容。
+  useEffect(() => {
+    if (state.posts.length === 0) return;
+    rememberPosts(state.posts);
+    const key = cacheKeyRef.current;
+    if (key) writeFeedCache(key, state.posts);
+  }, [state.posts]);
 
   // initial load (once per source)
   useEffect(() => {
@@ -349,9 +384,11 @@ export function HomeFeedsProvider({ children }: { children: ReactNode }) {
   const { client } = useConnection();
   const recommended = usePostFeed(
     client ? (query) => client.feed({ tab: "recommended", ...query }) : null,
+    { cacheKey: "home:recommended" },
   );
   const following = usePostFeed(
     client ? (query) => client.feed({ tab: "following", ...query }) : null,
+    { cacheKey: "home:following" },
   );
   const value = useMemo<HomeFeedsValue>(
     () => ({ recommended, following }),

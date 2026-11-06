@@ -18,10 +18,11 @@ import type { PostView } from "@core/types";
 import { ArrowUpIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { PostCard } from "@/components/PostCard";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
+import { ContentSwap } from "@/components/ContentSwap";
+import { PostListSkeleton } from "@/components/Skeletons";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useConnection } from "@/state/connection";
 import type { FeedController, TimelineAnchor } from "@/state/feed";
@@ -527,57 +528,50 @@ export function TimelineFeed({
         >
         {leading}
 
-        {showSkeleton ? (
-          <div className="flex flex-col gap-2 p-4">
-            {Array.from({ length: 6 }).map((_, index) => (
-              <div key={index} className="flex gap-3">
-                <Skeleton className="size-10 rounded-full" />
-                <div className="flex flex-1 flex-col gap-2">
-                  <Skeleton className="h-4 w-40" />
-                  <Skeleton className="h-4 w-full" />
-                  <Skeleton className="h-4 w-3/4" />
+        <ContentSwap
+          ready={!showSkeleton}
+          skeleton={<PostListSkeleton count={5} />}
+          testId="feed-swap"
+        >
+          {posts.length === 0 ? (
+            <Empty className="py-20">
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <RefreshCwIcon />
+                </EmptyMedia>
+                <EmptyTitle>{emptyTitle}</EmptyTitle>
+                <EmptyDescription>{emptyDescription}</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          ) : (
+            <div className="divide-y divide-border/60">
+              {posts.map((post, index) => (
+                <div key={post.id} className={flashIds.has(post.id) ? "report-row-in" : undefined}>
+                  <PostCard
+                    post={post}
+                    selected={index === selectedIndex}
+                    onOpen={openPost}
+                    onReply={replyPost}
+                    onQuote={quotePost}
+                  />
                 </div>
+              ))}
+              <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
+                {feed.loadingMore ? (
+                  <span className="flex items-center gap-2">
+                    <Spinner /> 加载更早的帖子…
+                  </span>
+                ) : feed.hasMore ? (
+                  <Button variant="ghost" size="sm" onClick={() => void loadMore()}>
+                    加载更早的帖子
+                  </Button>
+                ) : (
+                  "没有更多了"
+                )}
               </div>
-            ))}
-          </div>
-        ) : posts.length === 0 ? (
-          <Empty className="py-20">
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <RefreshCwIcon />
-              </EmptyMedia>
-              <EmptyTitle>{emptyTitle}</EmptyTitle>
-              <EmptyDescription>{emptyDescription}</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        ) : (
-          <div className="divide-y divide-border/60">
-            {posts.map((post, index) => (
-              <div key={post.id} className={flashIds.has(post.id) ? "report-row-in" : undefined}>
-                <PostCard
-                  post={post}
-                  selected={index === selectedIndex}
-                  onOpen={openPost}
-                  onReply={replyPost}
-                  onQuote={quotePost}
-                />
-              </div>
-            ))}
-            <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
-              {feed.loadingMore ? (
-                <span className="flex items-center gap-2">
-                  <Spinner /> 加载更早的帖子…
-                </span>
-              ) : feed.hasMore ? (
-                <Button variant="ghost" size="sm" onClick={() => void loadMore()}>
-                  加载更早的帖子
-                </Button>
-              ) : (
-                "没有更多了"
-              )}
             </div>
-          </div>
-        )}
+          )}
+        </ContentSwap>
 
         {feed.error ? (
           <div className="p-4">

@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { copyText, postLink } from "@/lib/copy";
 import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
+import { prefetchThread } from "@/state/cache";
 import { toastReadOnly } from "@/lib/readonly";
 
 export type PostVariant = "feed" | "focal" | "reply" | "ancestor";
@@ -64,7 +65,7 @@ export function PostCard({
   className,
   testId,
 }: PostCardProps) {
-  const { staticMode } = useConnection();
+  const { staticMode, client } = useConnection();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<number | null>(null);
@@ -185,6 +186,8 @@ export function PostCard({
         if ((event.target as HTMLElement).closest("a,button,input,textarea")) return;
         handleOpen();
       }}
+      onPointerEnter={() => prefetchThread(client, post.id)}
+      onPointerDown={() => prefetchThread(client, post.id)}
     >
       <div className="flex gap-3">
         <div className="shrink-0">

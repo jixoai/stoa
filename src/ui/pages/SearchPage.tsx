@@ -11,9 +11,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/PageHeader";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { PostCard } from "@/components/PostCard";
+import { PostListSkeleton } from "@/components/Skeletons";
 import { useConnection } from "@/state/connection";
 import { navigate, usePageRoute } from "@/lib/router";
 import { roleLabel } from "@/lib/format";
+import { prefetchProfile, rememberAuthors, rememberSuggested } from "@/state/cache";
 import type { SuggestedAccount, TrendingTag, WhoRow } from "@/lib/api";
 
 export function SearchPage() {
@@ -55,6 +57,7 @@ export function SearchPage() {
         if (!alive) return;
         setResults(posts);
         setMembers(accounts ?? []);
+        rememberAuthors(accounts ?? []);
         setSearched(routeQuery.trim());
       })
       .catch((err: Error) => {
@@ -79,6 +82,8 @@ export function SearchPage() {
         if (!alive) return;
         setTrending(tags);
         setSuggested(accounts);
+        // 推荐成员的身份立即进缓存：点进成员页时首帧就有真实头像/名字/粉丝数。
+        rememberSuggested(accounts);
       })
       .catch((err: Error) => {
         if (alive) setDiscoverError(err.message);
@@ -145,11 +150,7 @@ export function SearchPage() {
         ) : null}
 
         {loading ? (
-          <div className="flex flex-col gap-2 p-3">
-            {Array.from({ length: 4 }).map((_, index) => (
-              <Skeleton key={index} className="h-24 w-full rounded-xl" />
-            ))}
-          </div>
+          <PostListSkeleton count={3} />
         ) : !hasQuery ? (
           discoverLoading ? (
             <div className="flex flex-col gap-2 p-3">
@@ -224,6 +225,8 @@ export function SearchPage() {
                         data-testid={`suggested-member-${member.id}`}
                         aria-label={`打开 @${member.id} 的成员页`}
                         className="h-auto w-full justify-start gap-3 rounded-none px-4 py-2.5 text-left font-normal"
+                        onPointerEnter={() => prefetchProfile(client, member.id)}
+                        onPointerDown={() => prefetchProfile(client, member.id)}
                         onClick={() => navigate(`/u/${encodeURIComponent(member.id)}`)}
                       >
                         <AuthorAvatar
@@ -302,6 +305,8 @@ export function SearchPage() {
                       data-testid={`search-member-${member.id}`}
                       aria-label={`打开 @${member.id} 的成员页`}
                       className="h-auto w-full justify-start gap-3 rounded-none px-4 py-2.5 text-left font-normal"
+                      onPointerEnter={() => prefetchProfile(client, member.id)}
+                      onPointerDown={() => prefetchProfile(client, member.id)}
                       onClick={() => navigate(`/u/${encodeURIComponent(member.id)}`)}
                     >
                       <AuthorAvatar

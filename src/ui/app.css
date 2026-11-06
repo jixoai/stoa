@@ -139,9 +139,39 @@ html[data-vt="fade"]::view-transition-new(root) {
   .report-row-in {
     animation: report-row-in 200ms ease-out;
   }
+  /* 骨架 → 内容交接（design §3.2）：内容淡入 + 轻微上移，骨架（绝对定位覆盖）淡出；
+     高度由 ContentSwap 平滑过渡，路由完成后不再整体跳动。 */
+  @keyframes report-swap-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @keyframes report-swap-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+  .report-swap-in {
+    animation: report-swap-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .report-swap-out {
+    animation: report-swap-out 160ms ease-out forwards;
+  }
   @media (prefers-reduced-motion: reduce) {
-    .report-row-in {
+    .report-row-in,
+    .report-swap-in {
       animation: none;
+    }
+    .report-swap-out {
+      animation-duration: 1ms;
     }
   }
   /* 正文截断（feed 卡片 6 行；focal 永不截断） */

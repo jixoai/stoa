@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { useConnection } from "@/state/connection";
+import { prefetchProfile } from "@/state/cache";
 import { navigate } from "@/lib/router";
 import { roleLabel } from "@/lib/format";
 
@@ -30,7 +31,7 @@ export function WhoPanelContent({
   /** 移动端 sheet 用：点成员/连接动作前先收起面板。 */
   onNavigate?: () => void;
 }) {
-  const { who, account, ep, auth, sseState, sameOrigin, staticMode, snapshot, refreshWho, switchBackend } =
+  const { who, account, ep, auth, sseState, sameOrigin, staticMode, snapshot, refreshWho, switchBackend, client } =
     useConnection();
 
   const sorted = useMemo(() => {
@@ -199,6 +200,8 @@ export function WhoPanelContent({
                 data-testid={`member-row-${member.id}`}
                 aria-label={`打开 @${member.id} 的成员页`}
                 className="h-auto w-full justify-start gap-2.5 rounded-lg px-2 py-1.5 text-left font-normal"
+                onPointerEnter={() => prefetchProfile(client, member.id)}
+                onPointerDown={() => prefetchProfile(client, member.id)}
                 onClick={() => {
                   onNavigate?.();
                   navigate(`/u/${encodeURIComponent(member.id)}`);

@@ -2,10 +2,12 @@
  * 标签过滤页（design §5.0）：`#/tag/<tag>`，数据源＝`/api/read?tag=`。
  * 点击任意帖子的 tag chip 进入；保留时间线的 pending / 胶囊机制。
  */
+import { useMemo } from "react";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { PageHeader } from "@/components/PageHeader";
 import { useConnection } from "@/state/connection";
 import { usePostFeed } from "@/state/feed";
+import { getCachedTagPosts } from "@/state/cache";
 import { goBack, routeSource, useRoute } from "@/lib/router";
 import { tagDescription } from "@/lib/tags";
 
@@ -14,6 +16,8 @@ export function TagPage() {
   const tag = route.name === "tag" ? route.tag : "";
   const source = routeSource(route);
   const { client } = useConnection();
+  // 首帧种子：已在时间线里见过的同标签帖子，进入标签页的第一帧就是完整列表。
+  const seedPosts = useMemo(() => (tag ? getCachedTagPosts(tag) : []), [tag]);
 
   const feed = usePostFeed(
     client
@@ -32,7 +36,11 @@ export function TagPage() {
           };
         }
       : null,
-    { resetKey: tag },
+    {
+      resetKey: tag,
+      initialPosts: seedPosts,
+      cacheKey: tag ? `tag:${tag}` : undefined,
+    },
   );
 
   return (

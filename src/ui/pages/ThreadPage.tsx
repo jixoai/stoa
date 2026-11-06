@@ -14,13 +14,16 @@ import {
 } from "lucide-react";
 import { PostCard, type ChainPosition } from "@/components/PostCard";
 import { PostComposer } from "@/components/PostComposer";
+import { ContentSwap } from "@/components/ContentSwap";
+import { PostSkeleton, ThreadSkeleton } from "@/components/Skeletons";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/PageHeader";
 import { Separator } from "@/components/ui/separator";
 import { useConnection } from "@/state/connection";
+import { getCachedThread, getThreadSeed, rememberThread } from "@/state/cache";
 import { goBack, navigate, routeSource, useRoute } from "@/lib/router";
 import { fullTime } from "@/lib/format";
 
@@ -196,8 +199,13 @@ export function ThreadPage() {
   const source = routeSource(route);
   const wantReply = route.name === "post" && route.reply === true;
   const { client, subscribeEvents, staticMode } = useConnection();
-  const [thread, setThread] = useState<ThreadView | null>(null);
-  const [loading, setLoading] = useState(true);
+  // 首帧优先用已见线程；只有单帖缓存时也要把焦点帖排出来（合成线程），
+  // 回复区在下方用骨架占位——转场快照即最终排版，转场结束后焦点帖不再移动。
+  const [thread, setThread] = useState<ThreadView | null>(() =>
+    postId ? getThreadSeed(postId) : null,
+  );
+  /** 完整线程是否已从网络回来（回复区骨架 → 真实回复的开关）。 */
+  const [loaded, setLoaded] = useState(() => Boolean(postId && getCachedThread(postId)));
   const [error, setError] = useState<string | null>(null);
   const [pendingThread, setPendingThread] = useState<ThreadView | null>(null);
   const [newReplyCount, setNewReplyCount] = useState(0);
@@ -216,12 +224,10 @@ export function ThreadPage() {
   const load = useCallback(
     async (silent = false) => {
       if (!client || !postId) return;
-      if (!silent) {
-        setLoading(true);
-        setError(null);
-      }
+      if (!silent) setError(null);
       try {
         const next = await client.thread(postId, postId);
+        rememberThread(postId, next);
         if (silent) {
           const current = threadRef.current;
           if (current) {
@@ -240,10 +246,9 @@ export function ThreadPage() {
           setNewReplyCount(0);
         }
         setError(null);
+        if (!silent) setLoaded(true);
       } catch (err) {
         if (!silent) setError((err as Error).message);
-      } finally {
-        if (!silent) setLoading(false);
       }
     },
     [client, postId],
@@ -251,7 +256,8 @@ export function ThreadPage() {
 
   useEffect(() => {
     anchoredFor.current = null;
-    setThread(null);
+    setThread(postId ? getThreadSeed(postId) : null);
+    setLoaded(Boolean(postId && getCachedThread(postId)));
     setPendingThread(null);
     setNewReplyCount(0);
     setExtraDepth(0);
@@ -350,16 +356,17 @@ export function ThreadPage() {
     return (selfChain.length > 0 ? 1 : 0) + others.length;
   }, [childrenMap, focal]);
 
-  // focal 锚点：数据到位后滚到视口顶（scroll-margin-top 避开吸顶栏）
+  // focal 锚点：数据到位后滚到视口顶（scroll-margin-top 避开吸顶栏）。
+  // 键包含上文条数：合成线程 → 真实线程补出「N 条上文」时，同步重新贴顶（layout effect，同帧完成不闪）。
   useLayoutEffect(() => {
-    if (!thread || !focal || loading) return;
-    const key = `${thread.root_id}|${thread.focal_id}|${postId}`;
+    if (!thread || !focal) return;
+    const key = `${thread.root_id}|${thread.focal_id}|${postId}|${ancestorChain.length}`;
     if (anchoredFor.current === key) return;
     anchoredFor.current = key;
     const el = focalRef.current;
     if (!el) return;
     el.scrollIntoView({ block: "start", behavior: "auto" });
-  }, [thread, focal, loading, postId]);
+  }, [thread, focal, postId, ancestorChain.length]);
 
   useEffect(() => {
     if (!wantReply || !thread) return;
@@ -419,20 +426,7 @@ export function ThreadPage() {
     setNewReplyCount(0);
   };
 
-  if (loading && !thread) {
-    return (
-      <div className="flex h-full flex-col">
-        <ThreadHeader source={source} />
-        <div className="flex flex-col gap-3 p-4">
-          <Skeleton className="h-6 w-40" />
-          <Skeleton className="h-20 w-full" />
-          <Skeleton className="h-20 w-full" />
-        </div>
-      </div>
-    );
-  }
-
-  if (error || !thread || !focal) {
+  if (error && !thread) {
     return (
       <div className="flex h-full flex-col">
         <ThreadHeader source={source} />
@@ -454,6 +448,9 @@ export function ThreadPage() {
     <div className="relative flex h-full min-h-0 flex-col">
       <ThreadHeader source={source} />
       <div ref={containerRef} className="min-h-0 flex-1 overflow-y-auto" data-testid="thread-scroll">
+        <ContentSwap ready={Boolean(focal)} skeleton={<ThreadSkeleton />} testId="thread-swap">
+          {focal ? (
+            <>
         {ancestorChain.length > 0 || newReplyCount > 0 ? (
           <div className="sticky top-0 z-20 flex min-h-8 items-center gap-2 border-b border-border/60 bg-background/80 px-2 py-1 backdrop-blur-md">
             {ancestorChain.length > 0 ? (
@@ -564,11 +561,23 @@ export function ThreadPage() {
           )}
 
           <div className="flex items-center gap-2 px-1 text-sm font-medium">
-            <span data-testid="reply-count">{replyGroupCount} 条回复</span>
+            {loaded ? (
+              <span data-testid="reply-count">{replyGroupCount} 条回复</span>
+            ) : (
+              <Skeleton className="h-4 w-16" />
+            )}
             <Separator className="flex-1" />
           </div>
 
-          {plan.items.length === 0 ? null : (
+          {!loaded ? (
+            <div
+              className="divide-y divide-border/60 rounded-xl border border-border/60 bg-card/40"
+              data-testid="reply-skeleton"
+            >
+              <PostSkeleton />
+              <PostSkeleton />
+            </div>
+          ) : plan.items.length === 0 ? null : (
             <Card className="gap-0 divide-y divide-border/60 p-0" data-testid="reply-list">
               {plan.items.map((item) => {
                 if (item.kind === "node") {
@@ -658,6 +667,9 @@ export function ThreadPage() {
             </Card>
           )}
         </div>
+            </>
+          ) : null}
+        </ContentSwap>
       </div>
     </div>
   );

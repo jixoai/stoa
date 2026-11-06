@@ -78,7 +78,7 @@ export function AppShell() {
 
       <div className="flex min-h-0 flex-1 justify-center">
         <DesktopNav />
-        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:max-w-[640px] lg:pb-0">
+        <main className="relative flex min-h-0 min-w-0 flex-1 flex-col lg:max-w-[640px]">
           <RouteTransition routeKey={routeKey(rootRoute)} kind="root">
             <RouteScopeProvider route={rootRoute}>
               <SharedNamesProvider active={!detail}>
@@ -91,7 +91,7 @@ export function AppShell() {
             <RouteTransition
               routeKey={routeKey(route)}
               kind="detail"
-              className="absolute inset-0 z-30 bg-background pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0"
+              className="absolute inset-0 z-30 bg-background"
             >
               <SharedNamesProvider active>
                 <DetailView route={route} />
