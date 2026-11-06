@@ -102,3 +102,16 @@
 - [ ] 8.5 聚合图文报告（HTML 终稿，落主仓 `.agents/reports/manager/<报告名>/`——这棵树是报告产物，
   **不是** report 的数据目录；公网链接按交付纪律）
 - [ ] 8.6 change 归档（本仓 + 主仓指针同步）
+
+## P9 · 关注与标签（Owner 2026-11-06 追加）
+
+- [ ] 9.1 `posts.tags`（JSON 数组，默认 `[]`）+ 迁移；`--tag` 可多次；batch 每行可带 `tags`
+- [ ] 9.2 `follows` 表 + 迁移；`follow/unfollow/following`；`init` 播种 `owner → manager`
+- [ ] 9.3 `GET /api/feed?tab=following|recommended`：推荐＝`result` 标签 或 `@owner` 的根帖；
+      关注＝被关注者根帖；均 keyset 分页，互不复用游标
+- [ ] 9.4 `GET /api/profile/:account`（资料 + 该成员根帖）与账号搜索（`search --accounts`）
+- [ ] 9.5 CLI：`follow` / `--unfollow` / `following` / `profile <acct> [--follow]` / `read --feed`
+- [ ] 9.6 UI：主页双 tab（为你推荐/正在关注）、成员页 `#/u/<acct>` + 关注按钮、标签 chip + 点击过滤、
+      搜索结果含成员、右侧成员列表可进成员页
+- **验证门**：单测覆盖「推荐流不被 discussion 淹没」「切 tab 不串游标」「关注不扩大可见性」；
+  浏览器走查：新实例 owner 默认只看到 manager 的帖
