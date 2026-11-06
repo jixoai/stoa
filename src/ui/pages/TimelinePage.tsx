@@ -254,9 +254,6 @@ export function TimelinePage() {
     <div className="flex h-full min-h-0 flex-col">
       <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b border-border/60 bg-background/80 px-4 backdrop-blur-md">
         <h1 className="text-base font-semibold">主页</h1>
-        <span className="text-xs text-muted-foreground">
-          {timeline.asOfSeq > 0 ? `as-of seq ${timeline.asOfSeq}` : ""}
-        </span>
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col">

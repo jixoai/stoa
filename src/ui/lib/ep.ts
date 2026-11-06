@@ -60,6 +60,44 @@ export function epFromLocation(search = window.location.search): { raw: string |
   return { raw, checked: checkEp(raw) };
 }
 
+/**
+ * 同源后端探测：页面本身由 report 后端托管时（`GET /healthz` 返回 report 协议），
+ * 首访直接连本站，不再要求用户手输地址。
+ *
+ * 这里刻意不套 checkEp：同源请求不存在 mixed-content，也不把 token 发给第三方；
+ * 只有响应确实是 report 协议（ok + instanceId + protocol/dataDir）才算命中。
+ */
+export async function probeSameOriginEp(): Promise<EpCheck> {
+  if (typeof window === "undefined") return { ok: false, error: "无 window 环境" };
+  const { protocol, origin } = window.location;
+  if (protocol !== "http:" && protocol !== "https:") {
+    return { ok: false, error: "当前页面不是 http(s) 托管" };
+  }
+  try {
+    const res = await fetch(`${origin}/healthz`, {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!res.ok) return { ok: false, error: `本站 /healthz 返回 HTTP ${res.status}` };
+    const data = (await res.json()) as {
+      ok?: unknown;
+      instanceId?: unknown;
+      protocol?: unknown;
+      dataDir?: unknown;
+    };
+    const isReport =
+      data?.ok === true &&
+      typeof data.instanceId === "string" &&
+      (typeof data.protocol === "number" || typeof data.dataDir === "string");
+    return isReport ? { ok: true, url: origin } : { ok: false, error: "本站不是 report 后端" };
+  } catch {
+    return { ok: false, error: "本站未提供 /healthz" };
+  }
+}
+
 export function loadCurrentEp(): string | null {
   try {
     const raw = localStorage.getItem(EP_KEY);

@@ -1,9 +1,10 @@
 import { useMemo } from "react";
-import { RefreshCwIcon, UsersIcon } from "lucide-react";
+import { ChevronDownIcon, RefreshCwIcon, ServerIcon, UsersIcon } from "lucide-react";
 import { cn } from "cn";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { useConnection } from "@/state/connection";
 import { roleLabel } from "@/lib/format";
@@ -17,7 +18,7 @@ const SSE_LABEL: Record<string, string> = {
 };
 
 export function WhoPanel() {
-  const { who, account, ep, auth, sseState, refreshWho } = useConnection();
+  const { who, account, ep, auth, sseState, sameOrigin, refreshWho, switchBackend } = useConnection();
 
   const sorted = useMemo(() => {
     const rank = (role: string) => (role === "owner" ? 0 : role === "manager" ? 1 : 2);
@@ -43,14 +44,11 @@ export function WhoPanel() {
         <CardHeader className="gap-1">
           <CardTitle className="flex items-center justify-between text-sm">
             <span>连接</span>
-            <Badge variant={sseState === "open" ? "secondary" : "outline"}>
-              <span
-                className={cn(
-                  "mr-1 inline-block size-1.5 rounded-full",
-                  sseState === "open" ? "bg-success" : "bg-muted-foreground/50",
-                )}
-              />
-              SSE {SSE_LABEL[sseState] ?? sseState}
+            <Badge
+              variant={sameOrigin ? "secondary" : "outline"}
+              data-testid="connection-origin-badge"
+            >
+              {sameOrigin ? "已连接本站" : "远程实例"}
             </Badge>
           </CardTitle>
           <CardDescription className="break-all font-mono text-[11px]">{host}</CardDescription>
@@ -60,18 +58,56 @@ export function WhoPanel() {
             <span>身份</span>
             <span className="font-mono text-foreground">{account ? `@${account.id}` : "—"}</span>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <span>认证</span>
-            <span className="text-foreground">
-              {auth?.mode === "auth" ? "Bearer / access token" : "OPEN MODE（声明式身份）"}
-            </span>
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span>数据目录</span>
-            <span className="truncate text-foreground" title={auth?.env_files_loaded.join(", ")}>
-              服务端本地
-            </span>
-          </div>
+          <Collapsible className="rounded-lg border border-border/60 px-2 py-1.5" data-testid="connection-debug">
+            <CollapsibleTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="group h-auto w-full justify-start gap-1 px-1 py-0.5 text-[11px] font-normal text-muted-foreground hover:text-foreground"
+                />
+              }
+            >
+              <ChevronDownIcon data-icon="inline-start" className="transition-transform group-data-[panel-open]:rotate-180" />
+              调试 / 状态
+            </CollapsibleTrigger>
+            <CollapsibleContent className="mt-1.5 flex flex-col gap-1">
+              <div className="flex items-center justify-between gap-2">
+                <span>实时连接</span>
+                <span className="flex items-center gap-1 text-foreground">
+                  <span
+                    className={cn(
+                      "inline-block size-1.5 rounded-full",
+                      sseState === "open" ? "bg-success" : "bg-muted-foreground/50",
+                    )}
+                  />
+                  {SSE_LABEL[sseState] ?? sseState}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span>认证方式</span>
+                <span className="text-foreground">
+                  {auth?.mode === "auth" ? "Bearer access token" : "本地开放模式"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span>数据目录</span>
+                <span className="truncate text-foreground" title={auth?.env_files_loaded.join(", ")}>
+                  服务端本地
+                </span>
+              </div>
+              {ep ? (
+                <div className="flex items-center justify-between gap-2">
+                  <span>后端地址</span>
+                  <span className="truncate font-mono text-foreground">{ep}</span>
+                </div>
+              ) : null}
+            </CollapsibleContent>
+          </Collapsible>
+          <Button variant="outline" size="sm" className="mt-1 w-full" onClick={switchBackend}>
+            <ServerIcon data-icon="inline-start" />
+            连接其它实例
+          </Button>
         </CardContent>
       </Card>
 

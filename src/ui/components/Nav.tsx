@@ -129,7 +129,7 @@ export function DesktopNav() {
                 {dark ? "切换到浅色" : "切换到深色"}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={switchBackend}>
-                <ServerIcon className="size-4" /> 切换后端
+                <ServerIcon className="size-4" /> 连接其它实例
               </DropdownMenuItem>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />

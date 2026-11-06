@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import type { Block, InlineToken } from "@core/markdown";
 import { parseMarkdown } from "@core/markdown";
 import { cn } from "cn";
@@ -32,15 +33,46 @@ function MarkdownImage({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-function renderInline(tokens: InlineToken[]): React.ReactNode[] {
+/**
+ * 正文 @ 提及：只有账号目录里真实存在的 id 才渲染为高亮链接；
+ * 未知 @ 保持纯文本（与 core/mentions 的识别口径一致，代码块不参与）。
+ * 点击跳到搜索页并以其提及过滤（搜索是 read 的救济通道）。
+ */
+const MENTION_RE = /(^|[^A-Za-z0-9_@/])@([a-z][a-z0-9_-]{0,31})\b/g;
+
+function renderText(text: string, known: Set<string>): React.ReactNode {
+  if (known.size === 0) return <span className="whitespace-pre-wrap">{text}</span>;
+  const nodes: React.ReactNode[] = [];
+  let last = 0;
+  const re = new RegExp(MENTION_RE.source, "g");
+  for (let match = re.exec(text); match; match = re.exec(text)) {
+    const prefix = match[1] ?? "";
+    const id = match[2]!;
+    if (!known.has(id)) continue;
+    const start = match.index + prefix.length;
+    if (start > last) nodes.push(text.slice(last, start));
+    nodes.push(
+      <a
+        key={`${start}-${id}`}
+        href={`#/search?q=${encodeURIComponent(`@${id}`)}`}
+        data-testid="mention-link"
+        className="font-medium text-link underline-offset-2 hover:underline"
+      >
+        @{id}
+      </a>,
+    );
+    last = match.index + match[0].length;
+  }
+  if (nodes.length === 0) return <span className="whitespace-pre-wrap">{text}</span>;
+  if (last < text.length) nodes.push(text.slice(last));
+  return <span className="whitespace-pre-wrap">{nodes}</span>;
+}
+
+function renderInline(tokens: InlineToken[], known: Set<string>): React.ReactNode[] {
   return tokens.map((token, index) => {
     switch (token.type) {
       case "text":
-        return (
-          <span key={index} className="whitespace-pre-wrap">
-            {token.text}
-          </span>
-        );
+        return <span key={index}>{renderText(token.text, known)}</span>;
       case "code":
         return (
           <code key={index} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">
@@ -50,11 +82,11 @@ function renderInline(tokens: InlineToken[]): React.ReactNode[] {
       case "strong":
         return (
           <strong key={index} className="font-semibold">
-            {renderInline(token.children)}
+            {renderInline(token.children, known)}
           </strong>
         );
       case "em":
-        return <em key={index}>{renderInline(token.children)}</em>;
+        return <em key={index}>{renderInline(token.children, known)}</em>;
       case "link":
         return (
           <a
@@ -64,7 +96,7 @@ function renderInline(tokens: InlineToken[]): React.ReactNode[] {
             rel="noreferrer noopener"
             className="text-link underline-offset-2 hover:underline"
           >
-            {renderInline(token.children)}
+            {renderInline(token.children, known)}
             {token.href.startsWith("#") ? null : (
               <ExternalLinkIcon className="ml-0.5 inline size-3" aria-hidden />
             )}
@@ -76,7 +108,7 @@ function renderInline(tokens: InlineToken[]): React.ReactNode[] {
   });
 }
 
-function renderBlock(block: Block, index: number): React.ReactNode {
+function renderBlock(block: Block, index: number, known: Set<string>): React.ReactNode {
   switch (block.type) {
     case "heading": {
       const level = Math.min(block.level, 4);
@@ -89,14 +121,14 @@ function renderBlock(block: Block, index: number): React.ReactNode {
       const Tag = (`h${level}` as unknown) as "h1";
       return (
         <Tag key={index} className={className}>
-          {renderInline(block.children)}
+          {renderInline(block.children, known)}
         </Tag>
       );
     }
     case "paragraph":
       return (
         <p key={index} className="my-1 text-[0.95rem] leading-relaxed">
-          {renderInline(block.children)}
+          {renderInline(block.children, known)}
         </p>
       );
     case "list": {
@@ -110,7 +142,7 @@ function renderBlock(block: Block, index: number): React.ReactNode {
           )}
         >
           {block.items.map((item, itemIndex) => (
-            <li key={itemIndex}>{renderInline(item)}</li>
+            <li key={itemIndex}>{renderInline(item, known)}</li>
           ))}
         </Tag>
       );
@@ -118,7 +150,7 @@ function renderBlock(block: Block, index: number): React.ReactNode {
     case "quote":
       return (
         <blockquote key={index} className="my-2 border-l-2 border-border pl-3 text-muted-foreground">
-          {renderInline(block.children)}
+          {renderInline(block.children, known)}
         </blockquote>
       );
     case "code":
@@ -138,7 +170,7 @@ function renderBlock(block: Block, index: number): React.ReactNode {
               <tr>
                 {block.header.map((cell, cellIndex) => (
                   <th key={cellIndex} className="border border-border px-2 py-1 text-left font-medium">
-                    {renderInline(cell)}
+                    {renderInline(cell, known)}
                   </th>
                 ))}
               </tr>
@@ -148,7 +180,7 @@ function renderBlock(block: Block, index: number): React.ReactNode {
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex} className="border border-border px-2 py-1 align-top">
-                      {renderInline(cell)}
+                      {renderInline(cell, known)}
                     </td>
                   ))}
                 </tr>
@@ -164,7 +196,12 @@ function renderBlock(block: Block, index: number): React.ReactNode {
 
 /** markdown 子集渲染（core/markdown.ts 解析；React 元素输出，不拼 innerHTML）。 */
 export function Markdown({ source, className }: { source: string; className?: string }) {
+  const { accounts } = useConnection();
+  const known = useMemo(
+    () => new Set(accounts.filter((account) => account.disabled !== 2).map((account) => account.id)),
+    [accounts],
+  );
   const blocks = parseMarkdown(source);
   if (blocks.length === 0) return null;
-  return <div className={cn("break-words", className)}>{blocks.map(renderBlock)}</div>;
+  return <div className={cn("break-words", className)}>{blocks.map((block, index) => renderBlock(block, index, known))}</div>;
 }

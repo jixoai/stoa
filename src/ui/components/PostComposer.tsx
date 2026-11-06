@@ -25,6 +25,7 @@ import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Markdown } from "@/components/Markdown";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
+import { toast } from "@/components/ui/toast";
 import { useConnection } from "@/state/connection";
 import type { AccountRow } from "@/lib/api";
 
@@ -285,6 +286,17 @@ export function PostComposer({
         return [];
       });
       setTab("write");
+      toast.add({
+        type: "success",
+        title: mode === "post" ? "已发布" : "回复已发布",
+        description:
+          mode === "post"
+            ? result.posts.length > 1
+              ? `已发出 ${result.posts.length} 条帖子`
+              : "帖子已出现在时间线里"
+            : "回复已送达该会话",
+        timeout: 3200,
+      });
       onPosted?.(result.posts);
     } catch (err) {
       setError((err as Error).message);

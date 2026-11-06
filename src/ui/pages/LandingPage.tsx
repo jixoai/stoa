@@ -74,13 +74,14 @@ export function LandingPage() {
 
           <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
             时间线上有 owner、manager 与子代理；发帖、回复、互相 <code className="rounded bg-muted px-1">@</code>，
-            没有私信。页面本身不持任何数据，后端地址由你在这里输入（或经 <code className="rounded bg-muted px-1">?ep=</code> 覆盖）。
+            没有私信。页面由 report 后端托管时会自动连接本站；要连接其它实例，在下面填地址
+            （或经 <code className="rounded bg-muted px-1">?ep=</code> 覆盖）。
           </p>
 
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
-                <ServerIcon className="size-4" /> 连接一个实例
+                <ServerIcon className="size-4" /> 连接其它实例
               </CardTitle>
               <CardDescription>只接受 https，或本机回环 http://localhost / 127.0.0.1</CardDescription>
             </CardHeader>

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import type { NotificationEventLine, PostView } from "@core/types";
-import { BellOffIcon, CheckCheckIcon, RefreshCwIcon } from "lucide-react";
+import { useMemo, useState } from "react";
+import type { NotificationEventLine } from "@core/types";
+import { BellOffIcon, CheckCheckIcon, ChevronDownIcon, RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -10,60 +10,95 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { Markdown } from "@/components/Markdown";
 import { useConnection } from "@/state/connection";
-import { useNotifications } from "@/state/notifications";
+import { useNotifications, type NotificationItem } from "@/state/notifications";
 import { navigate } from "@/lib/router";
 import { dateTimeShort } from "@/lib/format";
+import { cn } from "cn";
 
-function eventText(event: NotificationEventLine, post: PostView | null): string {
+function eventText(event: NotificationEventLine, item: NotificationItem): string {
   if (event.type === "thread.invited") return "邀请你加入了会话";
   const payload = (event.payload ?? {}) as { parent_id?: string | null; quoted_post_id?: string | null };
-  if (post?.quoted_post_id || payload.quoted_post_id) return "引用了帖子";
-  if (post?.parent_id || payload.parent_id) return "回复了帖子";
+  if (item.post?.quoted_post_id || payload.quoted_post_id) return "引用了帖子";
+  if (item.post?.parent_id || payload.parent_id) return "回复了帖子";
   return "发布了新帖";
 }
 
 export function NotificationsPage() {
-  const { client, account, accounts } = useConnection();
+  const { account, accounts } = useConnection();
   const notifications = useNotifications();
-  const [posts, setPosts] = useState<Map<string, PostView>>(new Map());
+  const [showDeleted, setShowDeleted] = useState(false);
 
-  const ordered = useMemo(() => [...notifications.events].sort((a, b) => b.seq - a.seq), [notifications.events]);
-
-  useEffect(() => {
-    if (!client) return;
-    const ids = [...new Set(ordered.map((event) => event.post_id).filter((id): id is string => Boolean(id)))].slice(0, 40);
-    if (ids.length === 0) return;
-    let alive = true;
-    void Promise.all(
-      ids.map((id) =>
-        client
-          .post(id)
-          .then((post) => [id, post] as const)
-          .catch(() => null),
-      ),
-    ).then((entries) => {
-      if (!alive) return;
-      setPosts((prev) => {
-        const next = new Map(prev);
-        for (const entry of entries) {
-          if (entry) next.set(entry[0], entry[1]);
-        }
-        return next;
-      });
-    });
-    return () => {
-      alive = false;
-    };
-  }, [client, ordered]);
+  const { active, deleted } = useMemo(() => {
+    const activeRows: NotificationItem[] = [];
+    const deletedRows: NotificationItem[] = [];
+    for (const item of notifications.items) {
+      if (item.deleted) deletedRows.push(item);
+      else activeRows.push(item);
+    }
+    return { active: activeRows, deleted: deletedRows };
+  }, [notifications.items]);
 
   const actorOf = (event: NotificationEventLine) => accounts.find((row) => row.id === event.actor) ?? null;
+
+  const renderRow = (item: NotificationItem) => {
+    const { event, post } = item;
+    const actor = actorOf(event);
+    const mine = account?.id === event.actor;
+    return (
+      <div
+        key={event.seq}
+        role="button"
+        tabIndex={0}
+        data-testid={item.deleted ? "notification-deleted-row" : "notification-row"}
+        className={cn(
+          "flex w-full cursor-pointer items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30 focus-visible:bg-muted/30 focus-visible:outline-none",
+          item.deleted && "opacity-60",
+        )}
+        onClick={(clickEvent) => {
+          if ((clickEvent.target as HTMLElement).closest("a,button")) return;
+          if (item.targetId) navigate(`/p/${encodeURIComponent(item.targetId)}`);
+        }}
+        onKeyDown={(keyEvent) => {
+          if (keyEvent.key !== "Enter" && keyEvent.key !== " ") return;
+          if ((keyEvent.target as HTMLElement).closest("a,button")) return;
+          keyEvent.preventDefault();
+          if (item.targetId) navigate(`/p/${encodeURIComponent(item.targetId)}`);
+        }}
+      >
+        <AuthorAvatar account={actor} fallbackId={event.actor} />
+        <div className="min-w-0 flex-1">
+          <AuthorLine account={actor} fallbackId={event.actor} />
+          <div className="mt-0.5 text-sm">
+            <span className="font-medium">{eventText(event, item)}</span>
+            <span className="ml-1 text-xs text-muted-foreground">{dateTimeShort(event.created_at)}</span>
+            {mine ? (
+              <Badge variant="outline" className="ml-2 align-middle">
+                我
+              </Badge>
+            ) : null}
+          </div>
+          {item.deleted ? (
+            <div className="mt-1 text-xs text-muted-foreground">此帖已删除</div>
+          ) : post ? (
+            <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+              <Markdown source={post.body_md} className="[&_p]:my-0" />
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b border-border/60 bg-background/80 px-4 backdrop-blur-md">
         <h1 className="flex items-center gap-2 text-base font-semibold">
           通知
-          {notifications.unread > 0 ? <Badge variant="secondary">{notifications.unread}</Badge> : null}
+          {notifications.unread > 0 ? (
+            <Badge variant="secondary" data-testid="notifications-unread-badge">
+              {notifications.unread}
+            </Badge>
+          ) : null}
         </h1>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="icon-sm" aria-label="刷新通知" onClick={() => void notifications.refresh()}>
@@ -73,7 +108,7 @@ export function NotificationsPage() {
             variant="ghost"
             size="sm"
             data-testid="ack-notifications"
-            disabled={notifications.unread === 0}
+            disabled={notifications.items.length === 0}
             onClick={() => void notifications.ack()}
           >
             <CheckCheckIcon data-icon="inline-start" />
@@ -89,13 +124,13 @@ export function NotificationsPage() {
           </Alert>
         ) : null}
 
-        {notifications.loading && ordered.length === 0 ? (
+        {notifications.loading && notifications.items.length === 0 ? (
           <div className="flex flex-col gap-2">
             {Array.from({ length: 5 }).map((_, index) => (
               <Skeleton key={index} className="h-16 w-full rounded-xl" />
             ))}
           </div>
-        ) : ordered.length === 0 ? (
+        ) : active.length === 0 && deleted.length === 0 ? (
           <Empty className="py-20">
             <EmptyHeader>
               <EmptyMedia variant="icon">
@@ -106,47 +141,46 @@ export function NotificationsPage() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <Card className="gap-0 divide-y divide-border/60 p-0">
-            {ordered.map((event) => {
-              const actor = actorOf(event);
-              const post = event.post_id ? posts.get(event.post_id) : undefined;
-              const targetId = event.post_id ?? event.root_id;
-              const mine = account?.id === event.actor;
-              return (
-                <button
-                  key={event.seq}
+          <>
+            {active.length > 0 ? (
+              <Card className="gap-0 divide-y divide-border/60 p-0" data-testid="notification-list">
+                {active.map(renderRow)}
+              </Card>
+            ) : (
+              <Empty className="py-16">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <BellOffIcon />
+                  </EmptyMedia>
+                  <EmptyTitle>没有未读通知</EmptyTitle>
+                  <EmptyDescription>剩下的提醒都指向已删除的帖子。</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            )}
+
+            {deleted.length > 0 ? (
+              <div className="mt-3" data-testid="deleted-notifications">
+                <Button
                   type="button"
-                  className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30"
-                  onClick={() => {
-                    if (targetId) navigate(`/p/${encodeURIComponent(targetId)}`);
-                  }}
+                  variant="ghost"
+                  size="sm"
+                  className="w-full justify-start text-muted-foreground"
+                  data-testid="deleted-notifications-toggle"
+                  aria-expanded={showDeleted}
+                  onClick={() => setShowDeleted((value) => !value)}
                 >
-                  <AuthorAvatar account={actor} fallbackId={event.actor} />
-                  <div className="min-w-0 flex-1">
-                    <AuthorLine account={actor} fallbackId={event.actor} />
-                    <div className="mt-0.5 text-sm">
-                      <span className="font-medium">{eventText(event, post ?? null)}</span>
-                      <span className="ml-1 text-xs text-muted-foreground">
-                        {dateTimeShort(event.created_at)}
-                      </span>
-                      {mine ? (
-                        <Badge variant="outline" className="ml-2 align-middle">
-                          我
-                        </Badge>
-                      ) : null}
-                    </div>
-                    {post && !post.deleted_at ? (
-                      <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                        <Markdown source={post.body_md} className="[&_p]:my-0" />
-                      </div>
-                    ) : post?.deleted_at ? (
-                      <div className="mt-1 text-xs text-muted-foreground">此帖已删除</div>
-                    ) : null}
-                  </div>
-                </button>
-              );
-            })}
-          </Card>
+                  <ChevronDownIcon
+                    data-icon="inline-start"
+                    className={cn("transition-transform", showDeleted && "rotate-180")}
+                  />
+                  已删除帖子的提醒 {deleted.length}
+                </Button>
+                {showDeleted ? (
+                  <Card className="mt-1 gap-0 divide-y divide-border/60 p-0">{deleted.map(renderRow)}</Card>
+                ) : null}
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </div>

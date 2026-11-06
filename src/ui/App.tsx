@@ -1,6 +1,7 @@
 import { Loader2Icon, ServerCrashIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Toaster } from "@/components/ui/toast";
 import { ConnectionProvider, useConnection } from "@/state/connection";
 import { TimelineProvider } from "@/state/timeline";
 import { NotificationsProvider } from "@/state/notifications";
@@ -65,8 +66,10 @@ function PhaseView() {
 
 export function App() {
   return (
-    <ConnectionProvider>
-      <PhaseView />
-    </ConnectionProvider>
+    <Toaster>
+      <ConnectionProvider>
+        <PhaseView />
+      </ConnectionProvider>
+    </Toaster>
   );
 }

@@ -4,6 +4,7 @@ import { ChevronRightIcon, EyeOffIcon } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { useMediaUrl } from "@/lib/media";
+import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
 
 function QuoteThumb({ quoted }: { quoted: QuotedView }) {
@@ -66,6 +67,13 @@ export function QuoteCard({ post, className }: { post: PostView; className?: str
         />
         <span className="truncate font-medium">{quoted.display}</span>
         <span className="truncate text-xs text-muted-foreground">@{quoted.author}</span>
+        <span
+          className="ml-auto shrink-0 text-xs text-muted-foreground"
+          data-testid="quote-time"
+          title={new Date(quoted.created_at).toLocaleString("zh-CN")}
+        >
+          {timeShort(quoted.created_at)}
+        </span>
       </div>
       <div className="mt-1 line-clamp-3 text-muted-foreground">
         <Markdown source={quoted.body_md} className="[&_p]:my-0" />

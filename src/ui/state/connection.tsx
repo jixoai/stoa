@@ -22,6 +22,7 @@ import {
   epFromLocation,
   loadCurrentEp,
   loadToken,
+  probeSameOriginEp,
   rememberEp,
   saveCurrentEp,
   saveToken,
@@ -39,6 +40,8 @@ export interface ConnectionValue {
   account: { id: string; role: "owner" | "manager" | "agent" } | null;
   accounts: AccountRow[];
   who: WhoRow[];
+  /** 当前 ep 与页面同源（页面由后端自身托管） */
+  sameOrigin: boolean;
   sseState: SseState;
   error: string | null;
   loginError: string | null;
@@ -132,15 +135,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const connect = useCallback(
-    async (rawUrl: string) => {
-      const checked = checkEp(rawUrl);
-      if (!checked.ok) {
-        setError(checked.error ?? "后端地址不合法");
-        setPhase("landing");
-        return;
-      }
-      const url = checked.url!;
+  const startConnect = useCallback(
+    async (url: string) => {
       setPhase("connecting");
       setError(null);
       setLoginError(null);
@@ -183,6 +179,19 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       }
     },
     [finishReady],
+  );
+
+  const connect = useCallback(
+    async (rawUrl: string) => {
+      const checked = checkEp(rawUrl);
+      if (!checked.ok) {
+        setError(checked.error ?? "后端地址不合法");
+        setPhase("landing");
+        return;
+      }
+      await startConnect(checked.url!);
+    },
+    [startConnect],
   );
 
   const login = useCallback(
@@ -238,10 +247,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const retry = useCallback(() => {
-    if (ep) void connect(ep);
-  }, [connect, ep]);
+    // ep 已经过校验（或同源探测）才进入当前会话，重试不再二次套 checkEp
+    if (ep) void startConnect(ep);
+  }, [startConnect, ep]);
 
-  // Initial endpoint resolution: ?ep= wins; otherwise the last successful ep.
+  // Initial endpoint resolution: ?ep= wins; then the last successful ep; then the
+  // same-origin backend (the shell is often served by the report backend itself).
   useEffect(() => {
     if (autoStarted.current) return;
     autoStarted.current = true;
@@ -256,9 +267,26 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return;
     }
     const stored = loadCurrentEp();
-    if (stored) void connect(stored);
-    else setPhase("landing");
-  }, [connect]);
+    if (stored) {
+      void connect(stored);
+      return;
+    }
+    let alive = true;
+    setEp(window.location.origin);
+    void probeSameOriginEp().then((probe) => {
+      if (!alive) return;
+      if (probe.ok && probe.url) {
+        // 同源探测已经证明它是 report 后端，直接建连（跳过 checkEp 的 http 限制）
+        void startConnect(probe.url);
+      } else {
+        setEp(null);
+        setPhase("landing");
+      }
+    });
+    return () => {
+      alive = false;
+    };
+  }, [connect, startConnect]);
 
   // SSE lifecycle
   useEffect(() => {
@@ -292,6 +320,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
   }, [phase, client, refreshWho]);
 
+  const sameOrigin = useMemo(() => {
+    if (!ep) return false;
+    try {
+      return new URL(ep).origin === window.location.origin;
+    } catch {
+      return false;
+    }
+  }, [ep]);
+
   const value = useMemo<ConnectionValue>(
     () => ({
       phase,
@@ -302,6 +339,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       account,
       accounts,
       who,
+      sameOrigin,
       sseState,
       error,
       loginError,
@@ -322,6 +360,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       account,
       accounts,
       who,
+      sameOrigin,
       sseState,
       error,
       loginError,

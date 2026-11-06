@@ -399,8 +399,9 @@ export function ThreadPage() {
         const node = kbNodes[selectedIndex];
         if (!node) return;
         event.preventDefault();
-        if (event.key === "r") navigate(`/p/${encodeURIComponent(node.id)}?reply=1`);
-        else if (node.id !== focal?.id) navigate(`/p/${encodeURIComponent(node.id)}`);
+        if (event.key === "r") {
+          if (node.deleted_at === null) navigate(`/p/${encodeURIComponent(node.id)}?reply=1`);
+        } else if (node.id !== focal?.id) navigate(`/p/${encodeURIComponent(node.id)}`);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -538,24 +539,28 @@ export function ThreadPage() {
             />
             <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
               <span>{fullTime(focal.created_at)}</span>
-              <span>·</span>
-              <span>{replyGroupCount} 条回复</span>
             </div>
           </Card>
 
-          <Card ref={composerRef} className="gap-0 p-3" data-testid="reply-box">
-            <PostComposer
-              mode="reply"
-              parentId={focal.id}
-              autoFocus={wantReply}
-              compact
-              placeholder={`回复 @${focal.author}…`}
-              onPosted={() => void load(false)}
-            />
-          </Card>
+          {focal.deleted_at === null ? (
+            <Card ref={composerRef} className="gap-0 p-3" data-testid="reply-box">
+              <PostComposer
+                mode="reply"
+                parentId={focal.id}
+                autoFocus={wantReply}
+                compact
+                placeholder={`回复 @${focal.author}…`}
+                onPosted={() => void load(false)}
+              />
+            </Card>
+          ) : (
+            <Card className="gap-0 p-3 text-sm text-muted-foreground" data-testid="reply-unavailable">
+              此帖已删除，不能再回复。
+            </Card>
+          )}
 
           <div className="flex items-center gap-2 px-1 text-sm font-medium">
-            <span>{replyGroupCount} 条回复</span>
+            <span data-testid="reply-count">{replyGroupCount} 条回复</span>
             <Separator className="flex-1" />
           </div>
 

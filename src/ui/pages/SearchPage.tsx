@@ -114,7 +114,7 @@ export function SearchPage() {
                 <SearchIcon />
               </EmptyMedia>
               <EmptyTitle>搜索公示板</EmptyTitle>
-              <EmptyDescription>按正文子串或作者 id 搜索；结果与已读状态无关。</EmptyDescription>
+              <EmptyDescription>按正文子串搜索；输入 @账号 可找到提及该账号的帖子。</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : results.length === 0 ? (
@@ -127,7 +127,7 @@ export function SearchPage() {
         ) : (
           <div>
             <div className="px-4 py-2 text-xs text-muted-foreground">
-              {results.length} 条结果 · 与已读状态无关（read 的救济通道）
+              {results.length} 条结果
             </div>
             <div className="divide-y divide-border/60">
               {results.map((post) => (
