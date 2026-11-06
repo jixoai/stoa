@@ -26,7 +26,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useConnection } from "@/state/connection";
 import { useNotifications } from "@/state/notifications";
-import { navigate, useRoute } from "@/lib/router";
+import { navigate, navigateTab, useRoute } from "@/lib/router";
 import { displayCount } from "@/lib/format";
 import { toastReadOnly } from "@/lib/readonly";
 
@@ -104,7 +104,8 @@ export function DesktopNav() {
                   toastReadOnly();
                   return;
                 }
-                navigate(item.href);
+                if (item.key === "compose") navigate(item.href);
+                else navigateTab(item.href);
               }}
             >
               <Icon className="size-5" />
@@ -193,7 +194,8 @@ export function MobileNav() {
                 toastReadOnly();
                 return;
               }
-              navigate(item.href);
+              if (item.key === "compose") navigate(item.href);
+              else navigateTab(item.href);
             }}
           >
             <Icon className="size-5" />

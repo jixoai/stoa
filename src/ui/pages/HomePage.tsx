@@ -6,10 +6,13 @@
  * tab 状态写在 URL（`#/?tab=following`），刷新后保持；切换 tab 只换面板，
  * 两个 FeedController 常驻在 HomeFeedsProvider 里，游标互不复用。
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { FeedTab } from "@core/types";
+import { InfoIcon } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
+import { InfoSheet } from "@/components/InfoSheet";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { useHomeFeeds } from "@/state/feed";
 import { navigate, usePageRoute } from "@/lib/router";
@@ -38,10 +41,32 @@ export function HomePage() {
   };
 
   const empty = useMemo(() => EMPTY[tab], [tab]);
+  const [infoOpen, setInfoOpen] = useState(false);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PageHeader title="主页">
+      <PageHeader
+        title="主页"
+        mobileBrand={
+          <span className="flex items-center gap-2" data-testid="home-brand">
+            <span className="glass-primary flex size-7 items-center justify-center rounded-lg text-sm font-semibold text-primary-foreground">
+              R
+            </span>
+            <span className="text-sm font-semibold">report</span>
+          </span>
+        }
+        mobileActions={
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="信息"
+            data-testid="home-info-button"
+            onClick={() => setInfoOpen(true)}
+          >
+            <InfoIcon />
+          </Button>
+        }
+      >
         <Tabs value={tab} onValueChange={switchTab}>
           <TabsList aria-label="主页流">
             <TabsTrigger value="recommended" data-testid="home-tab-recommended">
@@ -63,6 +88,8 @@ export function HomePage() {
         emptyTitle={empty.title}
         emptyDescription={empty.description}
       />
+
+      <InfoSheet open={infoOpen} onOpenChange={setInfoOpen} />
     </div>
   );
 }

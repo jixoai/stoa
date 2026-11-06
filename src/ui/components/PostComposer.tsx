@@ -11,6 +11,7 @@ import {
 import { cn } from "cn";
 import type { PostView } from "@core/types";
 import {
+  HashIcon,
   ImagePlusIcon,
   Loader2Icon,
   LockIcon,
@@ -26,12 +27,12 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Markdown } from "@/components/Markdown";
-import { TagPicker } from "@/components/TagPicker";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { toast } from "@/components/ui/toast";
 import { useConnection } from "@/state/connection";
-import type { AccountRow } from "@/lib/api";
+import type { AccountRow, TrendingTag } from "@/lib/api";
 import { toastReadOnly } from "@/lib/readonly";
+import { TAG_RE, extractTags } from "@/lib/tags";
 
 const MAX_FILES = 4;
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -80,7 +81,6 @@ function extOf(name: string): string {
 
 interface DraftSnapshot {
   body: string;
-  tags: string[];
 }
 
 function draftKeyOf(mode: "post" | "reply", parentId?: string): string {
@@ -94,13 +94,12 @@ function loadDraft(key: string): DraftSnapshot {
       const parsed = JSON.parse(raw) as Partial<DraftSnapshot>;
       return {
         body: typeof parsed.body === "string" ? parsed.body : "",
-        tags: Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [],
       };
     }
   } catch {
     // ignore
   }
-  return { body: "", tags: [] };
+  return { body: "" };
 }
 
 function clearDraft(key: string): void {
@@ -111,9 +110,20 @@ function clearDraft(key: string): void {
   }
 }
 
+type Suggest =
+  | { kind: "mention"; query: string; start: number; end: number }
+  | { kind: "tag"; query: string; start: number; end: number };
+
+interface TagSuggestion {
+  tag: string;
+  count: number | null;
+  create: boolean;
+}
+
 /**
  * 发帖箱 / 回复框：markdown 预览、附件上传、@ 自动补全（含离线账号）、
- * 引用卡嵌入（引用＝新帖）。附件先传 /api/media 拿 hash，再随正文提交。
+ * `#` 标签补全（标签即正文，发送时归集）、引用卡嵌入（引用＝新帖）。
+ * 附件先传 /api/media 拿 hash，再随正文提交。
  */
 export function PostComposer({
   mode,
@@ -133,10 +143,12 @@ export function PostComposer({
   const [body, setBody] = useState(initialDraft.current.body);
   const [tab, setTab] = useState<"write" | "preview">("write");
   const [items, setItems] = useState<UploadItem[]>([]);
-  const [tags, setTags] = useState<string[]>(initialDraft.current.tags);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [suggest, setSuggest] = useState<{ query: string; start: number; end: number } | null>(null);
+  const [suggest, setSuggest] = useState<Suggest | null>(null);
+  const [trending, setTrending] = useState<TrendingTag[]>([]);
+  const [trendingStatus, setTrendingStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const trendingRequested = useRef(false);
   const [suggestIndex, setSuggestIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -149,18 +161,18 @@ export function PostComposer({
   // 草稿保留：输入 300ms 防抖写 localStorage（附件不持久化）。
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      if (!body.trim() && tags.length === 0) {
+      if (!body.trim()) {
         clearDraft(key);
         return;
       }
       try {
-        localStorage.setItem(`report.draft.v1:${key}`, JSON.stringify({ body, tags }));
+        localStorage.setItem(`report.draft.v1:${key}`, JSON.stringify({ body }));
       } catch {
         // private mode
       }
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [body, tags, key]);
+  }, [body, key]);
 
   // 键盘避让：聚焦时把输入框滚到视口中间（visualViewport 收缩后同样生效）。
   useEffect(() => {
@@ -179,7 +191,7 @@ export function PostComposer({
   );
 
   const suggestions = useMemo(() => {
-    if (!suggest) return [];
+    if (!suggest || suggest.kind !== "mention") return [];
     const q = suggest.query.toLowerCase();
     return activeAccounts
       .filter((account) => account.id.toLowerCase().includes(q) || account.display.toLowerCase().includes(q))
@@ -192,29 +204,66 @@ export function PostComposer({
       .slice(0, 8);
   }, [activeAccounts, suggest]);
 
+  const tagSuggestions = useMemo<TagSuggestion[]>(() => {
+    if (!suggest || suggest.kind !== "tag") return [];
+    const query = suggest.query;
+    const items: TagSuggestion[] = trending
+      .filter((row) => row.tag.startsWith(query))
+      .slice(0, 8)
+      .map((row) => ({ tag: row.tag, count: row.count, create: false }));
+    if (TAG_RE.test(query) && !items.some((item) => item.tag === query)) {
+      items.push({ tag: query, count: null, create: true });
+    }
+    return items;
+  }, [suggest, trending]);
+
   useEffect(() => {
     setSuggestIndex(0);
-  }, [suggest?.query, suggestions.length]);
+  }, [suggest?.query, suggestions.length, tagSuggestions.length]);
 
-  const detectMention = useCallback((value: string, caret: number) => {
+  // 标签补全首次出现时拉一次热门标签（失败也不阻塞「新建标签」）。
+  useEffect(() => {
+    if (suggest?.kind !== "tag" || trendingRequested.current || !client) return;
+    trendingRequested.current = true;
+    setTrendingStatus("loading");
+    client
+      .trendingTags(10)
+      .then((rows) => {
+        setTrending(rows);
+        setTrendingStatus("ready");
+      })
+      .catch(() => {
+        setTrending([]);
+        setTrendingStatus("error");
+      });
+  }, [client, suggest?.kind]);
+
+  const detectSuggest = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
-    const match = /(^|[\s(])@([A-Za-z0-9_-]*)$/.exec(before);
-    if (!match) {
-      setSuggest(null);
+    const mention = /(^|[\s(])@([A-Za-z0-9_-]*)$/.exec(before);
+    if (mention) {
+      const query = mention[2] ?? "";
+      const start = caret - query.length - 1;
+      setSuggest({ kind: "mention", query, start, end: caret });
       return;
     }
-    const query = match[2] ?? "";
-    const start = caret - query.length - 1;
-    setSuggest({ query, start, end: caret });
+    const tag = /(^|[\s(（【[,，。;；:：、])#([A-Za-z0-9-]*)$/.exec(before);
+    if (tag) {
+      const raw = tag[2] ?? "";
+      const start = caret - raw.length - 1;
+      setSuggest({ kind: "tag", query: raw.toLowerCase(), start, end: caret });
+      return;
+    }
+    setSuggest(null);
   }, []);
 
   const onChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     setBody(event.target.value);
-    detectMention(event.target.value, event.target.selectionStart ?? event.target.value.length);
+    detectSuggest(event.target.value, event.target.selectionStart ?? event.target.value.length);
   };
 
   const insertMention = (account: AccountRow) => {
-    if (!suggest) return;
+    if (!suggest || suggest.kind !== "mention") return;
     const next = `${body.slice(0, suggest.start)}@${account.id} ${body.slice(suggest.end)}`;
     setBody(next);
     setSuggest(null);
@@ -227,22 +276,42 @@ export function PostComposer({
     });
   };
 
+  const insertTag = (tag: string) => {
+    if (!suggest || suggest.kind !== "tag") return;
+    const next = `${body.slice(0, suggest.start)}#${tag} ${body.slice(suggest.end)}`;
+    setBody(next);
+    setSuggest(null);
+    const caret = suggest.start + tag.length + 2;
+    window.requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(caret, caret);
+    });
+  };
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (suggest && suggestions.length > 0) {
+    const optionCount = suggest?.kind === "mention" ? suggestions.length : tagSuggestions.length;
+    if (suggest && optionCount > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
-        setSuggestIndex((index) => (index + 1) % suggestions.length);
+        setSuggestIndex((index) => (index + 1) % optionCount);
         return;
       }
       if (event.key === "ArrowUp") {
         event.preventDefault();
-        setSuggestIndex((index) => (index - 1 + suggestions.length) % suggestions.length);
+        setSuggestIndex((index) => (index - 1 + optionCount) % optionCount);
         return;
       }
       if (event.key === "Enter" || event.key === "Tab") {
         event.preventDefault();
-        const chosen = suggestions[suggestIndex];
-        if (chosen) insertMention(chosen);
+        if (suggest.kind === "mention") {
+          const chosen = suggestions[suggestIndex];
+          if (chosen) insertMention(chosen);
+        } else {
+          const chosen = tagSuggestions[suggestIndex];
+          if (chosen) insertTag(chosen.tag);
+        }
         return;
       }
       if (event.key === "Escape") {
@@ -345,6 +414,8 @@ export function PostComposer({
     }
     setBusy(true);
     setError(null);
+    // 标签即正文：发送时从正文抽取（去重、最多 8 个），正文保持原文。
+    const tags = extractTags(body);
     try {
       const result =
         mode === "post"
@@ -356,7 +427,6 @@ export function PostComposer({
             })
           : await client.createReply(parentId!, { body, media: mediaHashes, tags });
       setBody("");
-      setTags([]);
       clearDraft(key);
       setItems((prev) => {
         for (const item of prev) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
@@ -426,15 +496,20 @@ export function PostComposer({
               onKeyDown={onKeyDown}
               onClick={(event) => {
                 const el = event.currentTarget;
-                detectMention(el.value, el.selectionStart ?? el.value.length);
+                detectSuggest(el.value, el.selectionStart ?? el.value.length);
               }}
-              placeholder={placeholder ?? (mode === "post" ? "有什么要说？用 @ 提到某人…" : "发布你的回复…（支持 markdown）")}
+              placeholder={
+                placeholder ??
+                (mode === "post"
+                  ? "有什么要说？@ 提及某人，# 标注标签…"
+                  : "发布你的回复…（支持 markdown，@ 提及，# 标签）")
+              }
               className={cn("min-h-28 resize-y", compact && "min-h-20")}
               data-testid="composer-input"
             />
 
             <Popover
-              open={Boolean(suggest && suggestions.length > 0)}
+              open={Boolean(suggest && (suggest.kind === "tag" || suggestions.length > 0))}
               onOpenChange={(open) => {
                 if (!open) setSuggest(null);
               }}
@@ -450,29 +525,77 @@ export function PostComposer({
                 }
               />
               <PopoverContent align="start" sideOffset={4} initialFocus={false} className="w-[min(24rem,90vw)] p-1">
-                <div className="px-2 py-1 text-xs text-muted-foreground">提及账号（含离线）</div>
-                <div className="flex max-h-56 flex-col overflow-y-auto">
-                  {suggestions.map((account, index) => (
-                    <Button
-                      key={account.id}
-                      type="button"
-                      variant={index === suggestIndex ? "secondary" : "ghost"}
-                      size="sm"
-                      className="h-auto justify-start gap-2 px-2 py-1.5"
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => insertMention(account)}
-                    >
-                      <AuthorAvatar account={account} fallbackId={account.id} size="tiny" />
-                      <span className="truncate">{account.display}</span>
-                      <span className="truncate text-xs text-muted-foreground">@{account.id}</span>
-                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                        {account.id === "owner" || account.id === "manager" || account.id === "owner"
-                          ? "常驻"
-                          : "成员"}
-                      </span>
-                    </Button>
-                  ))}
-                </div>
+                {suggest?.kind === "mention" ? (
+                  <>
+                    <div className="px-2 py-1 text-xs text-muted-foreground">提及账号（含离线）</div>
+                    <div className="flex max-h-56 flex-col overflow-y-auto">
+                      {suggestions.map((account, index) => (
+                        <Button
+                          key={account.id}
+                          type="button"
+                          variant={index === suggestIndex ? "secondary" : "ghost"}
+                          size="sm"
+                          className="h-auto justify-start gap-2 px-2 py-1.5"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => insertMention(account)}
+                        >
+                          <AuthorAvatar account={account} fallbackId={account.id} size="tiny" />
+                          <span className="truncate">{account.display}</span>
+                          <span className="truncate text-xs text-muted-foreground">@{account.id}</span>
+                          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                            {account.id === "owner" || account.id === "manager"
+                              ? "常驻"
+                              : "成员"}
+                          </span>
+                        </Button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div data-testid="tag-suggest">
+                    <div className="flex items-center justify-between px-2 py-1 text-xs text-muted-foreground">
+                      <span>热门标签</span>
+                      {suggest?.kind === "tag" && suggest.query ? (
+                        <span className="truncate font-mono">#{suggest.query}</span>
+                      ) : null}
+                    </div>
+                    {trendingStatus === "loading" ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">加载热门标签…</div>
+                    ) : null}
+                    {trendingStatus === "error" ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">热门标签加载失败，仍可新建</div>
+                    ) : null}
+                    {trendingStatus === "ready" && trending.length === 0 ? (
+                      <div className="px-2 py-2 text-xs text-muted-foreground">还没有热门标签，输入即新建</div>
+                    ) : null}
+                    <div className="flex max-h-56 flex-col overflow-y-auto">
+                      {tagSuggestions.map((item, index) => (
+                        <Button
+                          key={`${item.create ? "new" : "hot"}-${item.tag}`}
+                          type="button"
+                          variant={index === suggestIndex ? "secondary" : "ghost"}
+                          size="sm"
+                          data-testid={item.create ? "tag-suggest-create" : "tag-suggest-item"}
+                          data-tag={item.tag}
+                          className="h-auto justify-start gap-2 px-2 py-1.5"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => insertTag(item.tag)}
+                        >
+                          <HashIcon className="size-3.5 text-muted-foreground" />
+                          <span className="truncate">{item.tag}</span>
+                          <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                            {item.create ? "新建标签" : `${item.count ?? 0} 次`}
+                          </span>
+                        </Button>
+                      ))}
+                    </div>
+                    {suggest?.kind === "tag" && suggest.query && !TAG_RE.test(suggest.query) ? (
+                      <div className="px-2 py-1 text-[11px] text-muted-foreground" data-testid="tag-suggest-hint">
+                        标签只能用小写字母、数字、-（1–24 个字符）
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </PopoverContent>
             </Popover>
           </div>
@@ -504,8 +627,6 @@ export function PostComposer({
           </div>
         </Card>
       ) : null}
-
-      <TagPicker value={tags} onChange={setTags} disabled={busy} />
 
       {items.length > 0 ? (
         <div className="grid grid-cols-2 gap-2">

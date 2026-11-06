@@ -398,6 +398,15 @@ export function goBack(fallback = "/"): void {
   }
 }
 
+/**
+ * 底部 tab 切换（spec report-nav）：根页之间切换走 replaceState，不堆历史，
+ * 「返回」永远回到上一个页面而不是上一个 tab。从详情页点 tab 回根页是真正的
+ * 页面切换，仍 push（返回可回到详情）。
+ */
+export function navigateTab(path: string): void {
+  navigate(path, isRootRoute(currentRoute));
+}
+
 export function useHashLink(): (path: string) => void {
   return (path: string) => navigate(path);
 }

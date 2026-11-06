@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { LockIcon } from "lucide-react";
 import { DesktopNav, MobileNav } from "@/components/Nav";
 import { WhoPanel } from "@/components/WhoPanel";
+import { LeaveGuard } from "@/components/LeaveGuard";
 import { RouteTransition } from "@/components/RouteTransition";
 import { HomePage } from "@/pages/HomePage";
 import { ProfilePage } from "@/pages/ProfilePage";
@@ -11,6 +12,7 @@ import { SearchPage } from "@/pages/SearchPage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
 import { ComposePage } from "@/pages/ComposePage";
 import {
+  historyDepth,
   isRootRoute,
   RouteScopeProvider,
   routeKey,
@@ -102,6 +104,7 @@ export function AppShell() {
         </aside>
       </div>
       <MobileNav />
+      <LeaveGuard active={!detail && historyDepth() === 0} routeKey={routeKey(route)} />
     </div>
   );
 }

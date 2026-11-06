@@ -17,9 +17,14 @@ import type {
   NotificationLine,
   PostView,
   ProfilePage,
+  SuggestedAccount,
   ThreadView,
   TimelinePage,
+  TrendingTag,
 } from "@core/types";
+
+// 发现接口的行类型由 core 统一声明（report-discover），这里只做壳侧再导出。
+export type { SuggestedAccount, TrendingTag } from "@core/types";
 
 export interface AuthStatus {
   mode: "open" | "auth";
@@ -242,6 +247,24 @@ export class ReportClient {
   async accounts(): Promise<AccountRow[]> {
     const data = (await this.request("/api/accounts")) as { accounts: AccountRow[] };
     return data.accounts;
+  }
+
+  /** 热门标签（report-discover）。后端可能返回 `{tags}` 或裸数组，两端都收。 */
+  async trendingTags(limit = 12): Promise<TrendingTag[]> {
+    const data = (await this.request(`/api/tags/trending?limit=${limit}`)) as
+      | TrendingTag[]
+      | { tags?: TrendingTag[] };
+    if (Array.isArray(data)) return data;
+    return Array.isArray(data.tags) ? data.tags : [];
+  }
+
+  /** 推荐成员（report-discover），排除自己、带 following 标记。 */
+  async suggestedAccounts(limit = 6): Promise<SuggestedAccount[]> {
+    const data = (await this.request(`/api/accounts/suggested?limit=${limit}`)) as
+      | SuggestedAccount[]
+      | { accounts?: SuggestedAccount[] };
+    if (Array.isArray(data)) return data;
+    return Array.isArray(data.accounts) ? data.accounts : [];
   }
 
   // ── posts ──────────────────────────────────────────────────────────────────

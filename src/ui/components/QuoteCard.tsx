@@ -90,7 +90,7 @@ export function QuoteCard({ post, className }: { post: PostView; className?: str
         </span>
       </div>
       <div className="mt-1 line-clamp-3 text-muted-foreground">
-        <Markdown source={quoted.body_md} className="[&_p]:my-0" />
+        <Markdown source={quoted.body_md} className="[&_p]:my-0" linkTags={false} />
       </div>
       <QuoteThumb quoted={quoted} />
       {quoted.quoted_post_id ? (

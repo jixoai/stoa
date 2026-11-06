@@ -31,6 +31,8 @@ import {
   type ProfilePageView,
   type ReadPage,
   type ServerStatus,
+  type SuggestedAccount,
+  type TrendingTag,
   type WhoRow,
 } from "@/lib/api";
 
@@ -453,6 +455,62 @@ export class StaticReportClient extends ReportClient {
   override async following(): Promise<{ accounts: WhoRow[] }> {
     const followees = this.followsBy.get(this.snapshot.viewer) ?? new Set<string>();
     return { accounts: [...followees].map((id) => this.authorRow(id)) };
+  }
+
+  /** 热门标签：与 report-discover 契约同口径（可见根帖，count × 7 天衰减）。 */
+  override async trendingTags(limit = 12): Promise<TrendingTag[]> {
+    const now = Date.now();
+    const stats = new Map<string, { count: number; last_used_at: number }>();
+    for (const post of this.roots()) {
+      for (const tag of post.tags ?? []) {
+        const entry = stats.get(tag) ?? { count: 0, last_used_at: 0 };
+        entry.count += 1;
+        entry.last_used_at = Math.max(entry.last_used_at, post.created_at);
+        stats.set(tag, entry);
+      }
+    }
+    const rows: TrendingTag[] = [...stats].map(([tag, entry]) => {
+      const ageDays = Math.max(0, now - entry.last_used_at) / 86_400_000;
+      return {
+        tag,
+        count: entry.count,
+        last_used_at: entry.last_used_at,
+        score: entry.count * Math.exp(-ageDays / 7),
+      };
+    });
+    rows.sort((a, b) => b.score - a.score || b.count - a.count || a.tag.localeCompare(b.tag));
+    return rows.slice(0, Math.max(1, Math.min(limit, 50)));
+  }
+
+  /** 推荐成员：排除自己，粉丝数降序、同分按最近发帖时间降序。 */
+  override async suggestedAccounts(limit = 6): Promise<SuggestedAccount[]> {
+    const viewer = this.snapshot.viewer;
+    const lastPostAt = new Map<string, number>();
+    for (const post of this.roots()) {
+      lastPostAt.set(post.author, Math.max(lastPostAt.get(post.author) ?? 0, post.created_at));
+    }
+    const following = this.followsBy.get(viewer) ?? new Set<string>();
+    const places = new Map<string, number>();
+    for (const [, followee] of this.snapshot.follows) {
+      places.set(followee, (places.get(followee) ?? 0) + 1);
+    }
+    const rows = this.snapshot.accounts
+      .filter((account) => account.id !== viewer && account.disabled !== 2)
+      .map((account) => ({
+        id: account.id,
+        display: account.display,
+        profile: account.profile,
+        avatar: account.avatar,
+        role: account.role,
+        followers: account.followers ?? places.get(account.id) ?? 0,
+        last_post_at: lastPostAt.get(account.id) ?? null,
+        following: following.has(account.id),
+      }))
+      .sort((a, b) => {
+        if (a.followers !== b.followers) return b.followers - a.followers;
+        return (b.last_post_at ?? 0) - (a.last_post_at ?? 0) || a.id.localeCompare(b.id);
+      });
+    return rows.slice(0, Math.max(1, Math.min(limit, 50)));
   }
 
   override async timeline(opts: {

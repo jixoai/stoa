@@ -18,7 +18,18 @@ const SSE_LABEL: Record<string, string> = {
   closed: "已断开",
 };
 
-export function WhoPanel() {
+/**
+ * 连接信息 + 成员列表的唯一实现（design report-ux-r2 §1）。
+ * 桌面常驻右栏（WhoPanel）与移动端「信息」sheet 共用本组件，禁止写两份。
+ */
+export function WhoPanelContent({
+  className,
+  onNavigate,
+}: {
+  className?: string;
+  /** 移动端 sheet 用：点成员/连接动作前先收起面板。 */
+  onNavigate?: () => void;
+}) {
   const { who, account, ep, auth, sseState, sameOrigin, staticMode, snapshot, refreshWho, switchBackend } =
     useConnection();
 
@@ -40,8 +51,16 @@ export function WhoPanel() {
     }
   }, [ep]);
 
+  const modeLabel = staticMode
+    ? "静态归档 · 只读"
+    : auth?.mode === "auth"
+      ? "在线 · 认证模式"
+      : auth?.mode === "open"
+        ? "在线 · 开放模式"
+        : "连接中";
+
   return (
-    <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
+    <div className={cn("flex flex-col gap-3 p-3", className)}>
       {staticMode ? (
         <Card>
           <CardHeader className="gap-1">
@@ -55,8 +74,22 @@ export function WhoPanel() {
               快照 as_of #{snapshot?.asOfSeq ?? 0} · viewer @{snapshot?.viewer ?? "owner"}
             </CardDescription>
           </CardHeader>
-          <CardContent className="text-xs leading-relaxed text-muted-foreground">
-            这份页面来自导出的内联快照，不连接任何后端；发帖、回复、引用、关注与上传均不可用。
+          <CardContent className="flex flex-col gap-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center justify-between gap-2">
+              <span>模式</span>
+              <span className="text-foreground" data-testid="connection-mode">
+                {modeLabel}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span>身份</span>
+              <span className="font-mono text-foreground" data-testid="connection-identity">
+                @{account?.id ?? snapshot?.viewer ?? "—"}
+              </span>
+            </div>
+            <p className="mt-1 leading-relaxed">
+              这份页面来自导出的内联快照，不连接任何后端；发帖、回复、引用、关注与上传均不可用。
+            </p>
           </CardContent>
         </Card>
       ) : (
@@ -71,12 +104,22 @@ export function WhoPanel() {
               {sameOrigin ? "已连接本站" : "远程实例"}
             </Badge>
           </CardTitle>
-          <CardDescription className="break-all font-mono text-[11px]">{host}</CardDescription>
+          <CardDescription className="break-all font-mono text-[11px]" data-testid="connection-endpoint">
+            {ep ?? host}
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-1.5 text-xs text-muted-foreground">
           <div className="flex items-center justify-between gap-2">
+            <span>模式</span>
+            <span className="text-foreground" data-testid="connection-mode">
+              {modeLabel}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-2">
             <span>身份</span>
-            <span className="font-mono text-foreground">{account ? `@${account.id}` : "—"}</span>
+            <span className="font-mono text-foreground" data-testid="connection-identity">
+              {account ? `@${account.id}` : "—"}
+            </span>
           </div>
           <Collapsible className="rounded-lg border border-border/60 px-2 py-1.5" data-testid="connection-debug">
             <CollapsibleTrigger
@@ -156,7 +199,10 @@ export function WhoPanel() {
                 data-testid={`member-row-${member.id}`}
                 aria-label={`打开 @${member.id} 的成员页`}
                 className="h-auto w-full justify-start gap-2.5 rounded-lg px-2 py-1.5 text-left font-normal"
-                onClick={() => navigate(`/u/${encodeURIComponent(member.id)}`)}
+                onClick={() => {
+                  onNavigate?.();
+                  navigate(`/u/${encodeURIComponent(member.id)}`);
+                }}
               >
                 <AuthorAvatar account={member} fallbackId={member.id} size="small" />
                 <span className="min-w-0 flex-1">
@@ -187,6 +233,15 @@ export function WhoPanel() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/** 桌面常驻右栏（xl 及以上）。移动端使用 InfoSheet，内容与这里完全同源。 */
+export function WhoPanel() {
+  return (
+    <div className="h-full overflow-y-auto">
+      <WhoPanelContent />
     </div>
   );
 }

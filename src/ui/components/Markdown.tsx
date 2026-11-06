@@ -40,39 +40,98 @@ function MarkdownImage({ src, alt }: { src: string; alt: string }) {
  */
 const MENTION_RE = /(^|[^A-Za-z0-9_@/])@([a-z][a-z0-9_-]{0,31})\b/g;
 
-function renderText(text: string, known: Set<string>): React.ReactNode {
-  if (known.size === 0) return <span className="whitespace-pre-wrap">{text}</span>;
-  const nodes: React.ReactNode[] = [];
-  let last = 0;
-  const re = new RegExp(MENTION_RE.source, "g");
-  for (let match = re.exec(text); match; match = re.exec(text)) {
-    const prefix = match[1] ?? "";
-    const id = match[2]!;
-    if (!known.has(id)) continue;
-    const start = match.index + prefix.length;
-    if (start > last) nodes.push(text.slice(last, start));
-    nodes.push(
-      <a
-        key={`${start}-${id}`}
-        href={`#/search?q=${encodeURIComponent(`@${id}`)}`}
-        data-testid="mention-link"
-        className="font-medium text-link underline-offset-2 hover:underline"
-      >
-        @{id}
-      </a>,
-    );
-    last = match.index + match[0].length;
+/**
+ * 正文 #tag（report-ux-r2 §4）：词边界 + `[a-z0-9-]{1,24}`，渲染为可点标签；
+ * 行内代码 / 代码块不参与；链接文字里用 `linkTags=false` 避免嵌套 <a>。
+ */
+const HASHTAG_RE = /(^|[^A-Za-z0-9_-])#([A-Za-z0-9-]{1,24})(?![A-Za-z0-9-])/g;
+
+interface TextMatch {
+  kind: "mention" | "tag";
+  /** 替换起点（不含前缀分隔符） */
+  index: number;
+  /** 替换长度（含 @ / #） */
+  length: number;
+  value: string;
+}
+
+function textMatches(text: string, known: Set<string>, linkTags: boolean): TextMatch[] {
+  const matches: TextMatch[] = [];
+  if (known.size > 0) {
+    const re = new RegExp(MENTION_RE.source, "g");
+    for (let match = re.exec(text); match; match = re.exec(text)) {
+      const prefix = match[1] ?? "";
+      const id = match[2]!;
+      if (!known.has(id)) continue;
+      matches.push({
+        kind: "mention",
+        index: match.index + prefix.length,
+        length: id.length + 1,
+        value: id,
+      });
+    }
   }
-  if (nodes.length === 0) return <span className="whitespace-pre-wrap">{text}</span>;
-  if (last < text.length) nodes.push(text.slice(last));
+  if (linkTags) {
+    const re = new RegExp(HASHTAG_RE.source, "gi");
+    for (let match = re.exec(text); match; match = re.exec(text)) {
+      const prefix = match[1] ?? "";
+      const raw = match[2]!;
+      matches.push({
+        kind: "tag",
+        index: match.index + prefix.length,
+        length: raw.length + 1,
+        value: raw,
+      });
+    }
+  }
+  matches.sort((a, b) => a.index - b.index);
+  return matches;
+}
+
+function renderText(text: string, known: Set<string>, linkTags: boolean): React.ReactNode {
+  const matches = textMatches(text, known, linkTags);
+  if (matches.length === 0) return <span className="whitespace-pre-wrap">{text}</span>;
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.index < cursor) continue;
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+    if (match.kind === "mention") {
+      nodes.push(
+        <a
+          key={`${match.index}-${match.value}`}
+          href={`#/search?q=${encodeURIComponent(`@${match.value}`)}`}
+          data-testid="mention-link"
+          className="font-medium text-link underline-offset-2 hover:underline"
+        >
+          @{match.value}
+        </a>,
+      );
+    } else {
+      const tag = match.value.toLowerCase();
+      nodes.push(
+        <a
+          key={`${match.index}-${tag}`}
+          href={`#/tag/${encodeURIComponent(tag)}`}
+          data-testid="hashtag-link"
+          data-tag={tag}
+          className="rounded-sm bg-muted/70 px-0.5 font-medium text-link underline-offset-2 hover:underline"
+        >
+          #{match.value}
+        </a>,
+      );
+    }
+    cursor = match.index + match.length;
+  }
+  if (cursor < text.length) nodes.push(text.slice(cursor));
   return <span className="whitespace-pre-wrap">{nodes}</span>;
 }
 
-function renderInline(tokens: InlineToken[], known: Set<string>): React.ReactNode[] {
+function renderInline(tokens: InlineToken[], known: Set<string>, linkTags: boolean): React.ReactNode[] {
   return tokens.map((token, index) => {
     switch (token.type) {
       case "text":
-        return <span key={index}>{renderText(token.text, known)}</span>;
+        return <span key={index}>{renderText(token.text, known, linkTags)}</span>;
       case "code":
         return (
           <code key={index} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">
@@ -82,11 +141,11 @@ function renderInline(tokens: InlineToken[], known: Set<string>): React.ReactNod
       case "strong":
         return (
           <strong key={index} className="font-semibold">
-            {renderInline(token.children, known)}
+            {renderInline(token.children, known, linkTags)}
           </strong>
         );
       case "em":
-        return <em key={index}>{renderInline(token.children, known)}</em>;
+        return <em key={index}>{renderInline(token.children, known, linkTags)}</em>;
       case "link":
         return (
           <a
@@ -96,7 +155,7 @@ function renderInline(tokens: InlineToken[], known: Set<string>): React.ReactNod
             rel="noreferrer noopener"
             className="text-link underline-offset-2 hover:underline"
           >
-            {renderInline(token.children, known)}
+            {renderInline(token.children, known, false)}
             {token.href.startsWith("#") ? null : (
               <ExternalLinkIcon className="ml-0.5 inline size-3" aria-hidden />
             )}
@@ -108,7 +167,12 @@ function renderInline(tokens: InlineToken[], known: Set<string>): React.ReactNod
   });
 }
 
-function renderBlock(block: Block, index: number, known: Set<string>): React.ReactNode {
+function renderBlock(
+  block: Block,
+  index: number,
+  known: Set<string>,
+  linkTags: boolean,
+): React.ReactNode {
   switch (block.type) {
     case "heading": {
       const level = Math.min(block.level, 4);
@@ -121,14 +185,14 @@ function renderBlock(block: Block, index: number, known: Set<string>): React.Rea
       const Tag = (`h${level}` as unknown) as "h1";
       return (
         <Tag key={index} className={className}>
-          {renderInline(block.children, known)}
+          {renderInline(block.children, known, linkTags)}
         </Tag>
       );
     }
     case "paragraph":
       return (
         <p key={index} className="my-1 text-[0.95rem] leading-relaxed">
-          {renderInline(block.children, known)}
+          {renderInline(block.children, known, linkTags)}
         </p>
       );
     case "list": {
@@ -142,7 +206,7 @@ function renderBlock(block: Block, index: number, known: Set<string>): React.Rea
           )}
         >
           {block.items.map((item, itemIndex) => (
-            <li key={itemIndex}>{renderInline(item, known)}</li>
+            <li key={itemIndex}>{renderInline(item, known, linkTags)}</li>
           ))}
         </Tag>
       );
@@ -150,7 +214,7 @@ function renderBlock(block: Block, index: number, known: Set<string>): React.Rea
     case "quote":
       return (
         <blockquote key={index} className="my-2 border-l-2 border-border pl-3 text-muted-foreground">
-          {renderInline(block.children, known)}
+          {renderInline(block.children, known, linkTags)}
         </blockquote>
       );
     case "code":
@@ -170,7 +234,7 @@ function renderBlock(block: Block, index: number, known: Set<string>): React.Rea
               <tr>
                 {block.header.map((cell, cellIndex) => (
                   <th key={cellIndex} className="border border-border px-2 py-1 text-left font-medium">
-                    {renderInline(cell, known)}
+                    {renderInline(cell, known, linkTags)}
                   </th>
                 ))}
               </tr>
@@ -180,7 +244,7 @@ function renderBlock(block: Block, index: number, known: Set<string>): React.Rea
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex} className="border border-border px-2 py-1 align-top">
-                      {renderInline(cell, known)}
+                      {renderInline(cell, known, linkTags)}
                     </td>
                   ))}
                 </tr>
@@ -195,7 +259,15 @@ function renderBlock(block: Block, index: number, known: Set<string>): React.Rea
 }
 
 /** markdown 子集渲染（core/markdown.ts 解析；React 元素输出，不拼 innerHTML）。 */
-export function Markdown({ source, className }: { source: string; className?: string }) {
+export function Markdown({
+  source,
+  className,
+  linkTags = true,
+}: {
+  source: string;
+  className?: string;
+  linkTags?: boolean;
+}) {
   const { accounts } = useConnection();
   const known = useMemo(
     () => new Set(accounts.filter((account) => account.disabled !== 2).map((account) => account.id)),
@@ -203,5 +275,5 @@ export function Markdown({ source, className }: { source: string; className?: st
   );
   const blocks = parseMarkdown(source);
   if (blocks.length === 0) return null;
-  return <div className={cn("break-words", className)}>{blocks.map((block, index) => renderBlock(block, index, known))}</div>;
+  return <div className={cn("break-words", className)}>{blocks.map((block, index) => renderBlock(block, index, known, linkTags))}</div>;
 }

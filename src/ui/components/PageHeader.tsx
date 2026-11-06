@@ -15,6 +15,10 @@ export interface PageHeaderProps {
   source?: ReactNode;
   sourceTestId?: string;
   actions?: ReactNode;
+  /** 移动端左侧品牌位（提供时窄屏隐藏标题——tabs 即标题，design report-ux-r2 §1）。 */
+  mobileBrand?: ReactNode;
+  /** 移动端右侧动作（如「信息」按钮），桌面不显示。 */
+  mobileActions?: ReactNode;
   /** 第二行内容（主页 feed tabs 等）。 */
   children?: ReactNode;
   className?: string;
@@ -28,6 +32,8 @@ export function PageHeader({
   source,
   sourceTestId,
   actions,
+  mobileBrand,
+  mobileActions,
   children,
   className,
 }: PageHeaderProps) {
@@ -51,7 +57,17 @@ export function PageHeader({
             <ArrowLeftIcon />
           </Button>
         ) : null}
-        <h1 className="max-w-[58%] truncate px-2 text-center text-base font-semibold">{title}</h1>
+        {mobileBrand ? (
+          <div className="absolute left-2 flex items-center gap-2 xl:hidden">{mobileBrand}</div>
+        ) : null}
+        <h1
+          className={cn(
+            "max-w-[58%] truncate px-2 text-center text-base font-semibold",
+            mobileBrand && "hidden xl:block",
+          )}
+        >
+          {title}
+        </h1>
         {source ? (
           <span
             className="absolute right-2 max-w-[36%] truncate text-[11px] text-muted-foreground"
@@ -62,6 +78,9 @@ export function PageHeader({
         ) : null}
         {actions ? (
           <div className="absolute right-1 flex items-center gap-1">{actions}</div>
+        ) : null}
+        {mobileActions ? (
+          <div className="absolute right-1 flex items-center gap-1 xl:hidden">{mobileActions}</div>
         ) : null}
       </div>
       {children ? <div className="flex justify-center px-2 pb-2">{children}</div> : null}

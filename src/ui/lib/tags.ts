@@ -76,3 +76,18 @@ export function normalizeTagInput(raw: string): string | null {
   const tag = raw.trim().replace(/^#+/, "").toLowerCase();
   return TAG_RE.test(tag) ? tag : null;
 }
+
+/**
+ * 标签即正文（design report-ux-r2 §4）：发送时从正文抽取标签。
+ * 规则与 spec 一致：`/#([a-z0-9-]{1,24})/gi`，去重（小写）、最多 8 个；正文不改写。
+ */
+export function extractTags(body: string): string[] {
+  const tags: string[] = [];
+  const re = /#([a-z0-9-]{1,24})/gi;
+  for (let match = re.exec(body); match; match = re.exec(body)) {
+    const tag = match[1]!.toLowerCase();
+    if (!tags.includes(tag)) tags.push(tag);
+    if (tags.length >= MAX_TAGS) break;
+  }
+  return tags;
+}
