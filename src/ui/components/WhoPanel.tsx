@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { useConnection } from "@/state/connection";
+import { navigate } from "@/lib/router";
 import { roleLabel } from "@/lib/format";
 
 const SSE_LABEL: Record<string, string> = {
@@ -129,10 +130,17 @@ export function WhoPanel() {
             <p className="py-6 text-center text-xs text-muted-foreground">暂无成员</p>
           ) : (
             sorted.map((member) => (
-              <div key={member.id} className="flex items-start gap-2.5">
+              <Button
+                key={member.id}
+                variant="ghost"
+                data-testid={`member-row-${member.id}`}
+                aria-label={`打开 @${member.id} 的成员页`}
+                className="h-auto w-full justify-start gap-2.5 rounded-lg px-2 py-1.5 text-left font-normal"
+                onClick={() => navigate(`/u/${encodeURIComponent(member.id)}`)}
+              >
                 <AuthorAvatar account={member} fallbackId={member.id} size="small" />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5">
                     <span className="truncate text-sm font-medium">{member.display}</span>
                     <span className="truncate text-[11px] text-muted-foreground">@{member.id}</span>
                     <span
@@ -142,17 +150,19 @@ export function WhoPanel() {
                       )}
                       title={member.online ? "在线" : "离线"}
                     />
-                  </div>
-                  <div className="flex items-center gap-1">
+                  </span>
+                  <span className="flex items-center gap-1">
                     <span className="text-[10px] text-muted-foreground">
                       {member.role === "owner" || member.role === "manager" ? "常驻" : roleLabel(member.role)}
                     </span>
-                  </div>
+                  </span>
                   {member.profile ? (
-                    <p className="mt-0.5 line-clamp-2 text-[11px] text-muted-foreground">{member.profile}</p>
+                    <span className="mt-0.5 line-clamp-2 block text-[11px] text-muted-foreground">
+                      {member.profile}
+                    </span>
                   ) : null}
-                </div>
-              </div>
+                </span>
+              </Button>
             ))
           )}
         </CardContent>

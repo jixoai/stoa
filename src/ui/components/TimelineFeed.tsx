@@ -1,3 +1,10 @@
+/**
+ * 时间线渲染面板（主页双流 / 成员页 / 标签页共用）。
+ *
+ * 状态与游标在 `state/feed.tsx`；这里只负责 design §12.2 的视图规则：
+ * 新帖胶囊、顶部自动插入、锚点恢复、下拉刷新、j/k/Enter/r 键盘。
+ * 每个面板实例绑定一个独立的 FeedController，切换 tab 不会串流。
+ */
 import {
   useCallback,
   useEffect,
@@ -5,8 +12,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
-import { cn } from "cn";
 import type { PostView } from "@core/types";
 import { ArrowUpIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { PostCard } from "@/components/PostCard";
@@ -16,7 +23,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { useConnection } from "@/state/connection";
-import { useTimeline, type TimelineAnchor } from "@/state/timeline";
+import type { FeedController, TimelineAnchor } from "@/state/feed";
 import { navigate } from "@/lib/router";
 import { displayCount } from "@/lib/format";
 
@@ -24,9 +31,24 @@ const TOP_THRESHOLD = 5;
 const SETTLE_MS = 160;
 const PILL_MERGE_MS = 400;
 
-export function TimelinePage() {
+export interface TimelineFeedProps {
+  feed: FeedController;
+  /** Stable label for QA/telemetry, e.g. "recommended". */
+  feedName?: string;
+  /** Rendered inside the scroll container, above the list (profile card, etc.). */
+  leading?: ReactNode;
+  emptyTitle?: string;
+  emptyDescription?: string;
+}
+
+export function TimelineFeed({
+  feed,
+  feedName = "feed",
+  leading,
+  emptyTitle = "还没有帖子",
+  emptyDescription = "在「发帖」里写下第一条公示。",
+}: TimelineFeedProps) {
   const { who } = useConnection();
-  const timeline = useTimeline();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [atTop, setAtTop] = useState(true);
   const atTopRef = useRef(true);
@@ -41,12 +63,21 @@ export function TimelinePage() {
   const restoring = useRef(false);
   const restoredOnce = useRef(false);
   const leaving = useRef(false);
-  const restoreAnchor = useRef<TimelineAnchor | null>(null);
   const touchStartY = useRef<number | null>(null);
   const pullArmed = useRef(false);
   const rafRef = useRef<number | null>(null);
 
-  const posts = timeline.posts;
+  const {
+    posts,
+    pending,
+    loadInitial,
+    loadMore,
+    refreshNew,
+    absorbPending,
+    captureAnchor,
+    prepareReturn,
+    takeRestore,
+  } = feed;
 
   const captureNow = useCallback(() => {
     if (leaving.current || !restoredOnce.current) return;
@@ -61,8 +92,8 @@ export function TimelinePage() {
       scrollTop: container.scrollTop,
       atTop: container.scrollTop <= TOP_THRESHOLD,
     };
-    timeline.captureAnchor(anchor);
-  }, [timeline]);
+    captureAnchor(anchor);
+  }, [captureAnchor]);
 
   const maybeAbsorb = useCallback(() => {
     if (!restoredOnce.current) return;
@@ -70,29 +101,30 @@ export function TimelinePage() {
     if (document.visibilityState !== "visible") return;
     if (!atTopRef.current) return;
     if (interacting.current) return;
-    if (timeline.pending.length === 0) return;
-    const ids = new Set(timeline.pending.map((post) => post.id));
-    timeline.absorbPending();
+    if (pending.length === 0) return;
+    const ids = new Set(pending.map((post) => post.id));
+    absorbPending();
     const container = containerRef.current;
     if (container) container.scrollTop = 0;
     setFlashIds(ids);
     window.setTimeout(() => setFlashIds(new Set()), 400);
-  }, [timeline]);
+  }, [pending, absorbPending]);
 
   // Restore anchor first, then refresh (design §12.2).
   useLayoutEffect(() => {
     if (restoredOnce.current) return;
     if (posts.length === 0) return;
-    const requested = timeline.takeRestore();
+    const requested = takeRestore();
     restoredOnce.current = true;
     const container = containerRef.current;
     if (!container) return;
     restoring.current = true;
 
     if (requested) {
-      restoreAnchor.current = requested;
       const target = requested.firstVisibleId
-        ? container.querySelector<HTMLElement>(`[data-post-id="${CSS.escape(requested.firstVisibleId)}"]`)
+        ? container.querySelector<HTMLElement>(
+            `[data-post-id="${CSS.escape(requested.firstVisibleId)}"]`,
+          )
         : null;
       if (target) {
         const containerTop = container.getBoundingClientRect().top;
@@ -111,9 +143,16 @@ export function TimelinePage() {
     requestAnimationFrame(() => {
       restoring.current = false;
       // 恢复之后才刷新；非顶部时新帖进 pending，位置不动
-      void timeline.refreshNew();
+      void refreshNew();
     });
-  }, [posts.length, timeline]);
+  }, [posts.length, takeRestore, refreshNew]);
+
+  // 离开面板（切 tab / 进详情）时记下回退标志；锚点已在滚动时持续捕获。
+  useEffect(() => {
+    return () => {
+      prepareReturn();
+    };
+  }, [prepareReturn]);
 
   // Scroll → atTop/anchor/load more + 惯性结束判定
   const onScroll = useCallback(() => {
@@ -131,7 +170,7 @@ export function TimelinePage() {
       });
     }
     if (container.scrollHeight - container.scrollTop - container.clientHeight < 640) {
-      void timeline.loadMore();
+      void loadMore();
     }
     if (settleTimer.current !== null) window.clearTimeout(settleTimer.current);
     settleTimer.current = window.setTimeout(() => {
@@ -140,7 +179,7 @@ export function TimelinePage() {
       maybeAbsorb();
       captureNow();
     }, SETTLE_MS);
-  }, [captureNow, maybeAbsorb, timeline]);
+  }, [captureNow, maybeAbsorb, loadMore]);
 
   useEffect(() => {
     return () => {
@@ -157,33 +196,33 @@ export function TimelinePage() {
       setTabVisible(visible);
       if (visible) {
         maybeAbsorb();
-        void timeline.refreshNew();
+        void refreshNew();
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => document.removeEventListener("visibilitychange", onVisibility);
-  }, [maybeAbsorb, timeline]);
+  }, [maybeAbsorb, refreshNew]);
 
   // Pill count: 400ms debounce / 99+ / hidden accumulates silently.
   useEffect(() => {
     if (pillTimer.current !== null) window.clearTimeout(pillTimer.current);
-    if (timeline.pending.length === 0 || !tabVisible || atTop) {
+    if (pending.length === 0 || !tabVisible || atTop) {
       setPillCount(0);
       return;
     }
     pillTimer.current = window.setTimeout(() => {
       pillTimer.current = null;
-      setPillCount(timeline.pending.length);
+      setPillCount(pending.length);
     }, PILL_MERGE_MS);
-  }, [timeline.pending.length, tabVisible, atTop]);
+  }, [pending.length, tabVisible, atTop]);
 
   // When settled at top (no drag/inertia), absorb immediately.
   useEffect(() => {
-    if (timeline.pending.length > 0 && atTop && tabVisible) {
+    if (pending.length > 0 && atTop && tabVisible) {
       const timer = window.setTimeout(maybeAbsorb, 0);
       return () => window.clearTimeout(timer);
     }
-  }, [timeline.pending.length, atTop, tabVisible, maybeAbsorb]);
+  }, [pending.length, atTop, tabVisible, maybeAbsorb]);
 
   // Keyboard: j/k move, Enter open, r reply (design §12.6)
   useEffect(() => {
@@ -203,7 +242,9 @@ export function TimelinePage() {
             event.key === "j"
               ? Math.min(posts.length - 1, index < 0 ? 0 : index + 1)
               : Math.max(0, index < 0 ? 0 : index - 1);
-          const el = document.querySelector<HTMLElement>(`[data-post-id="${CSS.escape(posts[next]!.id)}"]`);
+          const el = document.querySelector<HTMLElement>(
+            `[data-post-id="${CSS.escape(posts[next]!.id)}"]`,
+          );
           el?.scrollIntoView({ block: "nearest" });
           return next;
         });
@@ -221,174 +262,167 @@ export function TimelinePage() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [posts, selectedIndex, captureNow, timeline]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posts, selectedIndex]);
 
   const leaveFor = (path: string) => {
     captureNow();
     leaving.current = true;
-    timeline.prepareReturn();
+    prepareReturn();
     navigate(path);
   };
-  const openPost = (post: PostView) => {
-    leaveFor(`/p/${encodeURIComponent(post.id)}`);
-  };
-  const replyPost = (post: PostView) => {
-    leaveFor(`/p/${encodeURIComponent(post.id)}?reply=1`);
-  };
-  const quotePost = (post: PostView) => {
+  const openPost = (post: PostView) => leaveFor(`/p/${encodeURIComponent(post.id)}`);
+  const replyPost = (post: PostView) => leaveFor(`/p/${encodeURIComponent(post.id)}?reply=1`);
+  const quotePost = (post: PostView) =>
     leaveFor(`/compose?quote=${encodeURIComponent(post.id)}`);
-  };
 
   const pendingAuthors = useMemo(
     () =>
-      timeline.pending
+      pending
         .slice(0, 3)
         .map((post) => who.find((row) => row.id === post.author))
         .filter((row): row is NonNullable<typeof row> => Boolean(row)),
-    [timeline.pending, who],
+    [pending, who],
   );
 
   const pillVisible = pillCount > 0 && !atTop && tabVisible;
+  const showSkeleton = feed.initialLoading && posts.length === 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b border-border/60 bg-background/80 px-4 backdrop-blur-md">
-        <h1 className="text-base font-semibold">主页</h1>
-      </header>
-
-      <div className="relative flex min-h-0 flex-1 flex-col">
-        {pillVisible ? (
-          <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center">
-            <Button
-              type="button"
-              data-testid="new-posts-pill"
-              className="pointer-events-auto h-8 rounded-full px-3 shadow-lg animate-in fade-in slide-in-from-top-2"
-              onClick={() => {
-                const ids = new Set(timeline.pending.map((post) => post.id));
-                timeline.absorbPending();
-                setFlashIds(ids);
-                window.setTimeout(() => setFlashIds(new Set()), 400);
-                containerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-              }}
-            >
-              {timeline.pending.length >= 4 && pendingAuthors.length > 0 ? (
-                <span className="mr-1 flex -space-x-1">
-                  {pendingAuthors.slice(0, 3).map((author) => (
-                    <span
-                      key={author.id}
-                      className="flex size-5 items-center justify-center rounded-full bg-muted text-[9px] ring-1 ring-background"
-                      title={author.display}
-                    >
-                      {author.display.slice(0, 1).toUpperCase()}
-                    </span>
-                  ))}
-                </span>
-              ) : null}
-              <ArrowUpIcon data-icon="inline-start" />
-              {displayCount(timeline.pending.length)} 条新帖子
-            </Button>
-          </div>
-        ) : null}
-
-        {pullDistance > 0 ? (
-          <div
-            className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center text-xs text-muted-foreground"
-            style={{ transform: `translateY(${Math.min(40, pullDistance)}px)` }}
+    <div className="relative flex min-h-0 flex-1 flex-col" data-feed={feedName}>
+      {pillVisible ? (
+        <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center">
+          <Button
+            type="button"
+            data-testid="new-posts-pill"
+            className="pointer-events-auto h-8 rounded-full px-3 shadow-lg animate-in fade-in slide-in-from-top-2"
+            onClick={() => {
+              const ids = new Set(pending.map((post) => post.id));
+              absorbPending();
+              setFlashIds(ids);
+              window.setTimeout(() => setFlashIds(new Set()), 400);
+              containerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+            }}
           >
-            {pullDistance > 60 ? "松开刷新" : "下拉刷新"}
+            {pending.length >= 4 && pendingAuthors.length > 0 ? (
+              <span className="mr-1 flex -space-x-1">
+                {pendingAuthors.slice(0, 3).map((author) => (
+                  <span
+                    key={author.id}
+                    className="flex size-5 items-center justify-center rounded-full bg-muted text-[9px] ring-1 ring-background"
+                    title={author.display}
+                  >
+                    {author.display.slice(0, 1).toUpperCase()}
+                  </span>
+                ))}
+              </span>
+            ) : null}
+            <ArrowUpIcon data-icon="inline-start" />
+            {displayCount(pending.length)} 条新帖子
+          </Button>
+        </div>
+      ) : null}
+
+      {pullDistance > 0 ? (
+        <div
+          className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center text-xs text-muted-foreground"
+          style={{ transform: `translateY(${Math.min(40, pullDistance)}px)` }}
+        >
+          {pullDistance > 60 ? "松开刷新" : "下拉刷新"}
+        </div>
+      ) : null}
+
+      <div
+        ref={containerRef}
+        data-testid="timeline-scroll"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+        onScroll={onScroll}
+        onTouchStart={(event) => {
+          const container = containerRef.current;
+          if (!container || container.scrollTop > 0) return;
+          touchStartY.current = event.touches[0]?.clientY ?? null;
+          pullArmed.current = true;
+        }}
+        onTouchMove={(event) => {
+          if (!pullArmed.current || touchStartY.current === null) return;
+          const delta = (event.touches[0]?.clientY ?? 0) - touchStartY.current;
+          if (delta > 0) setPullDistance(Math.min(90, delta));
+        }}
+        onTouchEnd={() => {
+          if (pullArmed.current && pullDistance > 60) {
+            void refreshNew();
+          }
+          pullArmed.current = false;
+          touchStartY.current = null;
+          setPullDistance(0);
+        }}
+      >
+        {leading}
+
+        {showSkeleton ? (
+          <div className="flex flex-col gap-2 p-4">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div key={index} className="flex gap-3">
+                <Skeleton className="size-10 rounded-full" />
+                <div className="flex flex-1 flex-col gap-2">
+                  <Skeleton className="h-4 w-40" />
+                  <Skeleton className="h-4 w-full" />
+                  <Skeleton className="h-4 w-3/4" />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : posts.length === 0 ? (
+          <Empty className="py-20">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <RefreshCwIcon />
+              </EmptyMedia>
+              <EmptyTitle>{emptyTitle}</EmptyTitle>
+              <EmptyDescription>{emptyDescription}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : (
+          <div className="divide-y divide-border/60">
+            {posts.map((post, index) => (
+              <div key={post.id} className={flashIds.has(post.id) ? "report-row-in" : undefined}>
+                <PostCard
+                  post={post}
+                  selected={index === selectedIndex}
+                  onOpen={openPost}
+                  onReply={replyPost}
+                  onQuote={quotePost}
+                />
+              </div>
+            ))}
+            <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
+              {feed.loadingMore ? (
+                <span className="flex items-center gap-2">
+                  <Spinner /> 加载更早的帖子…
+                </span>
+              ) : feed.hasMore ? (
+                <Button variant="ghost" size="sm" onClick={() => void loadMore()}>
+                  加载更早的帖子
+                </Button>
+              ) : (
+                "没有更多了"
+              )}
+            </div>
+          </div>
+        )}
+
+        {feed.error ? (
+          <div className="p-4">
+            <Alert variant="destructive">
+              <AlertDescription className="flex flex-wrap items-center gap-2">
+                {feed.error}
+                <Button size="sm" variant="outline" onClick={() => void loadInitial()}>
+                  <Loader2Icon data-icon="inline-start" /> 重试
+                </Button>
+              </AlertDescription>
+            </Alert>
           </div>
         ) : null}
-
-        <div
-          ref={containerRef}
-          data-testid="timeline-scroll"
-          className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
-          onScroll={onScroll}
-          onTouchStart={(event) => {
-            const container = containerRef.current;
-            if (!container || container.scrollTop > 0) return;
-            touchStartY.current = event.touches[0]?.clientY ?? null;
-            pullArmed.current = true;
-          }}
-          onTouchMove={(event) => {
-            if (!pullArmed.current || touchStartY.current === null) return;
-            const delta = (event.touches[0]?.clientY ?? 0) - touchStartY.current;
-            if (delta > 0) setPullDistance(Math.min(90, delta));
-          }}
-          onTouchEnd={() => {
-            if (pullArmed.current && pullDistance > 60) {
-              void timeline.refreshNew();
-            }
-            pullArmed.current = false;
-            touchStartY.current = null;
-            setPullDistance(0);
-          }}
-        >
-          {timeline.initialLoading ? (
-            <div className="flex flex-col gap-2 p-4">
-              {Array.from({ length: 6 }).map((_, index) => (
-                <div key={index} className="flex gap-3">
-                  <Skeleton className="size-10 rounded-full" />
-                  <div className="flex flex-1 flex-col gap-2">
-                    <Skeleton className="h-4 w-40" />
-                    <Skeleton className="h-4 w-full" />
-                    <Skeleton className="h-4 w-3/4" />
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : posts.length === 0 ? (
-            <Empty className="py-20">
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <RefreshCwIcon />
-                </EmptyMedia>
-                <EmptyTitle>还没有帖子</EmptyTitle>
-                <EmptyDescription>在「发帖」里写下第一条公示。</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          ) : (
-            <div className="divide-y divide-border/60">
-              {posts.map((post, index) => (
-                <div key={post.id} className={flashIds.has(post.id) ? "report-row-in" : undefined}>
-                  <PostCard
-                    post={post}
-                    selected={index === selectedIndex}
-                    onOpen={openPost}
-                    onReply={replyPost}
-                    onQuote={quotePost}
-                  />
-                </div>
-              ))}
-              <div className="flex items-center justify-center py-6 text-sm text-muted-foreground">
-                {timeline.loadingMore ? (
-                  <span className="flex items-center gap-2">
-                    <Spinner /> 加载更早的帖子…
-                  </span>
-                ) : timeline.hasMore ? (
-                  <Button variant="ghost" size="sm" onClick={() => void timeline.loadMore()}>
-                    加载更早的帖子
-                  </Button>
-                ) : (
-                  "没有更多了"
-                )}
-              </div>
-            </div>
-          )}
-
-          {timeline.error ? (
-            <div className="p-4">
-              <Alert variant="destructive">
-                <AlertDescription className="flex flex-wrap items-center gap-2">
-                  {timeline.error}
-                  <Button size="sm" variant="outline" onClick={() => void timeline.loadInitial()}>
-                    <Loader2Icon data-icon="inline-start" /> 重试
-                  </Button>
-                </AlertDescription>
-              </Alert>
-            </div>
-          ) : null}
-        </div>
       </div>
     </div>
   );

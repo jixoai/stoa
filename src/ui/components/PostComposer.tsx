@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Markdown } from "@/components/Markdown";
+import { TagPicker } from "@/components/TagPicker";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { toast } from "@/components/ui/toast";
 import { useConnection } from "@/state/connection";
@@ -91,6 +92,7 @@ export function PostComposer({
   const [body, setBody] = useState("");
   const [tab, setTab] = useState<"write" | "preview">("write");
   const [items, setItems] = useState<UploadItem[]>([]);
+  const [tags, setTags] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggest, setSuggest] = useState<{ query: string; start: number; end: number } | null>(null);
@@ -278,9 +280,15 @@ export function PostComposer({
     try {
       const result =
         mode === "post"
-          ? await client.createPost({ body, quote: quotedPost?.id ?? null, media: mediaHashes })
-          : await client.createReply(parentId!, { body, media: mediaHashes });
+          ? await client.createPost({
+              body,
+              quote: quotedPost?.id ?? null,
+              media: mediaHashes,
+              tags,
+            })
+          : await client.createReply(parentId!, { body, media: mediaHashes, tags });
       setBody("");
+      setTags([]);
       setItems((prev) => {
         for (const item of prev) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
         return [];
@@ -414,6 +422,8 @@ export function PostComposer({
           </div>
         </Card>
       ) : null}
+
+      <TagPicker value={tags} onChange={setTags} disabled={busy} />
 
       {items.length > 0 ? (
         <div className="grid grid-cols-2 gap-2">

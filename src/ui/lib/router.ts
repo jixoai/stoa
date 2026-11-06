@@ -1,28 +1,38 @@
 /**
  * hash 路由 —— 任意静态宿主（含 file://）零配置可用，不依赖 SPA fallback。
- * 路由表：`#/`、`#/p/<id>`、`#/search[?q=]`、`#/notifications`、`#/compose[?quote=]`
+ * 路由表：`#/`、`#/?tab=following`、`#/p/<id>`、`#/u/<account>`、`#/tag/<tag>`、
+ *         `#/search[?q=]`、`#/notifications`、`#/compose[?quote=]`
  */
 import { useCallback, useEffect, useState } from "react";
+import type { FeedTab } from "@core/types";
 
 export type Route =
-  | { name: "home" }
+  | { name: "home"; tab: FeedTab }
   | { name: "post"; id: string; reply?: boolean }
+  | { name: "profile"; account: string }
+  | { name: "tag"; tag: string }
   | { name: "search"; q: string }
   | { name: "notifications" }
   | { name: "compose"; quote: string | null };
 
 function parseHash(hash: string): Route {
   const raw = hash.replace(/^#/, "") || "/";
-  const [pathPart, queryPart = ""] = raw.split("?");
+  const [pathPart = "/", queryPart = ""] = raw.split("?");
   const params = new URLSearchParams(queryPart);
-  const segments = pathPart!.split("/").filter(Boolean);
+  const segments = pathPart.split("/").filter(Boolean);
   if (segments[0] === "p" && segments[1]) {
     return { name: "post", id: decodeURIComponent(segments[1]), reply: params.get("reply") === "1" };
+  }
+  if (segments[0] === "u" && segments[1]) {
+    return { name: "profile", account: decodeURIComponent(segments[1]) };
+  }
+  if (segments[0] === "tag" && segments[1]) {
+    return { name: "tag", tag: decodeURIComponent(segments[1]) };
   }
   if (segments[0] === "search") return { name: "search", q: params.get("q") ?? "" };
   if (segments[0] === "notifications") return { name: "notifications" };
   if (segments[0] === "compose") return { name: "compose", quote: params.get("quote") };
-  return { name: "home" };
+  return { name: "home", tab: params.get("tab") === "following" ? "following" : "recommended" };
 }
 
 export function useRoute(): Route {

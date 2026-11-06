@@ -1,11 +1,11 @@
 /**
- * 时间线状态（跨路由持久）——design §12.2 的硬规则都收敛在这里：
+ * 通用帖子流控制器（主页双流 / 成员页 / 标签页共用一套机制）。
  *
- * - 新数据一律先入 `pending[]`，绝不直接插入 `posts`
- * - 是否吸收由视图层判定（atTop ≤5px、无拖拽/惯性、tab 可见、非锚点恢复中）
- * - 时间线位置锚点 `{firstVisibleId, offsetPx, scrollTop, atTop}` 在离开详情前
- *   捕获，返回时先恢复再刷新
- * - 下拉/补拉都按 post id 去重；向下滚动用 before 游标，向上刷新用 after 游标
+ * design §12.2 的硬规则全部收敛在这里，视图层只决定「何时吸收」：
+ * - 新数据一律先进 `pending[]`，绝不直接插入 `posts`
+ * - 向下滚动用 before 游标；向上刷新用 after 游标；按 post id 去重
+ * - 每个 feed 实例拥有**独立**的游标 / pending / 锚点（切 tab 不串流）
+ * - 断线重连后按 after 游标补拉；去重由 mergePosts 保证
  */
 import {
   createContext,
@@ -28,7 +28,23 @@ export interface TimelineAnchor {
   atTop: boolean;
 }
 
-interface TimelineState {
+/** The subset of TimelinePage-like responses the feed machinery needs. */
+export interface FeedPageData {
+  posts: PostView[];
+  has_more: boolean;
+  next_cursor: string | null;
+  as_of_seq?: number;
+}
+
+export interface FeedQuery {
+  before?: string | null;
+  after?: string | null;
+  limit?: number;
+}
+
+export type FeedLoader = (query: FeedQuery) => Promise<FeedPageData>;
+
+export interface FeedState {
   posts: PostView[];
   pending: PostView[];
   hasMore: boolean;
@@ -40,7 +56,7 @@ interface TimelineState {
   asOfSeq: number;
 }
 
-export interface TimelineApi extends TimelineState {
+export interface FeedController extends FeedState {
   loadInitial: () => Promise<void>;
   loadMore: () => Promise<void>;
   refreshNew: () => void;
@@ -49,13 +65,31 @@ export interface TimelineApi extends TimelineState {
   prepareReturn: () => void;
   takeRestore: () => TimelineAnchor | null;
   clearRestore: () => void;
-  markInitialized: () => void;
-  initialized: boolean;
 }
 
-const TimelineContext = createContext<TimelineApi | null>(null);
+export interface UsePostFeedOptions {
+  /** Disable the app-wide SSE subscription (member page uses its own author stream). */
+  realtime?: boolean;
+  /** Load the first page on mount (default true). */
+  autoLoad?: boolean;
+  /** Change this to reset all state and reload (e.g. member account id). */
+  resetKey?: string;
+  limit?: number;
+}
 
-function mergePosts(...groups: PostView[][]): PostView[] {
+const EMPTY_STATE: FeedState = {
+  posts: [],
+  pending: [],
+  hasMore: false,
+  oldestCursor: null,
+  initialLoading: true,
+  loadingMore: false,
+  refreshing: false,
+  error: null,
+  asOfSeq: 0,
+};
+
+export function mergePosts(...groups: PostView[][]): PostView[] {
   const byId = new Map<string, PostView>();
   for (const group of groups) {
     for (const post of group) byId.set(post.id, post);
@@ -66,33 +100,44 @@ function mergePosts(...groups: PostView[][]): PostView[] {
   });
 }
 
-export function TimelineProvider({ children }: { children: ReactNode }) {
-  const { client, subscribeEvents, sseState } = useConnection();
-  const [state, setState] = useState<TimelineState>({
-    posts: [],
-    pending: [],
-    hasMore: false,
-    oldestCursor: null,
-    initialLoading: true,
-    loadingMore: false,
-    refreshing: false,
-    error: null,
-    asOfSeq: 0,
-  });
+/**
+ * One independent feed. The loader may be an inline closure: it is read through
+ * a ref, so re-renders never re-trigger requests or reset cursors.
+ */
+export function usePostFeed(
+  loader: FeedLoader | null,
+  options: UsePostFeedOptions = {},
+): FeedController {
+  const { realtime = true, autoLoad = true, resetKey = "", limit = 30 } = options;
+  const { subscribeEvents, sseState } = useConnection();
+  const [state, setState] = useState<FeedState>(EMPTY_STATE);
   const stateRef = useRef(state);
   stateRef.current = state;
+
+  const loaderRef = useRef<FeedLoader | null>(loader);
+  loaderRef.current = loader;
+  const hasLoader = loader !== null;
+  const autoloadRef = useRef({ autoLoad, limit });
+  autoloadRef.current = { autoLoad, limit };
+
+  const generation = useRef(0);
   const initializedRef = useRef(false);
   const refreshInFlight = useRef(false);
   const refreshAgain = useRef(false);
   const refreshTimer = useRef<number | null>(null);
   const savedAnchor = useRef<TimelineAnchor | null>(null);
   const restoreNext = useRef(false);
+  const lastKey = useRef(resetKey);
 
   const loadInitial = useCallback(async () => {
-    if (!client) return;
+    const load = loaderRef.current;
+    if (!load) return;
+    const gen = generation.current;
+    const { limit: pageSize } = autoloadRef.current;
     setState((prev) => ({ ...prev, initialLoading: true, error: null }));
     try {
-      const page = await client.timeline({ limit: 30 });
+      const page = await load({ limit: pageSize });
+      if (gen !== generation.current) return;
       initializedRef.current = true;
       setState({
         posts: mergePosts(page.posts),
@@ -103,40 +148,48 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
         loadingMore: false,
         refreshing: false,
         error: null,
-        asOfSeq: page.as_of_seq,
+        asOfSeq: page.as_of_seq ?? 0,
       });
     } catch (err) {
+      if (gen !== generation.current) return;
       setState((prev) => ({ ...prev, initialLoading: false, error: (err as Error).message }));
     }
-  }, [client]);
+  }, []);
 
   const loadMore = useCallback(async () => {
-    if (!client) return;
+    const load = loaderRef.current;
+    if (!load) return;
     const current = stateRef.current;
     if (!current.hasMore || current.loadingMore || current.initialLoading) return;
+    const gen = generation.current;
     setState((prev) => ({ ...prev, loadingMore: true }));
     try {
-      const page = await client.timeline({ before: current.oldestCursor, limit: 30 });
+      const page = await load({ before: current.oldestCursor, limit: 30 });
+      if (gen !== generation.current) return;
       setState((prev) => ({
         ...prev,
         posts: mergePosts(prev.posts, page.posts),
         hasMore: page.has_more,
         oldestCursor: page.next_cursor,
         loadingMore: false,
-        asOfSeq: Math.max(prev.asOfSeq, page.as_of_seq),
+        asOfSeq: Math.max(prev.asOfSeq, page.as_of_seq ?? 0),
       }));
     } catch (err) {
+      if (gen !== generation.current) return;
       setState((prev) => ({ ...prev, loadingMore: false, error: (err as Error).message }));
     }
-  }, [client]);
+  }, []);
 
   const doRefresh = useCallback(async () => {
-    if (!client) return;
+    const load = loaderRef.current;
+    if (!load) return;
     if (refreshInFlight.current) {
       refreshAgain.current = true;
       return;
     }
     const current = stateRef.current;
+    if (current.initialLoading) return;
+    const gen = generation.current;
     const top = current.pending[0] ?? current.posts[0];
     if (!top) {
       await loadInitial();
@@ -148,11 +201,13 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
     let after: string | null = postCursor(top);
     try {
       for (let page = 0; page < 5 && after; page += 1) {
-        const result = await client.timeline({ after, limit: 100 });
+        const result = await load({ after, limit: 100 });
+        if (gen !== generation.current) return;
         collected.push(...result.posts);
         if (!result.has_more || !result.next_cursor) break;
         after = result.next_cursor;
       }
+      if (gen !== generation.current) return;
       if (collected.length > 0) {
         setState((prev) => ({
           ...prev,
@@ -165,6 +220,7 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
         setState((prev) => ({ ...prev, refreshing: false }));
       }
     } catch (err) {
+      if (gen !== generation.current) return;
       setState((prev) => ({ ...prev, refreshing: false, error: (err as Error).message }));
     } finally {
       refreshInFlight.current = false;
@@ -173,7 +229,7 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
         void doRefresh();
       }
     }
-  }, [client, loadInitial]);
+  }, [loadInitial]);
 
   const refreshNew = useCallback(() => {
     if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
@@ -183,25 +239,40 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
     }, 250);
   }, [doRefresh]);
 
-  // initial load once per connection
+  // resetKey change → drop cursors/pending/anchor, then load the new source.
   useEffect(() => {
-    if (!client || initializedRef.current) return;
+    if (lastKey.current === resetKey) return;
+    lastKey.current = resetKey;
+    generation.current += 1;
+    initializedRef.current = false;
+    restoreNext.current = false;
+    savedAnchor.current = null;
+    if (refreshTimer.current !== null) {
+      window.clearTimeout(refreshTimer.current);
+      refreshTimer.current = null;
+    }
+    setState(EMPTY_STATE);
+  }, [resetKey]);
+
+  // initial load (once per source)
+  useEffect(() => {
+    if (!loaderRef.current || !autoLoad || initializedRef.current) return;
     void loadInitial();
-  }, [client, loadInitial]);
+  }, [hasLoader, autoLoad, loadInitial, resetKey]);
 
-  // SSE → new-data fetch (debounced); events for other threads still matter
+  // SSE → debounced after-cursor refresh (dedupe happens in mergePosts)
   useEffect(() => {
-    return subscribeEvents(() => {
-      refreshNew();
-    });
-  }, [subscribeEvents, refreshNew]);
+    if (!realtime) return;
+    return subscribeEvents(() => refreshNew());
+  }, [realtime, subscribeEvents, refreshNew]);
 
-  // 断线重连：hello 之后按 after 游标补拉（按 id 去重由 mergePosts 保证）
+  // reconnect → catch up from the feed's own top cursor
   useEffect(() => {
+    if (!realtime) return;
     if (sseState === "open") refreshNew();
-  }, [sseState, refreshNew]);
+  }, [realtime, sseState, refreshNew]);
 
-  // When the tab comes back, catch up on anything missed while throttled.
+  // tab visible again → catch up on anything missed while throttled
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState === "visible") refreshNew();
@@ -239,11 +310,7 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
     restoreNext.current = false;
   }, []);
 
-  const markInitialized = useCallback(() => {
-    initializedRef.current = true;
-  }, []);
-
-  const value = useMemo<TimelineApi>(
+  return useMemo<FeedController>(
     () => ({
       ...state,
       loadInitial,
@@ -254,8 +321,6 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
       prepareReturn,
       takeRestore,
       clearRestore,
-      markInitialized,
-      initialized: initializedRef.current,
     }),
     [
       state,
@@ -267,15 +332,36 @@ export function TimelineProvider({ children }: { children: ReactNode }) {
       prepareReturn,
       takeRestore,
       clearRestore,
-      markInitialized,
     ],
   );
-
-  return <TimelineContext.Provider value={value}>{children}</TimelineContext.Provider>;
 }
 
-export function useTimeline(): TimelineApi {
-  const value = useContext(TimelineContext);
-  if (!value) throw new Error("useTimeline must be used inside TimelineProvider");
+// ── home feeds (two independent tabs; design §5.0) ───────────────────────────
+
+interface HomeFeedsValue {
+  recommended: FeedController;
+  following: FeedController;
+}
+
+const HomeFeedsContext = createContext<HomeFeedsValue | null>(null);
+
+export function HomeFeedsProvider({ children }: { children: ReactNode }) {
+  const { client } = useConnection();
+  const recommended = usePostFeed(
+    client ? (query) => client.feed({ tab: "recommended", ...query }) : null,
+  );
+  const following = usePostFeed(
+    client ? (query) => client.feed({ tab: "following", ...query }) : null,
+  );
+  const value = useMemo<HomeFeedsValue>(
+    () => ({ recommended, following }),
+    [recommended, following],
+  );
+  return <HomeFeedsContext.Provider value={value}>{children}</HomeFeedsContext.Provider>;
+}
+
+export function useHomeFeeds(): HomeFeedsValue {
+  const value = useContext(HomeFeedsContext);
+  if (!value) throw new Error("useHomeFeeds must be used inside HomeFeedsProvider");
   return value;
 }

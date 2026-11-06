@@ -1,6 +1,8 @@
 import { DesktopNav, MobileNav } from "@/components/Nav";
 import { WhoPanel } from "@/components/WhoPanel";
-import { TimelinePage } from "@/pages/TimelinePage";
+import { HomePage } from "@/pages/HomePage";
+import { ProfilePage } from "@/pages/ProfilePage";
+import { TagPage } from "@/pages/TagPage";
 import { ThreadPage } from "@/pages/ThreadPage";
 import { SearchPage } from "@/pages/SearchPage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
@@ -12,6 +14,10 @@ function RouteView() {
   switch (route.name) {
     case "post":
       return <ThreadPage />;
+    case "profile":
+      return <ProfilePage />;
+    case "tag":
+      return <TagPage />;
     case "search":
       return <SearchPage />;
     case "notifications":
@@ -19,7 +25,7 @@ function RouteView() {
     case "compose":
       return <ComposePage />;
     default:
-      return <TimelinePage />;
+      return <HomePage />;
   }
 }
 

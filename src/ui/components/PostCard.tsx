@@ -12,6 +12,7 @@ import {
 import { Markdown } from "@/components/Markdown";
 import { MediaGrid } from "@/components/MediaGrid";
 import { QuoteCard } from "@/components/QuoteCard";
+import { TagChips } from "@/components/TagChips";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -87,6 +88,7 @@ export function PostCard({
     return (
       <article
         data-post-id={post.id}
+        data-author={post.author}
         data-testid={testId ?? "post-self-continuation"}
         className={cn("relative flex gap-2 px-3 py-1.5", selected && "bg-accent/50", className)}
         onClick={(event) => {
@@ -136,6 +138,7 @@ export function PostCard({
               <Markdown source={post.body_md} className="text-[0.95rem]" />
               <MediaGrid media={post.media} />
               <QuoteCard post={post} />
+              <TagChips tags={post.tags} />
             </>
           )}
         </div>
@@ -146,6 +149,7 @@ export function PostCard({
   return (
     <article
       data-post-id={post.id}
+      data-author={post.author}
       data-testid={testId ?? "post-card"}
       data-variant={variant}
       className={cn(
@@ -216,6 +220,7 @@ export function PostCard({
               ) : null}
               <MediaGrid media={post.media} />
               <QuoteCard post={post} />
+              <TagChips tags={post.tags} />
             </>
           )}
 

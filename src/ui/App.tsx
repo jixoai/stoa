@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Toaster } from "@/components/ui/toast";
 import { ConnectionProvider, useConnection } from "@/state/connection";
-import { TimelineProvider } from "@/state/timeline";
+import { HomeFeedsProvider } from "@/state/feed";
 import { NotificationsProvider } from "@/state/notifications";
 import { LandingPage } from "@/pages/LandingPage";
 import { LoginGate } from "@/pages/LoginGate";
@@ -47,11 +47,11 @@ function ErrorScreen() {
 
 function ReadyApp() {
   return (
-    <TimelineProvider>
+    <HomeFeedsProvider>
       <NotificationsProvider>
         <AppShell />
       </NotificationsProvider>
-    </TimelineProvider>
+    </HomeFeedsProvider>
   );
 }
 

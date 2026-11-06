@@ -6,7 +6,7 @@ import { initials } from "@/lib/format";
 interface AuthorAvatarProps {
   account: AuthorView | null | undefined;
   fallbackId: string;
-  size?: "normal" | "small" | "tiny";
+  size?: "large" | "normal" | "small" | "tiny";
   className?: string;
 }
 
@@ -17,7 +17,7 @@ interface AuthorAvatarProps {
  */
 export function AuthorAvatar({ account, fallbackId, size = "normal", className }: AuthorAvatarProps) {
   const name = account?.display || fallbackId;
-  const pixel = size === "small" ? 24 : size === "tiny" ? 20 : 42;
+  const pixel = size === "large" ? 64 : size === "small" ? 24 : size === "tiny" ? 20 : 42;
   return (
     <Avatar
       data-size={size === "normal" ? "default" : "sm"}
@@ -32,7 +32,7 @@ export function AuthorAvatar({ account, fallbackId, size = "normal", className }
       <AvatarFallback
         className={cn(
           "bg-muted font-semibold text-foreground",
-          size === "normal" ? "text-sm" : "text-[10px]",
+          size === "large" ? "text-xl" : size === "normal" ? "text-sm" : "text-[10px]",
         )}
       >
         {initials(name)}

@@ -9,11 +9,15 @@
  */
 import type {
   Account,
+  AccountProfile,
   AuthorView,
+  FeedPage,
+  FeedTab,
   MediaRef,
   NotificationEventLine,
   NotificationLine,
   PostView,
+  ProfilePage,
   ThreadView,
   TimelinePage,
   WhoEntry,
@@ -59,6 +63,23 @@ export interface UploadedMedia {
   ext: string;
   bytes: number;
   url: string;
+}
+
+/** Profile account as returned by `GET /api/profile/:account` (adds presence). */
+export interface ProfileAccountView extends AccountProfile {
+  online: boolean;
+  last_seen: number | null;
+}
+
+export interface ProfilePageView extends Omit<ProfilePage, "account"> {
+  account: ProfileAccountView;
+}
+
+export interface ReadPage {
+  posts: PostView[];
+  has_more: boolean;
+  next_cursor: string | null;
+  order: "asc" | "desc";
 }
 
 export class ApiError extends Error {
@@ -227,6 +248,72 @@ export class ReportClient {
     return data;
   }
 
+  /** Home feed (design §5.0): two tabs with independent server-side cursors. */
+  async feed(opts: {
+    tab: FeedTab;
+    before?: string | null;
+    after?: string | null;
+    limit?: number;
+  }): Promise<FeedPage> {
+    const params = new URLSearchParams({ tab: opts.tab });
+    if (opts.before) params.set("before", opts.before);
+    if (opts.after) params.set("after", opts.after);
+    params.set("limit", String(opts.limit ?? 30));
+    const data = (await this.request(`/api/feed?${params.toString()}`)) as FeedPage & {
+      ok: boolean;
+    };
+    return data;
+  }
+
+  /** Member page: profile card + that member's visible root posts. */
+  async profile(
+    accountId: string,
+    opts: { before?: string | null; after?: string | null; limit?: number } = {},
+  ): Promise<ProfilePageView> {
+    const params = new URLSearchParams();
+    if (opts.before) params.set("before", opts.before);
+    if (opts.after) params.set("after", opts.after);
+    params.set("limit", String(opts.limit ?? 30));
+    const data = (await this.request(
+      `/api/profile/${encodeURIComponent(accountId)}?${params.toString()}`,
+    )) as { ok: boolean } & ProfilePageView;
+    return data;
+  }
+
+  async follow(accountId: string): Promise<{ following: boolean }> {
+    return (await this.request(`/api/follow/${encodeURIComponent(accountId)}`, {
+      method: "POST",
+    })) as { following: boolean };
+  }
+
+  async unfollow(accountId: string): Promise<{ following: boolean }> {
+    return (await this.request(`/api/follow/${encodeURIComponent(accountId)}`, {
+      method: "DELETE",
+    })) as { following: boolean };
+  }
+
+  async following(): Promise<{ accounts: WhoRow[] }> {
+    return (await this.request("/api/following")) as { accounts: WhoRow[] };
+  }
+
+  /** CLI `read --tag/--author` equivalent (tag-page filtering). */
+  async read(opts: {
+    tag?: string | null;
+    author?: string | null;
+    limit?: number;
+    after?: string | null;
+  } = {}): Promise<ReadPage> {
+    const params = new URLSearchParams();
+    if (opts.tag) params.set("tag", opts.tag);
+    if (opts.author) params.set("author", opts.author);
+    if (opts.after) params.set("after", opts.after);
+    params.set("limit", String(opts.limit ?? 100));
+    const data = (await this.request(`/api/read?${params.toString()}`)) as {
+      ok: boolean;
+    } & ReadPage;
+    return data;
+  }
+
   async thread(id: string, focal?: string | null): Promise<ThreadView> {
     const params = new URLSearchParams();
     if (focal) params.set("focal", focal);
@@ -242,17 +329,30 @@ export class ReportClient {
     return data.post;
   }
 
-  async createPost(opts: { body: string; quote?: string | null; media?: string[] }): Promise<{ posts: PostView[] }> {
+  async createPost(opts: {
+    body: string;
+    quote?: string | null;
+    media?: string[];
+    tags?: string[];
+  }): Promise<{ posts: PostView[] }> {
     return (await this.request("/api/posts", {
       method: "POST",
-      body: { body: opts.body, quote: opts.quote ?? null, media: opts.media ?? [] },
+      body: {
+        body: opts.body,
+        quote: opts.quote ?? null,
+        media: opts.media ?? [],
+        tags: opts.tags ?? [],
+      },
     })) as { posts: PostView[] };
   }
 
-  async createReply(parentId: string, opts: { body: string; media?: string[] }): Promise<{ posts: PostView[] }> {
+  async createReply(
+    parentId: string,
+    opts: { body: string; media?: string[]; tags?: string[] },
+  ): Promise<{ posts: PostView[] }> {
     return (await this.request(`/api/posts/${encodeURIComponent(parentId)}/replies`, {
       method: "POST",
-      body: { body: opts.body, media: opts.media ?? [] },
+      body: { body: opts.body, media: opts.media ?? [], tags: opts.tags ?? [] },
     })) as { posts: PostView[] };
   }
 
@@ -264,6 +364,19 @@ export class ReportClient {
     const params = new URLSearchParams({ q, limit: String(limit) });
     const data = (await this.request(`/api/search?${params.toString()}`)) as { posts: PostView[] };
     return data.posts;
+  }
+
+  /** `search --accounts`: posts and a member group in one round-trip. */
+  async searchWithAccounts(
+    q: string,
+    limit = 30,
+  ): Promise<{ posts: PostView[]; accounts: WhoRow[] }> {
+    const params = new URLSearchParams({ q, limit: String(limit), accounts: "1" });
+    const data = (await this.request(`/api/search?${params.toString()}`)) as {
+      posts: PostView[];
+      accounts: WhoRow[];
+    };
+    return { posts: data.posts, accounts: data.accounts };
   }
 
   // ── notifications ──────────────────────────────────────────────────────────
@@ -384,20 +497,35 @@ export interface SseHandlers {
  * 断线补拉由消费者负责（时间线用 after 游标，通知用 seq 去重）——本类只保证
  * “重连后事件会再次到达/或由消费者补拉”，不持有业务游标。
  */
+export interface ReportStreamOptions {
+  /**
+   * Member-page live subscription: `?author=<acct>` makes the server push only
+   * events produced by that account. This is a technical filter, not a follow.
+   */
+  author?: string | null;
+}
+
 export class ReportStream {
   private readonly client: ReportClient;
   private readonly authMode: "open" | "auth";
   private readonly handlers: SseHandlers;
+  private readonly options: ReportStreamOptions;
   private source: EventSource | null = null;
   private timer: number | null = null;
   private attempt = 0;
   private stopped = false;
   private state: SseState = "idle";
 
-  constructor(client: ReportClient, authMode: "open" | "auth", handlers: SseHandlers) {
+  constructor(
+    client: ReportClient,
+    authMode: "open" | "auth",
+    handlers: SseHandlers,
+    options: ReportStreamOptions = {},
+  ) {
     this.client = client;
     this.authMode = authMode;
     this.handlers = handlers;
+    this.options = options;
   }
 
   start(): void {
@@ -438,12 +566,14 @@ export class ReportStream {
     this.setState("connecting");
     let url: string;
     try {
+      const params = new URLSearchParams();
       if (this.authMode === "auth") {
-        const ticket = await this.client.streamTicket();
-        url = `${this.client.base}/api/stream?ticket=${encodeURIComponent(ticket)}`;
+        params.set("ticket", await this.client.streamTicket());
       } else {
-        url = `${this.client.base}/api/stream?as=owner`;
+        params.set("as", "owner");
       }
+      if (this.options.author) params.set("author", this.options.author);
+      url = `${this.client.base}/api/stream?${params.toString()}`;
     } catch {
       this.scheduleReconnect();
       return;
