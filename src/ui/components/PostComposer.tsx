@@ -13,6 +13,7 @@ import type { PostView } from "@core/types";
 import {
   ImagePlusIcon,
   Loader2Icon,
+  LockIcon,
   SendIcon,
   XIcon,
 } from "lucide-react";
@@ -30,6 +31,7 @@ import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { toast } from "@/components/ui/toast";
 import { useConnection } from "@/state/connection";
 import type { AccountRow } from "@/lib/api";
+import { toastReadOnly } from "@/lib/readonly";
 
 const MAX_FILES = 4;
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -61,6 +63,8 @@ interface UploadItem {
 interface PostComposerProps {
   mode: "post" | "reply";
   parentId?: string;
+  /** 草稿持久化键（默认按 mode/parent 推导；引用发帖用 quote-<id>）。 */
+  draftKey?: string;
   quotedPost?: PostView | null;
   onRemoveQuote?: () => void;
   onPosted?: (posts: PostView[]) => void;
@@ -74,6 +78,39 @@ function extOf(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
 }
 
+interface DraftSnapshot {
+  body: string;
+  tags: string[];
+}
+
+function draftKeyOf(mode: "post" | "reply", parentId?: string): string {
+  return `${mode}:${parentId ?? "root"}`;
+}
+
+function loadDraft(key: string): DraftSnapshot {
+  try {
+    const raw = localStorage.getItem(`report.draft.v1:${key}`);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<DraftSnapshot>;
+      return {
+        body: typeof parsed.body === "string" ? parsed.body : "",
+        tags: Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === "string") : [],
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return { body: "", tags: [] };
+}
+
+function clearDraft(key: string): void {
+  try {
+    localStorage.removeItem(`report.draft.v1:${key}`);
+  } catch {
+    // ignore
+  }
+}
+
 /**
  * 发帖箱 / 回复框：markdown 预览、附件上传、@ 自动补全（含离线账号）、
  * 引用卡嵌入（引用＝新帖）。附件先传 /api/media 拿 hash，再随正文提交。
@@ -81,6 +118,7 @@ function extOf(name: string): string {
 export function PostComposer({
   mode,
   parentId,
+  draftKey,
   quotedPost = null,
   onRemoveQuote,
   onPosted,
@@ -89,11 +127,13 @@ export function PostComposer({
   placeholder,
   submitLabel,
 }: PostComposerProps) {
-  const { client, accounts } = useConnection();
-  const [body, setBody] = useState("");
+  const { client, accounts, staticMode } = useConnection();
+  const key = draftKey ?? draftKeyOf(mode, parentId);
+  const initialDraft = useRef<DraftSnapshot>(loadDraft(key));
+  const [body, setBody] = useState(initialDraft.current.body);
   const [tab, setTab] = useState<"write" | "preview">("write");
   const [items, setItems] = useState<UploadItem[]>([]);
-  const [tags, setTags] = useState<string[]>([]);
+  const [tags, setTags] = useState<string[]>(initialDraft.current.tags);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggest, setSuggest] = useState<{ query: string; start: number; end: number } | null>(null);
@@ -105,6 +145,33 @@ export function PostComposer({
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
   }, [autoFocus]);
+
+  // 草稿保留：输入 300ms 防抖写 localStorage（附件不持久化）。
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (!body.trim() && tags.length === 0) {
+        clearDraft(key);
+        return;
+      }
+      try {
+        localStorage.setItem(`report.draft.v1:${key}`, JSON.stringify({ body, tags }));
+      } catch {
+        // private mode
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [body, tags, key]);
+
+  // 键盘避让：聚焦时把输入框滚到视口中间（visualViewport 收缩后同样生效）。
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const onFocus = () => {
+      window.setTimeout(() => el.scrollIntoView({ block: "center", behavior: "smooth" }), 260);
+    };
+    el.addEventListener("focus", onFocus);
+    return () => el.removeEventListener("focus", onFocus);
+  }, []);
 
   const activeAccounts = useMemo(
     () => accounts.filter((account) => account.disabled !== 2),
@@ -290,6 +357,7 @@ export function PostComposer({
           : await client.createReply(parentId!, { body, media: mediaHashes, tags });
       setBody("");
       setTags([]);
+      clearDraft(key);
       setItems((prev) => {
         for (const item of prev) if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
         return [];
@@ -313,6 +381,19 @@ export function PostComposer({
       setBusy(false);
     }
   };
+
+  if (staticMode) {
+    return (
+      <div
+        className="flex items-center gap-2 rounded-lg bg-muted/60 px-3 py-3 text-sm text-muted-foreground"
+        data-testid="composer-readonly"
+        onClick={toastReadOnly}
+      >
+        <LockIcon className="size-4" />
+        静态归档 · 只读：发帖 / 回复 / 上传都不可用。
+      </div>
+    );
+  }
 
   return (
     <div

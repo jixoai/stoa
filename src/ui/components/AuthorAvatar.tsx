@@ -1,42 +1,62 @@
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar } from "@/components/ui/avatar";
 import { cn } from "cn";
 import type { AuthorView } from "@core/types";
-import { initials } from "@/lib/format";
+import { avatarDataUri, useColorScheme } from "@/theme/avatar-palette";
+import { useSharedNamesActive } from "@/lib/router";
 
 interface AuthorAvatarProps {
   account: AuthorView | null | undefined;
   fallbackId: string;
   size?: "large" | "normal" | "small" | "tiny";
+  /** 共享元素名（列表 ↔ 详情）；同屏必须唯一，由调用方按 postId/账号 id 生成。 */
+  sharedId?: string;
   className?: string;
 }
 
 /**
- * 业务头像：官方 Avatar + 首字母 fallback。
- * 头像配色种子由服务端下发（account.avatar），但 v0 只用主题令牌表达，
- * 不用硬编码色值——颜色由 solid-glass 的材质与排版承担。
+ * 业务头像：DiceBear identicon 确定性生成（seed = 账号 id）。
+ *
+ * - 同一账号在时间线、详情、成员列表、成员页得到完全相同的图形；
+ * - SVG 以 data URI 内联，不依赖后端存储、不发外网请求（file:// 归档同样可用）；
+ * - 首帧即图形，不存在「先字母块再闪成图形」的中间态。
  */
-export function AuthorAvatar({ account, fallbackId, size = "normal", className }: AuthorAvatarProps) {
+export function AuthorAvatar({
+  account,
+  fallbackId,
+  size = "normal",
+  sharedId,
+  className,
+}: AuthorAvatarProps) {
   const name = account?.display || fallbackId;
+  const id = account?.id ?? fallbackId;
   const pixel = size === "large" ? 64 : size === "small" ? 24 : size === "tiny" ? 20 : 42;
+  const scheme = useColorScheme();
+  const sharedActive = useSharedNamesActive();
+  const src = avatarDataUri(id, scheme);
   return (
     <Avatar
       data-size={size === "normal" ? "default" : "sm"}
-      style={{ width: pixel, height: pixel }}
+      style={{
+        width: pixel,
+        height: pixel,
+        viewTransitionName: sharedActive && sharedId ? `vt-avatar-${sharedId}` : undefined,
+      }}
       className={cn(
-        "shrink-0",
+        "shrink-0 overflow-hidden bg-muted",
         account?.disabled === 2 && "opacity-50",
         className,
       )}
       title={`${name}@${fallbackId}${account?.disabled === 2 ? "（已停用）" : ""}`}
     >
-      <AvatarFallback
-        className={cn(
-          "bg-muted font-semibold text-foreground",
-          size === "large" ? "text-xl" : size === "normal" ? "text-sm" : "text-[10px]",
-        )}
-      >
-        {initials(name)}
-      </AvatarFallback>
+      <img
+        src={src}
+        alt=""
+        aria-hidden
+        draggable={false}
+        data-testid="avatar-identicon"
+        data-avatar-seed={id}
+        className="size-full rounded-full object-cover"
+      />
     </Avatar>
   );
 }
@@ -47,17 +67,25 @@ export function AuthorLine({
   time,
   showRole = true,
   className,
+  sharedId,
 }: {
   account: AuthorView | null | undefined;
   fallbackId: string;
   time?: string;
   showRole?: boolean;
   className?: string;
+  sharedId?: string;
 }) {
   const display = account?.display || fallbackId;
   const role = account?.role;
+  const sharedActive = useSharedNamesActive();
   return (
-    <div className={cn("flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5", className)}>
+    <div
+      className={cn("flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5", className)}
+      style={{
+        viewTransitionName: sharedActive && sharedId ? `vt-author-${sharedId}` : undefined,
+      }}
+    >
       <span className="truncate font-semibold text-foreground">{display}</span>
       <span className="truncate text-sm text-muted-foreground">@{fallbackId}</span>
       {showRole && role && role !== "agent" ? (

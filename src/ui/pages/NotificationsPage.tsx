@@ -7,11 +7,13 @@ import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/PageHeader";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { Markdown } from "@/components/Markdown";
 import { useConnection } from "@/state/connection";
 import { useNotifications, type NotificationItem } from "@/state/notifications";
 import { navigate } from "@/lib/router";
+import { toastReadOnly } from "@/lib/readonly";
 import { dateTimeShort } from "@/lib/format";
 import { cn } from "cn";
 
@@ -24,7 +26,7 @@ function eventText(event: NotificationEventLine, item: NotificationItem): string
 }
 
 export function NotificationsPage() {
-  const { account, accounts } = useConnection();
+  const { account, accounts, staticMode } = useConnection();
   const notifications = useNotifications();
   const [showDeleted, setShowDeleted] = useState(false);
 
@@ -91,31 +93,43 @@ export function NotificationsPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b border-border/60 bg-background/80 px-4 backdrop-blur-md">
-        <h1 className="flex items-center gap-2 text-base font-semibold">
-          通知
-          {notifications.unread > 0 ? (
-            <Badge variant="secondary" data-testid="notifications-unread-badge">
-              {notifications.unread}
-            </Badge>
-          ) : null}
-        </h1>
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon-sm" aria-label="刷新通知" onClick={() => void notifications.refresh()}>
-            <RefreshCwIcon />
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            data-testid="ack-notifications"
-            disabled={notifications.items.length === 0}
-            onClick={() => void notifications.ack()}
-          >
-            <CheckCheckIcon data-icon="inline-start" />
-            全部已读
-          </Button>
-        </div>
-      </header>
+      <PageHeader
+        title={
+          <span className="inline-flex items-center gap-2">
+            通知
+            {notifications.unread > 0 ? (
+              <Badge variant="secondary" data-testid="notifications-unread-badge">
+                {notifications.unread}
+              </Badge>
+            ) : null}
+          </span>
+        }
+        actions={
+          <>
+            <Button variant="ghost" size="icon-sm" aria-label="刷新通知" onClick={() => void notifications.refresh()}>
+              <RefreshCwIcon />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              data-testid="ack-notifications"
+              aria-disabled={staticMode || undefined}
+              disabled={notifications.items.length === 0}
+              className={cn(staticMode && "opacity-60")}
+              onClick={() => {
+                if (staticMode) {
+                  toastReadOnly();
+                  return;
+                }
+                void notifications.ack();
+              }}
+            >
+              <CheckCheckIcon data-icon="inline-start" />
+              全部已读
+            </Button>
+          </>
+        }
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {notifications.error ? (

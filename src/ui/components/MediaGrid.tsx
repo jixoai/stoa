@@ -6,8 +6,8 @@ import { useConnection } from "@/state/connection";
 import { mediaFileName, mediaKind, useMediaUrl } from "@/lib/media";
 import { formatBytes } from "@/lib/format";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ImageViewer } from "@/components/ImageViewer";
 
 /** 不可预览附件的下载占位：文件名 + 大小 + 下载按钮（design §12.5）。 */
 function MediaDownload({
@@ -158,7 +158,7 @@ function MediaTile({
  * `<video controls>` 播放，未知类型给下载占位；点击图片开 lightbox（design §12.5）。
  */
 export function MediaGrid({ media, className }: { media: MediaRef[]; className?: string }) {
-  const [openIndex, setOpenIndex] = useState<number | null>(null);
+  const [viewer, setViewer] = useState<{ list: MediaRef[]; index: number } | null>(null);
   const items = media.slice(0, 4);
   if (items.length === 0) return null;
   const count = items.length;
@@ -183,7 +183,11 @@ export function MediaGrid({ media, className }: { media: MediaRef[]; className?:
             media={item}
             fill={fill}
             testId={`media-tile-${index}`}
-            onOpen={() => setOpenIndex(index)}
+            onOpen={() => {
+              const list = items.filter((ref) => mediaKind(ref.ext) !== "file");
+              const target = list.findIndex((ref) => ref.hash === item.hash);
+              setViewer({ list, index: target >= 0 ? target : 0 });
+            }}
             className={cn(
               fill && "aspect-square",
               count === 3 && index === 0 && "row-span-2 aspect-auto",
@@ -193,61 +197,14 @@ export function MediaGrid({ media, className }: { media: MediaRef[]; className?:
         ))}
       </div>
 
-      <Dialog open={openIndex !== null} onOpenChange={(open) => !open && setOpenIndex(null)}>
-        <DialogContent
-          showCloseButton
-          className="max-w-[calc(100%-1rem)] gap-0 p-2 sm:max-w-5xl"
-        >
-          <DialogTitle className="sr-only">媒体预览</DialogTitle>
-          {openIndex !== null && items[openIndex] ? (
-            <LightboxMedia media={items[openIndex]!} />
-          ) : null}
-        </DialogContent>
-      </Dialog>
+      {viewer && viewer.list.length > 0 ? (
+        <ImageViewer
+          media={viewer.list}
+          index={viewer.index}
+          onIndexChange={(index) => setViewer((current) => (current ? { ...current, index } : current))}
+          onClose={() => setViewer(null)}
+        />
+      ) : null}
     </>
-  );
-}
-
-function LightboxMedia({ media }: { media: MediaRef }) {
-  const { client } = useConnection();
-  const state = useMediaUrl(client, media.hash);
-  const kind = mediaKind(media.ext);
-  if (state.loading) return <Skeleton className="h-[60vh] w-full rounded-lg" />;
-  if (!state.url) {
-    return (
-      <span className="flex h-64 items-center justify-center text-muted-foreground">
-        <ImageOffIcon className="mr-2 size-5" /> 媒体不可用
-      </span>
-    );
-  }
-  if (kind === "video") {
-    return (
-      <video
-        src={state.url}
-        controls
-        playsInline
-        preload="metadata"
-        data-testid="lightbox-video"
-        className="max-h-[85vh] w-full rounded-lg bg-black object-contain"
-      />
-    );
-  }
-  if (kind === "file") {
-    return (
-      <MediaDownload
-        media={media}
-        url={state.url}
-        className="min-h-40 rounded-lg"
-        testId="lightbox-file"
-      />
-    );
-  }
-  return (
-    <img
-      src={state.url}
-      alt={media.hash.slice(0, 8)}
-      data-testid="lightbox-image"
-      className="max-h-[85vh] w-full rounded-lg object-contain"
-    />
   );
 }

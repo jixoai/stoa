@@ -6,10 +6,8 @@ import {
   useRef,
   useState,
 } from "react";
-import { cn } from "cn";
 import type { PostView, ThreadNode, ThreadView } from "@core/types";
 import {
-  ArrowLeftIcon,
   ArrowUpIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -20,9 +18,10 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/PageHeader";
 import { Separator } from "@/components/ui/separator";
 import { useConnection } from "@/state/connection";
-import { goBack, navigate, useRoute } from "@/lib/router";
+import { goBack, navigate, routeSource, useRoute } from "@/lib/router";
 import { fullTime } from "@/lib/format";
 
 type ReplyItem =
@@ -194,8 +193,9 @@ function buildReplyPlan(
 export function ThreadPage() {
   const route = useRoute();
   const postId = route.name === "post" ? route.id : "";
+  const source = routeSource(route);
   const wantReply = route.name === "post" && route.reply === true;
-  const { client, subscribeEvents } = useConnection();
+  const { client, subscribeEvents, staticMode } = useConnection();
   const [thread, setThread] = useState<ThreadView | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -422,7 +422,7 @@ export function ThreadPage() {
   if (loading && !thread) {
     return (
       <div className="flex h-full flex-col">
-        <ThreadHeader />
+        <ThreadHeader source={source} />
         <div className="flex flex-col gap-3 p-4">
           <Skeleton className="h-6 w-40" />
           <Skeleton className="h-20 w-full" />
@@ -435,7 +435,7 @@ export function ThreadPage() {
   if (error || !thread || !focal) {
     return (
       <div className="flex h-full flex-col">
-        <ThreadHeader />
+        <ThreadHeader source={source} />
         <div className="p-4">
           <Alert variant="destructive">
             <AlertDescription className="flex flex-wrap items-center gap-2">
@@ -452,7 +452,7 @@ export function ThreadPage() {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      <ThreadHeader />
+      <ThreadHeader source={source} />
       <div ref={containerRef} className="min-h-0 flex-1 overflow-y-auto" data-testid="thread-scroll">
         {ancestorChain.length > 0 || newReplyCount > 0 ? (
           <div className="sticky top-0 z-20 flex min-h-8 items-center gap-2 border-b border-border/60 bg-background/80 px-2 py-1 backdrop-blur-md">
@@ -542,7 +542,11 @@ export function ThreadPage() {
             </div>
           </Card>
 
-          {focal.deleted_at === null ? (
+          {staticMode ? (
+            <Card className="gap-0 p-3 text-sm text-muted-foreground" data-testid="reply-readonly">
+              静态归档 · 只读：这条线程以导出时的快照为准，不能回复。
+            </Card>
+          ) : focal.deleted_at === null ? (
             <Card ref={composerRef} className="gap-0 p-3" data-testid="reply-box">
               <PostComposer
                 mode="reply"
@@ -659,14 +663,15 @@ export function ThreadPage() {
   );
 }
 
-function ThreadHeader() {
+function ThreadHeader({ source }: { source: string }) {
   return (
-    <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border/60 bg-background/80 px-2 backdrop-blur-md">
-      <Button variant="ghost" size="icon-sm" onClick={() => goBack("/")} aria-label="返回">
-        <ArrowLeftIcon />
-      </Button>
-      <h1 className="text-base font-semibold">帖子</h1>
-      <span className="ml-auto pr-2 text-xs text-muted-foreground" />
-    </header>
+    <PageHeader
+      title="帖子"
+      back
+      onBack={() => goBack("/")}
+      backTestId="thread-back"
+      source={`来自${source}`}
+      sourceTestId="thread-source"
+    />
   );
 }

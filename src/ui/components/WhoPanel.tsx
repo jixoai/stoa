@@ -19,7 +19,8 @@ const SSE_LABEL: Record<string, string> = {
 };
 
 export function WhoPanel() {
-  const { who, account, ep, auth, sseState, sameOrigin, refreshWho, switchBackend } = useConnection();
+  const { who, account, ep, auth, sseState, sameOrigin, staticMode, snapshot, refreshWho, switchBackend } =
+    useConnection();
 
   const sorted = useMemo(() => {
     const rank = (role: string) => (role === "owner" ? 0 : role === "manager" ? 1 : 2);
@@ -41,6 +42,24 @@ export function WhoPanel() {
 
   return (
     <div className="flex h-full flex-col gap-3 overflow-y-auto p-3">
+      {staticMode ? (
+        <Card>
+          <CardHeader className="gap-1">
+            <CardTitle className="flex items-center justify-between text-sm">
+              <span>静态归档</span>
+              <Badge variant="secondary" data-testid="static-origin-badge">
+                只读
+              </Badge>
+            </CardTitle>
+            <CardDescription className="break-all text-[11px]">
+              快照 as_of #{snapshot?.asOfSeq ?? 0} · viewer @{snapshot?.viewer ?? "owner"}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="text-xs leading-relaxed text-muted-foreground">
+            这份页面来自导出的内联快照，不连接任何后端；发帖、回复、引用、关注与上传均不可用。
+          </CardContent>
+        </Card>
+      ) : (
       <Card>
         <CardHeader className="gap-1">
           <CardTitle className="flex items-center justify-between text-sm">
@@ -111,6 +130,7 @@ export function WhoPanel() {
           </Button>
         </CardContent>
       </Card>
+      )}
 
       <Card className="min-h-0 flex-1">
         <CardHeader className="gap-1">
@@ -140,9 +160,9 @@ export function WhoPanel() {
               >
                 <AuthorAvatar account={member} fallbackId={member.id} size="small" />
                 <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-1.5">
-                    <span className="truncate text-sm font-medium">{member.display}</span>
-                    <span className="truncate text-[11px] text-muted-foreground">@{member.id}</span>
+                  <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                    <span className="break-all text-sm font-medium">{member.display}</span>
+                    <span className="break-all text-[11px] text-muted-foreground">@{member.id}</span>
                     <span
                       className={cn(
                         "ml-auto size-1.5 shrink-0 rounded-full",

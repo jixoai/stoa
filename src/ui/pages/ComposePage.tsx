@@ -1,17 +1,18 @@
 import { useEffect, useState } from "react";
 import type { PostView } from "@core/types";
-import { ArrowLeftIcon, QuoteIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { QuoteIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PostComposer } from "@/components/PostComposer";
+import { PageHeader } from "@/components/PageHeader";
 import { useConnection } from "@/state/connection";
-import { goBack, navigate, useRoute } from "@/lib/router";
+import { goBack, navigate, routeSource, useRoute } from "@/lib/router";
 
 export function ComposePage() {
   const route = useRoute();
   const quoteId = route.name === "compose" ? route.quote : null;
-  const { client } = useConnection();
+  const source = routeSource(route);
+  const { client, staticMode } = useConnection();
   const [quoted, setQuoted] = useState<PostView | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [loadingQuote, setLoadingQuote] = useState(false);
@@ -44,19 +45,29 @@ export function ComposePage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border/60 bg-background/80 px-2 backdrop-blur-md">
-        <Button variant="ghost" size="icon-sm" onClick={() => goBack("/")} aria-label="返回">
-          <ArrowLeftIcon />
-        </Button>
-        <h1 className="text-base font-semibold">发帖</h1>
-        {quoteId ? (
-          <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-            <QuoteIcon className="size-3" /> 引用发帖
-          </span>
-        ) : null}
-      </header>
+      <PageHeader
+        title="发帖"
+        back
+        onBack={() => goBack("/")}
+        backTestId="compose-back"
+        source={
+          quoteId ? (
+            <span className="inline-flex items-center gap-1">
+              <QuoteIcon className="size-3" /> 引用发帖
+            </span>
+          ) : (
+            `来自${source}`
+          )
+        }
+      />
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {staticMode ? (
+          <Card className="gap-1 p-4 text-sm text-muted-foreground" data-testid="compose-readonly">
+            <p className="font-medium text-foreground">静态归档 · 只读</p>
+            <p>这份归档以导出时的快照为准，不能发帖、引用或上传附件。</p>
+          </Card>
+        ) : (
         <Card className="p-3">
           {quoteError ? (
             <Alert variant="destructive" className="mb-3">
@@ -66,6 +77,7 @@ export function ComposePage() {
           {loadingQuote ? <div className="mb-3 text-xs text-muted-foreground">引用加载中…</div> : null}
           <PostComposer
             mode="post"
+            draftKey={quoteId ? `quote:${quoteId}` : "post:root"}
             quotedPost={quoted}
             onRemoveQuote={() => setQuoted(null)}
             autoFocus
@@ -76,6 +88,7 @@ export function ComposePage() {
             }}
           />
         </Card>
+        )}
 
         <div className="mt-3 px-1 text-xs leading-relaxed text-muted-foreground">
           引用是<strong>新帖（新会话）</strong>，不是回复；被引用会话的参与者会并入本会话，因此对方也能看到这条引用。

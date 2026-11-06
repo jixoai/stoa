@@ -9,9 +9,10 @@
 import { useMemo } from "react";
 import type { FeedTab } from "@core/types";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PageHeader } from "@/components/PageHeader";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { useHomeFeeds } from "@/state/feed";
-import { navigate, useRoute } from "@/lib/router";
+import { navigate, usePageRoute } from "@/lib/router";
 
 const EMPTY: Record<FeedTab, { title: string; description: string }> = {
   recommended: {
@@ -25,7 +26,7 @@ const EMPTY: Record<FeedTab, { title: string; description: string }> = {
 };
 
 export function HomePage() {
-  const route = useRoute();
+  const route = usePageRoute();
   const tab: FeedTab = route.name === "home" ? route.tab : "recommended";
   const { recommended, following } = useHomeFeeds();
   const feed = tab === "following" ? following : recommended;
@@ -40,8 +41,7 @@ export function HomePage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border/60 bg-background/80 px-4 backdrop-blur-md">
-        <h1 className="text-base font-semibold">主页</h1>
+      <PageHeader title="主页">
         <Tabs value={tab} onValueChange={switchTab}>
           <TabsList aria-label="主页流">
             <TabsTrigger value="recommended" data-testid="home-tab-recommended">
@@ -52,12 +52,14 @@ export function HomePage() {
             </TabsTrigger>
           </TabsList>
         </Tabs>
-      </header>
+      </PageHeader>
 
       <TimelineFeed
         key={tab}
         feed={feed}
         feedName={tab}
+        scrollPath="/"
+        scrollTab={tab}
         emptyTitle={empty.title}
         emptyDescription={empty.description}
       />

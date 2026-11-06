@@ -13,14 +13,12 @@ import type {
   AuthorView,
   FeedPage,
   FeedTab,
-  MediaRef,
   NotificationEventLine,
   NotificationLine,
   PostView,
   ProfilePage,
   ThreadView,
   TimelinePage,
-  WhoEntry,
 } from "@core/types";
 
 export interface AuthStatus {
@@ -111,12 +109,22 @@ export type SseState = "idle" | "connecting" | "open" | "reconnecting" | "closed
 
 export class ReportClient {
   readonly base: string;
+  /** `static` = 归档快照的只读实现（见 lib/static-api.ts）；不发起任何网络请求。 */
+  readonly mode: "live" | "static" = "live";
   private token: string | null;
   private onUnauthorized: (() => void) | null = null;
 
   constructor(base: string, token: string | null) {
     this.base = base.replace(/\/+$/, "");
     this.token = token;
+  }
+
+  /**
+   * 静态归档可直接使用的媒体 URL（相对路径）；线上客户端返回 null，
+   * 走 `mediaBlob` 的授权 blob 通道。
+   */
+  staticMediaUrl(_hash: string): string | null {
+    return null;
   }
 
   setToken(token: string | null): void {

@@ -24,7 +24,103 @@
   }
 }
 
+/* ── View Transitions（design §7）────────────────────────────────────────────
+ * 主路径由 document.startViewTransition 驱动；这里只写 ::view-transition-old/new(*)
+ * 的关键帧。方向来自 html[data-vt=forward|back|fade]（lib/router.ts 设置）。
+ * 移动端：子页右滑入 + 底层轻微左移视差；返回反向；根页 tab 淡切。
+ * 桌面端（>=1024px）：淡入 + 轻微上移，不做全屏横向滑动。
+ */
+@keyframes vt-in-right {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+@keyframes vt-out-left {
+  from { transform: translateX(0); }
+  to { transform: translateX(-18%); }
+}
+@keyframes vt-in-left {
+  from { transform: translateX(-18%); }
+  to { transform: translateX(0); }
+}
+@keyframes vt-out-right {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+@keyframes vt-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes vt-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes vt-desktop-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 240ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+::view-transition-group(*) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* 底部四导航在转场中保持原位（不随页面横向滑动，也不重影） */
+::view-transition-group(bottom-nav) {
+  animation: none;
+}
+
+html[data-vt="forward"]::view-transition-old(root) {
+  animation-name: vt-out-left;
+}
+html[data-vt="forward"]::view-transition-new(root) {
+  animation-name: vt-in-right;
+}
+html[data-vt="back"]::view-transition-old(root) {
+  animation-name: vt-out-right;
+}
+html[data-vt="back"]::view-transition-new(root) {
+  animation-name: vt-in-left;
+}
+html[data-vt="fade"]::view-transition-old(root) {
+  animation: vt-fade-out 160ms ease-out both;
+}
+html[data-vt="fade"]::view-transition-new(root) {
+  animation: vt-fade-in 160ms ease-out both;
+}
+
+@media (min-width: 1024px) {
+  html[data-vt="forward"]::view-transition-old(root) {
+    animation: vt-fade-out 120ms ease-out both;
+  }
+  html[data-vt="forward"]::view-transition-new(root) {
+    animation: vt-desktop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  html[data-vt="back"]::view-transition-old(root) {
+    animation: vt-fade-out 120ms ease-out both;
+  }
+  html[data-vt="back"]::view-transition-new(root) {
+    animation: vt-desktop-in 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(*),
+  ::view-transition-new(*),
+  ::view-transition-group(*) {
+    animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
+  }
+}
+
 @layer utilities {
+  /* 全屏媒体查看器的底：纯黑压暗（深色/浅色主题下都成立，不用主题表面色） */
+  .media-backdrop {
+    background-color: black;
+  }
   /* 详情页 focal 锚点：数据到位后滚到视口顶部时避开吸顶栏（design §12.3） */
   .scroll-mt-app-header {
     scroll-margin-top: 3.75rem;

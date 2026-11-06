@@ -15,6 +15,7 @@ import {
 import type { NotificationEventLine } from "@core/types";
 import { AuthError, ReportClient, ReportStream, type AccountRow, type AuthStatus, type ServerStatus, type SseState, type WhoRow } from "@/lib/api";
 import { clearMediaCache } from "@/lib/media";
+import { installStaticApi, readReportSnapshot, type StaticReportClient } from "@/lib/static-api";
 import {
   checkEp,
   clearCurrentEp,
@@ -42,6 +43,9 @@ export interface ConnectionValue {
   who: WhoRow[];
   /** 当前 ep 与页面同源（页面由后端自身托管） */
   sameOrigin: boolean;
+  /** 静态归档模式：数据来自内联快照，写入口全部只读（spec report-static-mode）。 */
+  staticMode: boolean;
+  snapshot: { asOfSeq: number; viewer: string } | null;
   sseState: SseState;
   error: string | null;
   loginError: string | null;
@@ -68,17 +72,33 @@ function stripEpFromLocation(): void {
 }
 
 export function ConnectionProvider({ children }: { children: ReactNode }) {
-  const [phase, setPhase] = useState<ConnectionPhase>("connecting");
+  // 模式判定（design §2）：`?ep=` → 后端；无 ep 且存在内联快照 → 静态归档；
+  // 两者皆无 → 现有连接流程（记录 ep / 同源探测 / 落地页）。
+  const boot = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    if (epFromLocation().raw !== null) return null;
+    const snapshot = readReportSnapshot();
+    if (!snapshot) return null;
+    const staticClient: StaticReportClient = installStaticApi(snapshot);
+    return {
+      client: staticClient,
+      info: staticClient.boot(),
+      snapshot: { asOfSeq: snapshot.as_of_seq, viewer: snapshot.viewer },
+    };
+  }, []);
+
+  const [phase, setPhase] = useState<ConnectionPhase>(boot ? "ready" : "connecting");
   const [ep, setEp] = useState<string | null>(null);
-  const [client, setClient] = useState<ReportClient | null>(null);
-  const [auth, setAuth] = useState<AuthStatus | null>(null);
-  const [server, setServer] = useState<ServerStatus | null>(null);
-  const [account, setAccount] = useState<ConnectionValue["account"]>(null);
-  const [accounts, setAccounts] = useState<AccountRow[]>([]);
-  const [who, setWho] = useState<WhoRow[]>([]);
+  const [client, setClient] = useState<ReportClient | null>(boot?.client ?? null);
+  const [auth, setAuth] = useState<AuthStatus | null>(boot?.info.auth ?? null);
+  const [server, setServer] = useState<ServerStatus | null>(boot?.info.server ?? null);
+  const [account, setAccount] = useState<ConnectionValue["account"]>(boot?.info.account ?? null);
+  const [accounts, setAccounts] = useState<AccountRow[]>(boot?.info.accounts ?? []);
+  const [who, setWho] = useState<WhoRow[]>(boot?.info.who ?? []);
   const [sseState, setSseState] = useState<SseState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [staticMode, setStaticMode] = useState(boot !== null);
 
   const listeners = useRef(new Set<(event: NotificationEventLine) => void>());
   const pendingClient = useRef<ReportClient | null>(null);
@@ -124,9 +144,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         .catch(() => {
           // will be retried by the poll
         });
-      saveCurrentEp(current.base);
-      rememberEp(current.base);
-      setEp(current.base);
+      setStaticMode(current.mode === "static");
+      if (current.mode !== "static") {
+        saveCurrentEp(current.base);
+        rememberEp(current.base);
+        setEp(current.base);
+      } else {
+        setEp(null);
+      }
       setClient(current);
       setPhase("ready");
       setError(null);
@@ -256,6 +281,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (autoStarted.current) return;
     autoStarted.current = true;
+    if (boot) return; // 静态归档：同步引导已完成，不发起网络探测
     const fromLocation = epFromLocation();
     if (fromLocation.raw !== null) {
       if (fromLocation.checked?.ok) {
@@ -286,10 +312,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
     };
-  }, [connect, startConnect]);
+  }, [boot, connect, startConnect]);
 
-  // SSE lifecycle
+  // SSE lifecycle（静态归档没有事件流，也不做 presence 轮询）
   useEffect(() => {
+    if (staticMode) return;
     if (phase !== "ready" || !client || !auth) return;
     const stream = new ReportStream(client, auth.mode, {
       onEvent: (event) => {
@@ -305,6 +332,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   // Presence fallback: poll slowly while visible; SSE is the primary channel.
   useEffect(() => {
+    if (staticMode) return;
     if (phase !== "ready" || !client) return;
     const tick = () => {
       if (document.visibilityState === "visible") refreshWho();
@@ -340,6 +368,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       accounts,
       who,
       sameOrigin,
+      staticMode,
+      snapshot: boot?.snapshot ?? null,
       sseState,
       error,
       loginError,
@@ -361,6 +391,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       accounts,
       who,
       sameOrigin,
+      staticMode,
+      boot,
       sseState,
       error,
       loginError,

@@ -17,6 +17,7 @@ import {
 import type { PostView } from "@core/types";
 import { ArrowUpIcon, Loader2Icon, RefreshCwIcon } from "lucide-react";
 import { PostCard } from "@/components/PostCard";
+import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -26,6 +27,7 @@ import { useConnection } from "@/state/connection";
 import type { FeedController, TimelineAnchor } from "@/state/feed";
 import { navigate } from "@/lib/router";
 import { displayCount } from "@/lib/format";
+import { loadScrollMemory, saveScrollMemory, scrollMemoryKey } from "@/lib/scroll-memory";
 
 const TOP_THRESHOLD = 5;
 const SETTLE_MS = 160;
@@ -35,15 +37,22 @@ export interface TimelineFeedProps {
   feed: FeedController;
   /** Stable label for QA/telemetry, e.g. "recommended". */
   feedName?: string;
+  /** 滚动记忆键：路由 path（如 `/`、`/u/manager`）与 feedTab。 */
+  scrollPath?: string;
+  scrollTab?: string;
   /** Rendered inside the scroll container, above the list (profile card, etc.). */
   leading?: ReactNode;
   emptyTitle?: string;
   emptyDescription?: string;
 }
 
+const HOLD_MS = 2500;
+
 export function TimelineFeed({
   feed,
   feedName = "feed",
+  scrollPath,
+  scrollTab,
   leading,
   emptyTitle = "还没有帖子",
   emptyDescription = "在「发帖」里写下第一条公示。",
@@ -57,6 +66,7 @@ export function TimelineFeed({
   const [flashIds, setFlashIds] = useState<Set<string>>(new Set());
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const [pullDistance, setPullDistance] = useState(0);
+  const [pullHeld, setPullHeld] = useState(false);
   const settleTimer = useRef<number | null>(null);
   const pillTimer = useRef<number | null>(null);
   const interacting = useRef(false);
@@ -66,6 +76,21 @@ export function TimelineFeed({
   const touchStartY = useRef<number | null>(null);
   const pullArmed = useRef(false);
   const rafRef = useRef<number | null>(null);
+  const lastAnchor = useRef<TimelineAnchor | null>(null);
+  const saveTimer = useRef<number | null>(null);
+  const anchorHold = useRef<{ id: string; offset: number; until: number } | null>(null);
+  const memoryKey = useMemo(
+    () => scrollMemoryKey(scrollPath ?? feedName, scrollTab ?? feedName),
+    [scrollPath, scrollTab, feedName],
+  );
+
+  // 下拉刷新：松手后保持刷新态，直到 refreshNew 的 refreshing 结束。
+  useEffect(() => {
+    if (!pullHeld) return;
+    if (feed.refreshing) return;
+    const timer = window.setTimeout(() => setPullHeld(false), 350);
+    return () => window.clearTimeout(timer);
+  }, [pullHeld, feed.refreshing]);
 
   const {
     posts,
@@ -78,6 +103,31 @@ export function TimelineFeed({
     prepareReturn,
     takeRestore,
   } = feed;
+
+  const persist = useCallback(
+    (anchor: TimelineAnchor) => {
+      saveScrollMemory(memoryKey, {
+        path: scrollPath ?? feedName,
+        feedTab: scrollTab ?? feedName,
+        anchorPostId: anchor.firstVisibleId,
+        offsetPx: anchor.offsetPx,
+        scrollTop: anchor.scrollTop,
+      });
+    },
+    [memoryKey, scrollPath, scrollTab, feedName],
+  );
+
+  const schedulePersist = useCallback(
+    (anchor: TimelineAnchor) => {
+      lastAnchor.current = anchor;
+      if (saveTimer.current !== null) return;
+      saveTimer.current = window.setTimeout(() => {
+        saveTimer.current = null;
+        if (lastAnchor.current) persist(lastAnchor.current);
+      }, 200);
+    },
+    [persist],
+  );
 
   const captureNow = useCallback(() => {
     if (leaving.current || !restoredOnce.current) return;
@@ -93,7 +143,8 @@ export function TimelineFeed({
       atTop: container.scrollTop <= TOP_THRESHOLD,
     };
     captureAnchor(anchor);
-  }, [captureAnchor]);
+    schedulePersist(anchor);
+  }, [captureAnchor, schedulePersist]);
 
   const maybeAbsorb = useCallback(() => {
     if (!restoredOnce.current) return;
@@ -110,49 +161,140 @@ export function TimelineFeed({
     window.setTimeout(() => setFlashIds(new Set()), 400);
   }, [pending, absorbPending]);
 
-  // Restore anchor first, then refresh (design §12.2).
+  // Restore anchor first, then refresh (design §12.2 + §6)。
+  // 优先级：内存锚点（同会话返回）→ 持久化锚点 → 持久化 scrollTop → 顶部。
   useLayoutEffect(() => {
     if (restoredOnce.current) return;
     if (posts.length === 0) return;
-    const requested = takeRestore();
+    const inMemory = takeRestore();
+    const saved = inMemory ? null : loadScrollMemory(memoryKey);
     restoredOnce.current = true;
     const container = containerRef.current;
     if (!container) return;
     restoring.current = true;
 
-    if (requested) {
-      const target = requested.firstVisibleId
-        ? container.querySelector<HTMLElement>(
-            `[data-post-id="${CSS.escape(requested.firstVisibleId)}"]`,
-          )
-        : null;
-      if (target) {
-        const containerTop = container.getBoundingClientRect().top;
-        const delta = target.getBoundingClientRect().top - containerTop;
-        // delta 是元素在 scrollTop=0 时的内容偏移；offsetPx = contentOffset - scrollTop
-        container.scrollTop = Math.max(0, container.scrollTop + delta - requested.offsetPx);
-      } else {
-        container.scrollTop = Math.max(0, requested.scrollTop);
-      }
+    const anchorId = inMemory ? inMemory.firstVisibleId : saved?.anchorPostId ?? null;
+    const offsetPx = inMemory ? inMemory.offsetPx : saved?.offsetPx ?? 0;
+    const scrollTop = inMemory ? inMemory.scrollTop : saved?.scrollTop ?? 0;
+
+    const target = anchorId
+      ? container.querySelector<HTMLElement>(`[data-post-id="${CSS.escape(anchorId)}"]`)
+      : null;
+    if (target) {
+      const containerTop = container.getBoundingClientRect().top;
+      const delta = target.getBoundingClientRect().top - containerTop;
+      // delta 是元素在 scrollTop=0 时的内容偏移；offsetPx = contentOffset - scrollTop
+      container.scrollTop = Math.max(0, container.scrollTop + delta - offsetPx);
+    } else if (anchorId || scrollTop > 0) {
+      container.scrollTop = Math.max(0, scrollTop);
     } else {
       container.scrollTop = 0;
     }
+
+    // 图片/视频元数据会改变上方行高；在短时间内用 ResizeObserver 保持锚点
+    // 不漂移（用户一旦主动滚动立即放弃，不跟用户抢滚动条）。
+    anchorHold.current = anchorId
+      ? { id: anchorId, offset: offsetPx, until: performance.now() + HOLD_MS }
+      : null;
+
     const top = container.scrollTop <= TOP_THRESHOLD;
     atTopRef.current = top;
     setAtTop(top);
+    if (!top) {
+      schedulePersist({
+        firstVisibleId: anchorId,
+        offsetPx,
+        scrollTop: container.scrollTop,
+        atTop: false,
+      });
+    }
     requestAnimationFrame(() => {
       restoring.current = false;
       // 恢复之后才刷新；非顶部时新帖进 pending，位置不动
       void refreshNew();
     });
-  }, [posts.length, takeRestore, refreshNew]);
+  }, [posts.length, takeRestore, refreshNew, memoryKey, schedulePersist]);
 
-  // 离开面板（切 tab / 进详情）时记下回退标志；锚点已在滚动时持续捕获。
+  // 恢复窗口内（图片/视频加载改变行高）持续把锚点贴回原 offset（≤2px 容差）。
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const align = () => {
+      const hold = anchorHold.current;
+      if (!hold) return;
+      if (performance.now() > hold.until) {
+        anchorHold.current = null;
+        return;
+      }
+      const el = container.querySelector<HTMLElement>(
+        `[data-post-id="${CSS.escape(hold.id)}"]`,
+      );
+      if (!el) {
+        anchorHold.current = null;
+        return;
+      }
+      const delta =
+        el.getBoundingClientRect().top - container.getBoundingClientRect().top - hold.offset;
+      if (Math.abs(delta) > 2) container.scrollTop += delta;
+    };
+    const cancel = () => {
+      anchorHold.current = null;
+    };
+    container.addEventListener("load", align, true);
+    container.addEventListener("wheel", cancel, { passive: true });
+    container.addEventListener("touchstart", cancel, { passive: true });
+    container.addEventListener("pointerdown", cancel);
+    container.addEventListener("keydown", cancel);
+    const observer = new ResizeObserver(align);
+    const observed = new Set<Element>();
+    const observeChildren = () => {
+      for (const child of Array.from(container.children)) {
+        if (observed.has(child)) continue;
+        observed.add(child);
+        observer.observe(child);
+      }
+    };
+    observeChildren();
+    const mutation = new MutationObserver(() => {
+      observeChildren();
+      align();
+    });
+    mutation.observe(container, { childList: true });
+    return () => {
+      container.removeEventListener("load", align, true);
+      container.removeEventListener("wheel", cancel);
+      container.removeEventListener("touchstart", cancel);
+      container.removeEventListener("pointerdown", cancel);
+      container.removeEventListener("keydown", cancel);
+      observer.disconnect();
+      mutation.disconnect();
+    };
+  }, []);
+
+  // 离开面板（切 tab / 进详情）时记下回退标志并落地最后一次锚点。
   useEffect(() => {
     return () => {
       prepareReturn();
+      if (lastAnchor.current) persist(lastAnchor.current);
     };
-  }, [prepareReturn]);
+  }, [prepareReturn, persist]);
+
+  // 刷新/关闭标签页前最后一帧也保存（BFCache 返回同样依赖它）。
+  useEffect(() => {
+    const flush = () => {
+      if (lastAnchor.current) persist(lastAnchor.current);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+    };
+  }, [persist]);
 
   // Scroll → atTop/anchor/load more + 惯性结束判定
   const onScroll = useCallback(() => {
@@ -307,13 +449,13 @@ export function TimelineFeed({
             {pending.length >= 4 && pendingAuthors.length > 0 ? (
               <span className="mr-1 flex -space-x-1">
                 {pendingAuthors.slice(0, 3).map((author) => (
-                  <span
+                  <AuthorAvatar
                     key={author.id}
-                    className="flex size-5 items-center justify-center rounded-full bg-muted text-[9px] ring-1 ring-background"
-                    title={author.display}
-                  >
-                    {author.display.slice(0, 1).toUpperCase()}
-                  </span>
+                    account={author}
+                    fallbackId={author.id}
+                    size="tiny"
+                    className="ring-1 ring-background"
+                  />
                 ))}
               </span>
             ) : null}
@@ -323,12 +465,21 @@ export function TimelineFeed({
         </div>
       ) : null}
 
-      {pullDistance > 0 ? (
+      {pullDistance > 0 || pullHeld ? (
         <div
-          className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center text-xs text-muted-foreground"
-          style={{ transform: `translateY(${Math.min(40, pullDistance)}px)` }}
+          className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
+          data-testid="pull-indicator"
+          style={{ height: 40, transform: `translateY(${Math.min(40, pullHeld ? 12 : pullDistance / 2)}px)` }}
         >
-          {pullDistance > 60 ? "松开刷新" : "下拉刷新"}
+          {pullHeld ? (
+            <>
+              <Loader2Icon className="size-3.5 animate-spin" /> 正在刷新…
+            </>
+          ) : pullDistance > 60 ? (
+            "松开刷新"
+          ) : (
+            "下拉刷新"
+          )}
         </div>
       ) : null}
 
@@ -339,24 +490,41 @@ export function TimelineFeed({
         onScroll={onScroll}
         onTouchStart={(event) => {
           const container = containerRef.current;
-          if (!container || container.scrollTop > 0) return;
+          if (!container || container.scrollTop > 0 || pullHeld) return;
           touchStartY.current = event.touches[0]?.clientY ?? null;
           pullArmed.current = true;
         }}
         onTouchMove={(event) => {
           if (!pullArmed.current || touchStartY.current === null) return;
           const delta = (event.touches[0]?.clientY ?? 0) - touchStartY.current;
-          if (delta > 0) setPullDistance(Math.min(90, delta));
+          // 跟手 + 阻尼：手指移动 1px，内容只下移 0.55px，最大 90px
+          if (delta > 0) setPullDistance(Math.min(90, delta * 0.55));
         }}
         onTouchEnd={() => {
-          if (pullArmed.current && pullDistance > 60) {
+          const armed = pullArmed.current;
+          pullArmed.current = false;
+          touchStartY.current = null;
+          if (armed && pullDistance > 60) {
+            setPullHeld(true);
+            setPullDistance(0);
             void refreshNew();
+          } else {
+            setPullDistance(0);
           }
+        }}
+        onTouchCancel={() => {
           pullArmed.current = false;
           touchStartY.current = null;
           setPullDistance(0);
         }}
       >
+        <div
+          className="flex flex-col"
+          style={{
+            transform: `translateY(${pullHeld ? 44 : pullDistance}px)`,
+            transition: pullDistance > 0 ? "none" : "transform 180ms ease-out",
+          }}
+        >
         {leading}
 
         {showSkeleton ? (
@@ -423,6 +591,7 @@ export function TimelineFeed({
             </Alert>
           </div>
         ) : null}
+        </div>
       </div>
     </div>
   );

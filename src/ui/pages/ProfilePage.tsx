@@ -8,7 +8,6 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import {
-  ArrowLeftIcon,
   Loader2Icon,
   RadioIcon,
   UserCheckIcon,
@@ -21,13 +20,15 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/PageHeader";
 import { toast } from "@/components/ui/toast";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { useConnection } from "@/state/connection";
 import { useAuthorStream } from "@/state/author-stream";
 import { useHomeFeeds, usePostFeed } from "@/state/feed";
-import { goBack, useRoute } from "@/lib/router";
+import { goBack, routeSource, useRoute } from "@/lib/router";
+import { toastReadOnly } from "@/lib/readonly";
 import { dateTimeShort, roleLabel, timeShort } from "@/lib/format";
 
 const STREAM_LABEL: Record<SseState, string> = {
@@ -41,7 +42,8 @@ const STREAM_LABEL: Record<SseState, string> = {
 export function ProfilePage() {
   const route = useRoute();
   const account = route.name === "profile" ? route.account : "";
-  const { client, account: me } = useConnection();
+  const source = routeSource(route);
+  const { client, account: me, staticMode } = useConnection();
   const { following: followingFeed } = useHomeFeeds();
 
   const [profile, setProfile] = useState<ProfileAccountView | null>(null);
@@ -91,6 +93,10 @@ export function ProfilePage() {
   const following = profile?.following ?? false;
 
   const toggleFollow = async () => {
+    if (staticMode) {
+      toastReadOnly();
+      return;
+    }
     if (!client || !profile || followBusy) return;
     setFollowBusy(true);
     setActionError(null);
@@ -139,7 +145,12 @@ export function ProfilePage() {
           className="border-b border-border/60 px-4 pb-4 pt-3"
         >
           <div className="flex items-start gap-3">
-            <AuthorAvatar account={profile} fallbackId={profile.id} size="large" />
+            <AuthorAvatar
+              account={profile}
+              fallbackId={profile.id}
+              size="large"
+              sharedId={`account-${profile.id}`}
+            />
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
@@ -158,10 +169,18 @@ export function ProfilePage() {
                     size="sm"
                     variant={following ? "outline" : "default"}
                     aria-pressed={following}
+                    aria-disabled={staticMode || undefined}
                     data-testid="follow-button"
                     data-following={following ? "1" : "0"}
-                    title={following ? "点击取消关注" : "关注该成员（进入主页「正在关注」）"}
+                    title={
+                      staticMode
+                        ? "静态归档只读"
+                        : following
+                          ? "点击取消关注"
+                          : "关注该成员（进入主页「正在关注」）"
+                    }
                     disabled={followBusy}
+                    className={cn(staticMode && "opacity-60")}
                     onClick={() => void toggleFollow()}
                   >
                     {followBusy ? (
@@ -226,7 +245,9 @@ export function ProfilePage() {
                   </strong>{" "}
                   关注
                 </span>
-                <span>加入于 {dateTimeShort(profile.created_at)}</span>
+                {profile.created_at > 0 ? (
+                  <span>加入于 {dateTimeShort(profile.created_at)}</span>
+                ) : null}
               </div>
             </div>
           </div>
@@ -254,20 +275,21 @@ export function ProfilePage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center gap-2 border-b border-border/60 bg-background/80 px-2 backdrop-blur-md">
-        <Button variant="ghost" size="icon-sm" onClick={() => goBack("/")} aria-label="返回">
-          <ArrowLeftIcon />
-        </Button>
-        <div className="min-w-0 flex-1">
-          <h1 className="truncate text-base font-semibold">@{account}</h1>
-        </div>
-        <span className="truncate text-[11px] text-muted-foreground">成员页</span>
-      </header>
+      <PageHeader
+        title={`@${account}`}
+        back
+        onBack={() => goBack("/")}
+        backTestId="profile-back"
+        source={`来自${source} · 成员页`}
+        sourceTestId="profile-source"
+      />
 
       <TimelineFeed
         key={account}
         feed={feed}
         feedName={`profile:${account}`}
+        scrollPath={`/u/${account}`}
+        scrollTab="root"
         leading={leading}
         emptyTitle="还没有根帖"
         emptyDescription="该成员发布根帖后，会即时出现在这里。"

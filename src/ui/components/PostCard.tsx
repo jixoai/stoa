@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { cn } from "cn";
 import type { PostView } from "@core/types";
 
@@ -18,6 +18,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { copyText, postLink } from "@/lib/copy";
 import { timeShort } from "@/lib/format";
+import { useConnection } from "@/state/connection";
+import { toastReadOnly } from "@/lib/readonly";
 
 export type PostVariant = "feed" | "focal" | "reply" | "ancestor";
 export type ChainPosition = "none" | "start" | "middle" | "end" | "single";
@@ -62,10 +64,14 @@ export function PostCard({
   className,
   testId,
 }: PostCardProps) {
+  const { staticMode } = useConnection();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
+  const longPressed = useRef(false);
   const deleted = post.deleted_at !== null;
   const author = post.author_account;
+  const canShare = variant === "feed" || variant === "focal";
 
   const canClamp = variant === "feed" && !deleted;
   const longBody = post.body_md.length > 420 || post.body_md.split("\n").length > 6;
@@ -81,6 +87,22 @@ export function PostCard({
       setCopied(true);
       onCopy?.(post);
       window.setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  const startLongPress = () => {
+    longPressed.current = false;
+    if (copyTimer.current !== null) return;
+    copyTimer.current = window.setTimeout(() => {
+      copyTimer.current = null;
+      longPressed.current = true;
+      void handleCopy();
+    }, 550);
+  };
+  const cancelLongPress = () => {
+    if (copyTimer.current !== null) {
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = null;
     }
   };
 
@@ -119,6 +141,7 @@ export function PostCard({
                 account={author}
                 fallbackId={post.author}
                 time={timeShort(post.created_at)}
+                sharedId={canShare ? post.id : undefined}
               />
               {post.i !== undefined && post.n !== undefined ? (
                 <Badge variant="secondary" className="shrink-0 h-4 px-1 text-[10px]">
@@ -169,6 +192,7 @@ export function PostCard({
             account={author}
             fallbackId={post.author}
             size={variant === "ancestor" ? "small" : "normal"}
+            sharedId={canShare ? post.id : undefined}
           />
         </div>
         <div className="min-w-0 flex-1">
@@ -178,6 +202,7 @@ export function PostCard({
                 account={author}
                 fallbackId={post.author}
                 time={timeShort(post.created_at)}
+                sharedId={canShare ? post.id : undefined}
               />
               {replyingTo ? (
                 <div className="mt-0.5 text-xs text-muted-foreground">
@@ -227,13 +252,19 @@ export function PostCard({
           )}
 
           {!deleted ? (
-            <div className="mt-2 flex flex-wrap items-center gap-1 text-muted-foreground">
+            <div className="-ml-2 mt-1.5 flex flex-wrap items-center gap-0.5 text-muted-foreground">
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 data-testid="action-reply"
+                aria-disabled={staticMode || undefined}
+                className={cn("h-11 min-w-11 gap-1.5 px-2", staticMode && "opacity-60")}
                 onClick={(event) => {
                   event.stopPropagation();
+                  if (staticMode) {
+                    toastReadOnly();
+                    return;
+                  }
                   onReply?.(post);
                 }}
               >
@@ -242,10 +273,16 @@ export function PostCard({
               </Button>
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 data-testid="action-quote"
+                aria-disabled={staticMode || undefined}
+                className={cn("h-11 min-w-11 gap-1.5 px-2", staticMode && "opacity-60")}
                 onClick={(event) => {
                   event.stopPropagation();
+                  if (staticMode) {
+                    toastReadOnly();
+                    return;
+                  }
                   onQuote?.(post);
                 }}
               >
@@ -254,10 +291,28 @@ export function PostCard({
               </Button>
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 data-testid="action-copy"
+                title="点击复制；长按/右键也可复制链接"
+                className="h-11 min-w-11 gap-1.5 px-2"
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  startLongPress();
+                }}
+                onPointerUp={cancelLongPress}
+                onPointerLeave={cancelLongPress}
+                onPointerCancel={cancelLongPress}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  cancelLongPress();
+                  void handleCopy();
+                }}
                 onClick={(event) => {
                   event.stopPropagation();
+                  if (longPressed.current) {
+                    longPressed.current = false;
+                    return;
+                  }
                   void handleCopy();
                 }}
               >

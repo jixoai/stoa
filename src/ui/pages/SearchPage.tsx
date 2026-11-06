@@ -8,15 +8,16 @@ import { Input } from "@/components/ui/input";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PageHeader } from "@/components/PageHeader";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { PostCard } from "@/components/PostCard";
 import { useConnection } from "@/state/connection";
-import { navigate, useRoute } from "@/lib/router";
+import { navigate, usePageRoute } from "@/lib/router";
 import { roleLabel } from "@/lib/format";
 import type { WhoRow } from "@/lib/api";
 
 export function SearchPage() {
-  const route = useRoute();
+  const route = usePageRoute();
   const routeQuery = route.name === "search" ? route.q : "";
   const { client } = useConnection();
   const [input, setInput] = useState(routeQuery);
@@ -25,6 +26,7 @@ export function SearchPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searched, setSearched] = useState("");
+  const [retryNonce, setRetryNonce] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -59,7 +61,7 @@ export function SearchPage() {
     return () => {
       alive = false;
     };
-  }, [client, routeQuery]);
+  }, [client, routeQuery, retryNonce]);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -79,9 +81,7 @@ export function SearchPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="sticky top-0 z-30 flex h-12 shrink-0 items-center border-b border-border/60 bg-background/80 px-4 backdrop-blur-md">
-        <h1 className="text-base font-semibold">搜索</h1>
-      </header>
+      <PageHeader title="搜索" />
       <div className="border-b border-border/60 p-3">
         <form onSubmit={submit} className="flex gap-2">
           <div className="relative flex-1">
@@ -106,7 +106,12 @@ export function SearchPage() {
         {error ? (
           <div className="p-3">
             <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
+              <AlertDescription className="flex flex-wrap items-center gap-2">
+                {error}
+                <Button size="sm" variant="outline" onClick={() => setRetryNonce((value) => value + 1)}>
+                  重试
+                </Button>
+              </AlertDescription>
             </Alert>
           </div>
         ) : null}
@@ -157,7 +162,12 @@ export function SearchPage() {
                       className="h-auto w-full justify-start gap-3 rounded-none px-4 py-2.5 text-left font-normal"
                       onClick={() => navigate(`/u/${encodeURIComponent(member.id)}`)}
                     >
-                      <AuthorAvatar account={member} fallbackId={member.id} size="normal" />
+                      <AuthorAvatar
+                        account={member}
+                        fallbackId={member.id}
+                        size="normal"
+                        sharedId={`account-${member.id}`}
+                      />
                       <span className="min-w-0 flex-1">
                         <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
                           <span className="truncate text-sm font-semibold">{member.display}</span>

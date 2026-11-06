@@ -36,6 +36,9 @@ function keyOf(base: string, hash: string): string {
 }
 
 export function resolveMediaUrl(client: ReportClient, hash: string): Promise<string> {
+  // 静态归档：快照里是相对路径，<img>/<video> 直接用，避免 file:// 下的 fetch 限制
+  const direct = client.staticMediaUrl(hash);
+  if (direct) return Promise.resolve(direct);
   const key = keyOf(client.base, hash);
   const existing = cache.get(key);
   if (existing) return existing.promise;

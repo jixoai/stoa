@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { cn } from "cn";
 import {
   BellIcon,
   ChevronDownIcon,
   HomeIcon,
+  LockIcon,
   LogOutIcon,
   MoonIcon,
   PenSquareIcon,
@@ -27,6 +28,7 @@ import { useConnection } from "@/state/connection";
 import { useNotifications } from "@/state/notifications";
 import { navigate, useRoute } from "@/lib/router";
 import { displayCount } from "@/lib/format";
+import { toastReadOnly } from "@/lib/readonly";
 
 interface NavItem {
   key: "home" | "search" | "notifications" | "compose";
@@ -67,7 +69,7 @@ function useTheme() {
 
 export function DesktopNav() {
   const active = useActiveKey();
-  const { account, accounts, logout, switchBackend } = useConnection();
+  const { account, accounts, logout, switchBackend, staticMode } = useConnection();
   const { unread } = useNotifications();
   const { dark, toggle } = useTheme();
 
@@ -91,9 +93,19 @@ export function DesktopNav() {
             <Button
               key={item.key}
               variant={isActive ? "secondary" : "ghost"}
-              className="h-10 justify-start gap-3 px-3 text-[0.95rem]"
+              className={cn(
+                "h-10 justify-start gap-3 px-3 text-[0.95rem]",
+                staticMode && item.key === "compose" && "opacity-60",
+              )}
               aria-current={isActive ? "page" : undefined}
-              onClick={() => navigate(item.href)}
+              aria-disabled={staticMode && item.key === "compose" ? true : undefined}
+              onClick={() => {
+                if (staticMode && item.key === "compose") {
+                  toastReadOnly();
+                  return;
+                }
+                navigate(item.href);
+              }}
             >
               <Icon className="size-5" />
               <span>{item.label}</span>
@@ -128,15 +140,21 @@ export function DesktopNav() {
                 {dark ? <SunIcon className="size-4" /> : <MoonIcon className="size-4" />}
                 {dark ? "切换到浅色" : "切换到深色"}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={switchBackend}>
-                <ServerIcon className="size-4" /> 连接其它实例
-              </DropdownMenuItem>
-            </DropdownMenuGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuGroup>
-              <DropdownMenuItem onClick={logout}>
-                <LogOutIcon className="size-4" /> 退出登录
-              </DropdownMenuItem>
+              {staticMode ? (
+                <DropdownMenuItem disabled>
+                  <LockIcon className="size-4" /> 静态归档（只读）
+                </DropdownMenuItem>
+              ) : (
+                <>
+                  <DropdownMenuItem onClick={switchBackend}>
+                    <ServerIcon className="size-4" /> 连接其它实例
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={logout}>
+                    <LogOutIcon className="size-4" /> 退出登录
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -148,10 +166,12 @@ export function DesktopNav() {
 export function MobileNav() {
   const active = useActiveKey();
   const { unread } = useNotifications();
+  const { staticMode } = useConnection();
   return (
     <nav
       className="fixed inset-x-0 bottom-0 z-40 flex h-14 items-stretch border-t border-border/60 bg-background/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-md lg:hidden"
       aria-label="主导航"
+      style={{ viewTransitionName: "bottom-nav" }}
     >
       {ITEMS.map((item) => {
         const Icon = item.icon;
@@ -162,11 +182,19 @@ export function MobileNav() {
             type="button"
             variant="ghost"
             aria-current={isActive ? "page" : undefined}
+            aria-disabled={staticMode && item.key === "compose" ? true : undefined}
             className={cn(
               "relative flex h-auto flex-1 flex-col items-center justify-center gap-0.5 rounded-none px-0 text-[11px] font-normal transition-colors hover:bg-transparent dark:hover:bg-transparent",
               isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+              staticMode && item.key === "compose" && "opacity-60",
             )}
-            onClick={() => navigate(item.href)}
+            onClick={() => {
+              if (staticMode && item.key === "compose") {
+                toastReadOnly();
+                return;
+              }
+              navigate(item.href);
+            }}
           >
             <Icon className="size-5" />
             <span>{item.label}</span>
