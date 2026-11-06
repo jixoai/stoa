@@ -200,6 +200,32 @@ type ViewTransitionDocument = Document & {
 };
 
 let transitionSeq = 0;
+/** 是否有 View Transition 正在播放（骨架→内容交接要等它结束，design §3.2）。 */
+let transitionRunning = false;
+let transitionEpoch = 0;
+const transitionListeners = new Set<() => void>();
+
+function settleTransition(): void {
+  transitionRunning = false;
+  transitionEpoch += 1;
+  for (const listener of transitionListeners) listener();
+}
+
+export function isViewTransitionRunning(): boolean {
+  return transitionRunning;
+}
+
+/** 订阅「转场已结束」：返回递增的 epoch（配合 useSyncExternalStore）。 */
+export function useTransitionEpoch(): number {
+  return useSyncExternalStore(
+    (listener) => {
+      transitionListeners.add(listener);
+      return () => transitionListeners.delete(listener);
+    },
+    () => transitionEpoch,
+    () => transitionEpoch,
+  );
+}
 
 function prefersReducedMotion(): boolean {
   try {
@@ -222,6 +248,7 @@ function runTransition(direction: TransitionDirection, commit: () => void): void
   const doc = document as ViewTransitionDocument;
   if (!doc.startViewTransition || prefersReducedMotion()) {
     commit();
+    settleTransition();
     return;
   }
   // 快速连点：规范保证「新的 startViewTransition 会 skip 掉上一个」，无需手动 skip；
@@ -229,6 +256,7 @@ function runTransition(direction: TransitionDirection, commit: () => void): void
   const root = document.documentElement;
   const seq = ++transitionSeq;
   root.dataset.vt = direction;
+  transitionRunning = true;
   try {
     const transition = doc.startViewTransition(() => {
       commit();
@@ -237,11 +265,15 @@ function runTransition(direction: TransitionDirection, commit: () => void): void
       .catch(() => undefined)
       .finally(() => {
         if (seq === transitionSeq) delete root.dataset.vt;
+        // 新的转场会 skip 上一个：只有最新那次结束才算「已结算」。
+        if (seq === transitionSeq) settleTransition();
       });
   } catch {
     // 浏览器拒绝（例如隐藏标签页）：退化为瞬时切换
     delete root.dataset.vt;
+    transitionRunning = true;
     commit();
+    settleTransition();
   }
 }
 

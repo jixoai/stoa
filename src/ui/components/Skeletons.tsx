@@ -20,14 +20,30 @@ function SkeletonLines({ lines = 3 }: { lines?: number }) {
   );
 }
 
-/** 单条帖子骨架（feed / focal 两种密度）。 */
+/** 单条帖子骨架（feed / focal 两种密度；compact 用于回复区预占）。 */
 export function PostSkeleton({
   variant = "feed",
   withMedia = false,
+  compact = false,
 }: {
   variant?: "feed" | "focal";
   withMedia?: boolean;
+  compact?: boolean;
 }) {
+  if (compact) {
+    return (
+      <div className="flex gap-2 px-3 py-2" data-testid="post-skeleton" aria-hidden>
+        <Skeleton className="size-6 shrink-0 rounded-full" />
+        <div className="min-w-0 flex-1">
+          <Skeleton className="h-3 w-20" />
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            <Skeleton className="h-3 w-full" />
+            <Skeleton className="h-3 w-2/3" />
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="px-4 py-3" data-testid="post-skeleton" aria-hidden>
       <div className="flex gap-3">

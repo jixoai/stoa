@@ -24,7 +24,14 @@ import { PageHeader } from "@/components/PageHeader";
 import { Separator } from "@/components/ui/separator";
 import { useConnection } from "@/state/connection";
 import { getCachedThread, getThreadSeed, rememberThread } from "@/state/cache";
-import { goBack, navigate, routeSource, useRoute } from "@/lib/router";
+import {
+  goBack,
+  isViewTransitionRunning,
+  navigate,
+  routeSource,
+  useRoute,
+  useTransitionEpoch,
+} from "@/lib/router";
 import { fullTime } from "@/lib/format";
 
 type ReplyItem =
@@ -206,6 +213,32 @@ export function ThreadPage() {
   );
   /** 完整线程是否已从网络回来（回复区骨架 → 真实回复的开关）。 */
   const [loaded, setLoaded] = useState(() => Boolean(postId && getCachedThread(postId)));
+  /**
+   * 转场进行中到达的网络结果先挂起：转场快照必须与落位后的页面一致，
+   * 否则「快照撤掉那一刻」会看到页面跳变（第二次导航抖动的直接原因）。
+   */
+  const heldThread = useRef<ThreadView | null>(null);
+  const heldLoaded = useRef(false);
+  const transitionEpoch = useTransitionEpoch();
+  const commitThread = useCallback((next: ThreadView, done: boolean) => {
+    if (isViewTransitionRunning()) {
+      heldThread.current = next;
+      heldLoaded.current = done;
+      return;
+    }
+    setThread(next);
+    if (done) setLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (isViewTransitionRunning()) return;
+    if (!heldThread.current) return;
+    const next = heldThread.current;
+    const done = heldLoaded.current;
+    heldThread.current = null;
+    heldLoaded.current = false;
+    setThread(next);
+    if (done) setLoaded(true);
+  }, [transitionEpoch]);
   const [error, setError] = useState<string | null>(null);
   const [pendingThread, setPendingThread] = useState<ThreadView | null>(null);
   const [newReplyCount, setNewReplyCount] = useState(0);
@@ -238,15 +271,14 @@ export function ThreadPage() {
               setNewReplyCount(added);
             }
           } else {
-            setThread(next);
+            commitThread(next, true);
           }
         } else {
-          setThread(next);
+          commitThread(next, true);
           setPendingThread(null);
           setNewReplyCount(0);
         }
         setError(null);
-        if (!silent) setLoaded(true);
       } catch (err) {
         if (!silent) setError((err as Error).message);
       }
@@ -255,7 +287,6 @@ export function ThreadPage() {
   );
 
   useEffect(() => {
-    anchoredFor.current = null;
     setThread(postId ? getThreadSeed(postId) : null);
     setLoaded(Boolean(postId && getCachedThread(postId)));
     setPendingThread(null);
@@ -364,8 +395,12 @@ export function ThreadPage() {
     if (anchoredFor.current === key) return;
     anchoredFor.current = key;
     const el = focalRef.current;
-    if (!el) return;
-    el.scrollIntoView({ block: "start", behavior: "auto" });
+    const container = containerRef.current;
+    if (!el || !container) return;
+    const offset =
+      el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+    // 聚焦帖贴到吸顶栏下沿（3.75rem）；顶部内容不足时归零。
+    container.scrollTop = Math.max(0, Math.round(offset - 60));
   }, [thread, focal, postId, ancestorChain.length]);
 
   useEffect(() => {
@@ -560,24 +595,33 @@ export function ThreadPage() {
             </Card>
           )}
 
-          <div className="flex items-center gap-2 px-1 text-sm font-medium">
-            {loaded ? (
+          <ContentSwap
+            ready={loaded}
+            className="flex flex-col gap-3"
+            skeletonMinHeight="0px"
+            testId="reply-swap"
+            skeleton={
+              <>
+                <div className="flex items-center gap-2 px-1 text-sm font-medium">
+                  <Skeleton className="h-4 w-16" />
+                  <Separator className="flex-1" />
+                </div>
+                <div
+                  className="divide-y divide-border/60 rounded-xl border border-border/60 bg-card/40"
+                  data-testid="reply-skeleton"
+                >
+                  <PostSkeleton compact />
+                  <PostSkeleton compact />
+                </div>
+              </>
+            }
+          >
+            <div className="flex items-center gap-2 px-1 text-sm font-medium">
               <span data-testid="reply-count">{replyGroupCount} 条回复</span>
-            ) : (
-              <Skeleton className="h-4 w-16" />
-            )}
-            <Separator className="flex-1" />
-          </div>
-
-          {!loaded ? (
-            <div
-              className="divide-y divide-border/60 rounded-xl border border-border/60 bg-card/40"
-              data-testid="reply-skeleton"
-            >
-              <PostSkeleton />
-              <PostSkeleton />
+              <Separator className="flex-1" />
             </div>
-          ) : plan.items.length === 0 ? null : (
+
+            {plan.items.length === 0 ? null : (
             <Card className="gap-0 divide-y divide-border/60 p-0" data-testid="reply-list">
               {plan.items.map((item) => {
                 if (item.kind === "node") {
@@ -665,7 +709,8 @@ export function ThreadPage() {
                 );
               })}
             </Card>
-          )}
+            )}
+          </ContentSwap>
         </div>
             </>
           ) : null}

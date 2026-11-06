@@ -10,6 +10,7 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "cn";
+import { isViewTransitionRunning, useTransitionEpoch } from "@/lib/router";
 
 type Phase = "skeleton" | "swap" | "content";
 
@@ -35,13 +36,17 @@ export function ContentSwap({
   testId,
 }: ContentSwapProps) {
   const [phase, setPhase] = useState<Phase>(ready ? "content" : "skeleton");
+  const epoch = useTransitionEpoch();
   const boxRef = useRef<HTMLDivElement | null>(null);
   const skeletonRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
 
-  // 数据到位：先把容器钉在骨架高度，再在同一帧里换成内容，交给下一个 effect 做高度过渡。
+  // 数据到位：**等正在播放的路由转场结束**再做交接（转场快照必须与落位后的页面一致，
+  // 否则快照撤掉那一刻会看到高度跳变）；然后先把容器钉在骨架高度，同一帧换成内容，
+  // 交给下一个 effect 做高度过渡。
   useLayoutEffect(() => {
     if (phase !== "skeleton" || !ready) return;
+    if (isViewTransitionRunning()) return;
     const box = boxRef.current;
     const from = skeletonRef.current?.offsetHeight ?? 0;
     if (box) {
@@ -49,7 +54,7 @@ export function ContentSwap({
       box.style.overflow = "hidden";
     }
     setPhase("swap");
-  }, [ready, phase]);
+  }, [ready, phase, epoch]);
 
   useLayoutEffect(() => {
     if (phase !== "swap") return;
@@ -61,7 +66,7 @@ export function ContentSwap({
     box.style.transition = "none";
     box.style.height = `${from}px`;
     const raf = requestAnimationFrame(() => {
-      box.style.transition = `height ${SWAP_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`;
+      box.style.transition = `height ${SWAP_MS}ms var(--ios-ease-out)`;
       box.style.height = `${to}px`;
     });
     return () => cancelAnimationFrame(raf);
