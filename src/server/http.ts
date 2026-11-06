@@ -726,6 +726,7 @@ export function createApp(deps: AppDeps): Hono {
         ext: media.ext,
         bytes: media.bytes,
         url: `/api/media/${media.hash}`,
+        ...(media.w && media.h ? { w: media.w, h: media.h } : {}),
       },
       201,
     );

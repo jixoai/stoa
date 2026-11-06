@@ -1,4 +1,4 @@
-import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
@@ -13,6 +13,7 @@ import {
   normalizeTags,
 } from "../core/validation.ts";
 import { fail } from "../core/errors.ts";
+import { readMediaSize } from "../core/media-meta.ts";
 import { newUlid } from "../core/ids.ts";
 import { extractMentions } from "../core/mentions.ts";
 import {
@@ -145,12 +146,18 @@ function toPost(row: PostRow): Post {
 }
 
 function mediaRef(row: MediaRowDb): MediaRef {
-  return {
+  const ref: MediaRef = {
     hash: row.hash,
     ext: row.ext,
     bytes: row.bytes,
     url: `/api/media/${row.hash}`,
   };
+  // 只在已知尺寸时携带，避免给每个媒体负载加两个 null 字段。
+  if (row.w && row.h) {
+    ref.w = row.w;
+    ref.h = row.h;
+  }
+  return ref;
 }
 
 function authorView(row: AccountRow | null): AuthorView | null {
@@ -1027,9 +1034,17 @@ export class Store {
     const mediaByPost = new Map<string, MediaRef[]>();
     const mediaIds = [...new Set([...postIds, ...quotedIds])];
     for (const group of chunks(mediaIds)) {
-      const rows = all<{ post_id: string; hash: string; ext: string; bytes: number; position: number }>(
+      const rows = all<{
+        post_id: string;
+        hash: string;
+        ext: string;
+        bytes: number;
+        w: number | null;
+        h: number | null;
+        position: number;
+      }>(
         this.db,
-        `SELECT pm.post_id, pm.position, m.hash, m.ext, m.bytes
+        `SELECT pm.post_id, pm.position, m.hash, m.ext, m.bytes, m.w, m.h
          FROM post_media pm JOIN media m ON m.hash = pm.hash
          WHERE pm.post_id IN (${placeholders(group.length)})
          ORDER BY pm.position ASC`,
@@ -1037,7 +1052,17 @@ export class Store {
       );
       for (const row of rows) {
         const list = mediaByPost.get(row.post_id) ?? [];
-        list.push(mediaRef({ hash: row.hash, ext: row.ext, bytes: row.bytes, created_at: 0, ref_count: 0 }));
+        list.push(
+          mediaRef({
+            hash: row.hash,
+            ext: row.ext,
+            bytes: row.bytes,
+            w: row.w,
+            h: row.h,
+            created_at: 0,
+            ref_count: 0,
+          }),
+        );
         mediaByPost.set(row.post_id, list);
       }
     }
@@ -1603,8 +1628,15 @@ export class Store {
       fail("PAYLOAD_TOO_LARGE", `media exceeds ${MAX_MEDIA_BYTES} bytes`);
     }
     const hash = createHash("sha256").update(bytes).digest("hex");
+    const size = readMediaSize(bytes, ext);
     const existing = get<MediaRowDb>(this.db, "SELECT * FROM media WHERE hash = ?", hash);
-    if (existing) return existing;
+    if (existing) {
+      if (size && (existing.w === null || existing.h === null)) {
+        run(this.db, "UPDATE media SET w = ?, h = ? WHERE hash = ?", size.w, size.h, hash);
+        return get<MediaRowDb>(this.db, "SELECT * FROM media WHERE hash = ?", hash)!;
+      }
+      return existing;
+    }
     const dir = join(this.dataDir, "media");
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const path = join(dir, `${hash}.${ext}`);
@@ -1622,13 +1654,36 @@ export class Store {
     const now = this.clock();
     run(
       this.db,
-      "INSERT OR IGNORE INTO media(hash, ext, bytes, created_at, ref_count) VALUES (?, ?, ?, ?, 0)",
+      "INSERT OR IGNORE INTO media(hash, ext, bytes, created_at, ref_count, w, h) VALUES (?, ?, ?, ?, 0, ?, ?)",
       hash,
       ext,
       bytes.byteLength,
       now,
+      size?.w ?? null,
+      size?.h ?? null,
     );
     return get<MediaRowDb>(this.db, "SELECT * FROM media WHERE hash = ?", hash)!;
+  }
+
+  /** 历史媒体补尺寸：只处理缺 w/h 的行（每个文件一次），写回 DB 供前端预留占位。 */
+  backfillMediaSizes(): number {
+    const rows = all<{ hash: string; ext: string }>(
+      this.db,
+      "SELECT hash, ext FROM media WHERE w IS NULL OR h IS NULL",
+    );
+    let updated = 0;
+    for (const row of rows) {
+      try {
+        const bytes = readFileSync(this.mediaPath(row.hash, row.ext));
+        const size = readMediaSize(new Uint8Array(bytes), row.ext);
+        if (!size) continue;
+        run(this.db, "UPDATE media SET w = ?, h = ? WHERE hash = ?", size.w, size.h, row.hash);
+        updated += 1;
+      } catch {
+        // 文件缺失/不可解析：保持 null，前端按旧行为渲染
+      }
+    }
+    return updated;
   }
 
   getMedia(hash: string): MediaRow | null {

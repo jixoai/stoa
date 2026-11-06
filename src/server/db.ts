@@ -46,7 +46,7 @@ export function run(
   return { changes: Number(res.changes), lastInsertRowid: Number(res.lastInsertRowid) };
 }
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 function hasColumn(db: Database, table: string, column: string): boolean {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -155,7 +155,9 @@ export function migrate(db: Database): void {
       ext TEXT NOT NULL,
       bytes INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
-      ref_count INTEGER NOT NULL DEFAULT 0
+      ref_count INTEGER NOT NULL DEFAULT 0,
+      w INTEGER,
+      h INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS post_media (
@@ -205,6 +207,10 @@ export function migrate(db: Database): void {
       ).run(Date.now());
     }
   }
+
+  // v3：媒体固有尺寸（前端占位预留）。老库补列；历史行在读取时按需解析并回填。
+  if (!hasColumn(db, "media", "w")) db.exec("ALTER TABLE media ADD COLUMN w INTEGER");
+  if (!hasColumn(db, "media", "h")) db.exec("ALTER TABLE media ADD COLUMN h INTEGER");
 
   db.exec(`
     INSERT INTO meta(key, value) VALUES ('schema_version', '${SCHEMA_VERSION}')

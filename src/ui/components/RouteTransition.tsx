@@ -17,34 +17,39 @@ import {
   type TransitionDirection,
 } from "@/lib/router";
 
-const EASE = [0.22, 1, 0.36, 1] as const;
+// iOS 语义（与 app.css 的 ::view-transition 曲线保持一致）：
+//   进场 = 强减速（--ios-ease-nav）；退场 = 加速离开（--ios-ease-in）。
+const EASE_IN = [0.42, 0, 1, 1] as const;
+const EASE_OUT = [0, 0, 0.58, 1] as const;
+const EASE_NAV = [0.32, 0.72, 0, 1] as const;
+const NAV_SECONDS = 0.38;
 
 function variantsFor(kind: "root" | "detail", direction: TransitionDirection) {
   if (kind === "root") {
     return {
-      enter: { opacity: 0 },
-      center: { opacity: 1 },
-      exit: { opacity: 0 },
+      enter: { opacity: 0, transition: { duration: 0.2, ease: EASE_OUT } },
+      center: { opacity: 1, transition: { duration: 0.2, ease: EASE_OUT } },
+      exit: { opacity: 0, transition: { duration: 0.15, ease: EASE_IN } },
     };
   }
   if (direction === "back") {
     return {
-      enter: { x: "-22%", opacity: 0.9 },
-      center: { x: "0%", opacity: 1 },
-      exit: { x: "100%", opacity: 1 },
+      enter: { x: "-30%", opacity: 0.85, transition: { duration: NAV_SECONDS, ease: EASE_NAV } },
+      center: { x: "0%", opacity: 1, transition: { duration: NAV_SECONDS, ease: EASE_NAV } },
+      exit: { x: "100%", opacity: 1, transition: { duration: NAV_SECONDS, ease: EASE_IN } },
     };
   }
   if (direction === "fade") {
     return {
-      enter: { opacity: 0, y: 8 },
-      center: { opacity: 1, y: 0 },
-      exit: { opacity: 0 },
+      enter: { opacity: 0, y: 8, transition: { duration: 0.2, ease: EASE_OUT } },
+      center: { opacity: 1, y: 0, transition: { duration: 0.2, ease: EASE_OUT } },
+      exit: { opacity: 0, transition: { duration: 0.15, ease: EASE_IN } },
     };
   }
   return {
-    enter: { x: "100%", opacity: 1 },
-    center: { x: "0%", opacity: 1 },
-    exit: { x: "-18%", opacity: 0.92 },
+    enter: { x: "100%", opacity: 1, transition: { duration: NAV_SECONDS, ease: EASE_NAV } },
+    center: { x: "0%", opacity: 1, transition: { duration: NAV_SECONDS, ease: EASE_NAV } },
+    exit: { x: "-30%", opacity: 0.85, transition: { duration: NAV_SECONDS, ease: EASE_IN } },
   };
 }
 
@@ -78,7 +83,6 @@ export function RouteTransition({
           initial="enter"
           animate="center"
           exit="exit"
-          transition={{ duration: 0.22, ease: EASE }}
           className={cn("flex h-full min-h-0 flex-col will-change-transform", className)}
         >
           {children}

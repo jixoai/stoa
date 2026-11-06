@@ -84,6 +84,8 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   const db = openDatabase({ dataDir });
   migrate(db);
   const store = new Store({ dataDir, db });
+  const backfilled = store.backfillMediaSizes();
+  if (backfilled > 0) console.log(`[report] media sizes backfilled: ${backfilled}`);
   const auth = new AuthManager({
     store,
     envFiles: opts.envFiles,

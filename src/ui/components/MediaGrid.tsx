@@ -66,8 +66,18 @@ function MediaTile({
   const { client } = useConnection();
   const state = useMediaUrl(client, media.hash);
   const kind = mediaKind(media.ext);
+  // 单媒体按固有宽高预留占位（w/h 来自上传时解析；历史数据由后端回填）。
+  // fill 模式本来就用 aspect-square 等高格子，不需要固有比例。
+  const ratio = !fill && media.w && media.h ? media.w / media.h : null;
+  const frameStyle = ratio ? { aspectRatio: String(ratio), maxHeight: 510 } : undefined;
   if (state.loading)
-    return <Skeleton data-testid={testId} className={cn("h-full min-h-24 w-full rounded-none", className)} />;
+    return (
+      <Skeleton
+        data-testid={testId}
+        style={frameStyle}
+        className={cn("h-full min-h-24 w-full rounded-none", className)}
+      />
+    );
   if (!state.url) {
     return (
       <span
@@ -86,6 +96,7 @@ function MediaTile({
       <div
         data-testid={testId}
         data-media-kind="video"
+        style={frameStyle}
         className={cn("relative overflow-hidden bg-black", className)}
       >
         <video
@@ -97,7 +108,11 @@ function MediaTile({
           data-testid={`${testId}-video`}
           className={cn(
             "bg-black",
-            fill ? "absolute inset-0 h-full w-full object-cover" : "max-h-[510px] w-full",
+            fill
+              ? "absolute inset-0 h-full w-full object-cover"
+              : ratio
+                ? "h-full w-full object-contain"
+                : "max-h-[510px] w-full",
           )}
         />
         <Button
@@ -131,6 +146,7 @@ function MediaTile({
       data-media-kind="image"
       onClick={onOpen}
       aria-label="查看图片"
+      style={frameStyle}
       className={cn(
         "group relative block h-auto w-full overflow-hidden rounded-none border-0 bg-muted p-0 focus-visible:outline-none",
         className,
@@ -142,7 +158,7 @@ function MediaTile({
         loading="lazy"
         className={cn(
           "w-full object-cover transition-transform duration-200 group-hover:scale-[1.01]",
-          fill ? "absolute inset-0 h-full" : "max-h-[510px]",
+          fill ? "absolute inset-0 h-full" : ratio ? "h-full" : "max-h-[510px]",
         )}
       />
       <span className="absolute inset-0 hidden items-center justify-center bg-foreground/30 text-background group-hover:flex">

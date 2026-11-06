@@ -47,6 +47,9 @@ export interface MediaRow {
   bytes: number;
   created_at: number;
   ref_count: number;
+  /** 固有像素宽高（上传时从文件头解析；历史数据授权后回填，未知为 null）。 */
+  w: number | null;
+  h: number | null;
 }
 
 export interface Participant {
@@ -136,6 +139,9 @@ export interface MediaRef {
   ext: string;
   bytes: number;
   url: string;
+  /** 前端按 w/h 预留占位，避免媒体加载后卡片增高（未知为 null/缺省）。 */
+  w?: number | null;
+  h?: number | null;
 }
 
 export interface AuthorView {

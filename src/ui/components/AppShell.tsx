@@ -94,7 +94,9 @@ export function AppShell() {
               className="absolute inset-0 z-30 bg-background"
             >
               <SharedNamesProvider active>
-                <DetailView route={route} />
+                {/* 子页按路由键重建：A→B 的第二次导航必须是全新实例，
+                    否则转场快照会拍到上一页的 state（数据要等 effect 才换）。 */}
+                <DetailView key={routeKey(route)} route={route} />
               </SharedNamesProvider>
             </RouteTransition>
           ) : null}

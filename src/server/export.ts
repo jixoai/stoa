@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { fail } from "../core/errors.ts";
+import { readMediaSize, type MediaSize } from "../core/media-meta.ts";
 import type {
   DisabledFlag,
   MediaRef,
@@ -51,6 +52,9 @@ export interface SnapshotMedia {
   ext: string;
   bytes: number;
   url: string;
+  /** 固有尺寸（旧库未回填时导出侧从文件头补算），前端据此预留占位。 */
+  w?: number | null;
+  h?: number | null;
 }
 
 export interface SnapshotQuoted extends Omit<QuotedView, "media"> {
@@ -91,9 +95,21 @@ function safeJson(value: unknown): string {
     .replace(/\u2029/g, "\\u2029");
 }
 
-function snapshotMedia(ref: MediaRef): SnapshotMedia {
+function snapshotMedia(ref: MediaRef, size: MediaSize | null): SnapshotMedia {
   // Relative to index.html so the archive works under file:// and any host root.
-  return { hash: ref.hash, ext: ref.ext, bytes: ref.bytes, url: `media/${ref.hash}.${ref.ext}` };
+  const media: SnapshotMedia = {
+    hash: ref.hash,
+    ext: ref.ext,
+    bytes: ref.bytes,
+    url: `media/${ref.hash}.${ref.ext}`,
+  };
+  const w = ref.w ?? size?.w;
+  const h = ref.h ?? size?.h;
+  if (w && h) {
+    media.w = w;
+    media.h = h;
+  }
+  return media;
 }
 
 /**
@@ -102,6 +118,22 @@ function snapshotMedia(ref: MediaRef): SnapshotMedia {
  * with media URLs rewritten to archive-relative paths. No tokens, secrets or
  * backend addresses are read here, so none can leak into the archive.
  */
+/** 只读导出同样要能给出尺寸：DB 未回填时现场解析文件头（每进程一次缓存）。 */
+const exportSizeCache = new Map<string, MediaSize | null>();
+function mediaSizeFor(store: Store, ref: MediaRef): MediaSize | null {
+  if (ref.w && ref.h) return { w: ref.w, h: ref.h };
+  const key = `${ref.hash}.${ref.ext}`;
+  if (exportSizeCache.has(key)) return exportSizeCache.get(key) ?? null;
+  let size: MediaSize | null = null;
+  try {
+    size = readMediaSize(new Uint8Array(readFileSync(store.mediaPath(ref.hash, ref.ext))), ref.ext);
+  } catch {
+    size = null;
+  }
+  exportSizeCache.set(key, size);
+  return size;
+}
+
 export function buildSnapshot(store: Store, viewerId = "owner"): Snapshot {
   const account = store.getAccount(viewerId);
   if (!account || account.disabled !== 0) {
@@ -113,7 +145,7 @@ export function buildSnapshot(store: Store, viewerId = "owner"): Snapshot {
   const mediaByKey = new Map<string, SnapshotMedia>();
   const collectMedia = (refs: MediaRef[]): SnapshotMedia[] =>
     refs.map((ref) => {
-      const media = snapshotMedia(ref);
+      const media = snapshotMedia(ref, mediaSizeFor(store, ref));
       const key = `${media.hash}.${media.ext}`;
       const existing = mediaByKey.get(key);
       if (existing) return existing;
