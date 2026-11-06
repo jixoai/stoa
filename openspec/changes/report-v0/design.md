@@ -499,9 +499,10 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
   服务器（含 `file://`）零配置可用，不依赖 SPA fallback / rewrite。
 - **壳可以直接上线，且与任何其它产品无关**：壳零数据、零后端地址，托管到任何静态域名都不泄露；
   数据由使用者的 `ep` 指向自己的后端，认证由**那个后端**负责（`FDE2E_REPORT_AUTH` 二值开关，
-  live-read，改值即踢线）。当前预交付地址 `https://alpha-report.fde2e.com/?ep=<后端>`；
-  正式域名 `report.worker.fde2e.com` 待定，切换只需换托管位置，代码零改动。
-- 在线形态＝把这份 `dist/` 放到某个域名下（已完成：`alpha-report.fde2e.com`）；数据仍由用户自己的 `ep` 提供。
+  live-read，改值即踢线）。**已上线**：`https://report.worker.fde2e.com/?ep=<后端>`——
+  精确 vhost ＋ `*.worker.fde2e.com` ECC 证书（acme.sh dns_ali），静态根 `/www/worker/report`；
+  预交付镜像 `alpha-report.fde2e.com` 同源同产物。换托管位置只改 vhost，代码零改动。
+- 在线形态＝把这份 `dist/` 放到某个域名下（已完成：`report.worker.fde2e.com`）；数据仍由用户自己的 `ep` 提供。
 
 ## 18. 技术栈与仓库结构
 

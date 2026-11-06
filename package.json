@@ -10,7 +10,7 @@
   "scripts": {
     "report": "bun src/cli/main.ts",
     "test": "bun test",
-    "check": "bun scripts/check.mjs",
+    "check": "bun scripts/check.mjs && node scripts/ui-lint.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "dev:ui": "vite",
     "build": "vite build",
