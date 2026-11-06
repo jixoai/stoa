@@ -25,6 +25,7 @@ export const CLI_COMMANDS = [
   "draft",
   "export",
   "status",
+  "gc",
   "auth",
 ] as const;
 

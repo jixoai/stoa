@@ -26,6 +26,7 @@ const VALUE_FLAGS = new Set([
   "as",
   "port",
   "host",
+  "idle-timeout",
   "attach",
   "quote",
   "draft",
@@ -151,7 +152,8 @@ export const USAGE = `fde2e-report-worker
 Usage:
   fde2e-report-worker [--env-files=a,b] --version | capabilities
   fde2e-report-worker init --data-dir D
-  fde2e-report-worker serve --data-dir D [--port N] [--daemon|--stop|--status]
+  fde2e-report-worker serve --data-dir D [--port N] [--idle-timeout SEC]
+                            [--daemon|--stop|--status]
   fde2e-report-worker open --as <acct> --data-dir D
   fde2e-report-worker who --data-dir D
   fde2e-report-worker accounts create <id> [--role agent] [--display S] [--profile S]
@@ -168,8 +170,9 @@ Usage:
   fde2e-report-worker profile <acct> --as A [--follow]
   fde2e-report-worker wait-notifications --as A [--no-export] [--cursor C] [--timeout SEC]
   fde2e-report-worker draft ls|show <id>|resume <id>|discard <id>|commit <id> --as A
-  fde2e-report-worker export [--out D] [--prune --keep N]
-  fde2e-report-worker status [--data-dir D]
+  fde2e-report-worker export [--as A] [--out D] [--prune --keep N]
+  fde2e-report-worker status [--data-dir D] [--all]
+  fde2e-report-worker gc [--data-dir D]
   fde2e-report-worker auth status
 
 Global flags: --data-dir D, --env-files a,b, --as ACCOUNT, --human
@@ -179,4 +182,7 @@ Default output is machine-readable single-line JSON (JSONL for wait-notification
   (spine + branches + i/n when the chain is complete) and ignores --limit.
   wait-notifications blocks until a batch is committed; --timeout exits 0 with no
   output when nothing arrives in time (the cursor does not advance).
+  serve stays alive while requests/CLI calls arrive; --idle-timeout (default 1800s,
+  0 = never) releases the instance after that much silence. status --all shows the
+  lease remaining; gc reclaims server.json/serve.lock left by dead instances.
 `;

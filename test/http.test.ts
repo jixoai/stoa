@@ -409,8 +409,12 @@ describe("HTTP API (report-surface: health/CORS/SEED)", () => {
       const body = await json(exported);
       expect(body.as_of_seq).toBe(t.store.maxEventSeq());
       expect(existsSync(join(t.dir, "export", "index.html"))).toBe(true);
-      expect(existsSync(join(t.dir, "export", "p", `${rootId}.html`))).toBe(true);
+      expect(existsSync(join(t.dir, "export", "assets", "app.js"))).toBe(true);
+      expect(existsSync(join(t.dir, "export", "p"))).toBe(false);
       const index = await Bun.file(join(t.dir, "export", "index.html")).text();
+      expect(index).toContain('id="report-snapshot"');
+      expect(index).toContain('src="./assets/app.js"');
+      expect(index).toContain(rootId);
       expect(index).not.toContain("</script><script>alert(1)");
       expect(index).toContain("\\u003c/script");
       const forbidden = await app.request("/api/export", {

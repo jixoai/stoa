@@ -14,7 +14,8 @@ import {
   resolveDataDir,
 } from "../server/discovery.ts";
 import { initDataDir, describeAuthProvision } from "../server/init.ts";
-import { serverStatus, startServer } from "../server/serve.ts";
+import { serverStatus, startServer, type ServeStatus } from "../server/serve.ts";
+import { garbageCollect } from "../server/gc.ts";
 import { runExport, setPendingExportFlag } from "../server/export.ts";
 import type { WriteOp } from "../core/types.ts";
 import {
@@ -167,6 +168,14 @@ async function cmdInit(ctx: CliContext): Promise<number> {
   return 0;
 }
 
+/** `--idle-timeout` is expressed in whole seconds; null = use the 30-min default. */
+function idleTimeoutMsFromArgs(args: ParsedArgs): number | undefined {
+  const sec = flagInt(args, "idle-timeout");
+  if (sec === null) return undefined;
+  if (sec < 0) fail("BAD_REQUEST", "--idle-timeout must be a non-negative integer of seconds");
+  return sec * 1000;
+}
+
 async function cmdServe(ctx: CliContext): Promise<number> {
   const args = ctx.args;
   if (hasFlag(args, "stop")) return stopServer(ctx);
@@ -183,6 +192,7 @@ async function cmdServe(ctx: CliContext): Promise<number> {
     expose: hasFlag(args, "expose"),
     allowOpenExpose: hasFlag(args, "allow-open-expose"),
     processEnv: process.env,
+    idleTimeoutMs: idleTimeoutMsFromArgs(args),
   });
   process.stdout.write(`REPORT_URL=${running.url}\n`);
   process.stderr.write(`${running.banner}\n`);
@@ -194,7 +204,8 @@ async function cmdServe(ctx: CliContext): Promise<number> {
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGHUP", () => void shutdown("SIGHUP"));
-  await new Promise<never>(() => {});
+  // Idle-timeout shutdown resolves this; the process then exits normally.
+  await running.closed;
   return 0;
 }
 
@@ -205,6 +216,8 @@ function daemonArgs(ctx: CliContext): string[] {
   if (port !== null) out.push("--port", String(port));
   const host = flagValue(args, "host");
   if (host) out.push("--host", host);
+  const idleTimeoutMs = idleTimeoutMsFromArgs(args);
+  if (idleTimeoutMs !== undefined) out.push("--idle-timeout", String(idleTimeoutMs / 1000));
   if (ctx.envFiles.length) out.push("--env-files", ctx.envFiles.join(","));
   if (hasFlag(args, "expose")) out.push("--expose");
   if (hasFlag(args, "allow-open-expose")) out.push("--allow-open-expose");
@@ -318,7 +331,16 @@ function cleanupStaleServerFiles(dataDir: string): void {
   }
 }
 
+function formatLeaseLine(status: ServeStatus): string {
+  if (!status.running) return status.stale ? "(stale)" : "(none)";
+  if (status.lease === null || status.lease === undefined) return "disabled";
+  const remaining = status.lease.lease_remaining_ms;
+  if (remaining === null) return "disabled";
+  return `${remaining} ms remaining (idle timeout ${status.idle_timeout_ms ?? status.lease.idle_timeout_ms} ms, in-flight ${status.lease.in_flight})`;
+}
+
 async function statusCommand(ctx: CliContext): Promise<number> {
+  const all = hasFlag(ctx.args, "all");
   const status = await serverStatus(ctx.dataDir);
   let live: unknown = null;
   if (status.running && status.url) {
@@ -331,11 +353,31 @@ async function statusCommand(ctx: CliContext): Promise<number> {
       live = { error: (err as Error).message };
     }
   }
+  if (all) {
+    const instance = {
+      ...status,
+      lease_remaining_ms: status.lease_remaining_ms ?? null,
+      idle_timeout_ms: status.idle_timeout_ms ?? null,
+    };
+    if (ctx.human) {
+      emitHuman(`data dir: ${ctx.dataDir}`);
+      emitHuman(
+        `state   : ${status.running ? "running" : status.stale ? "stale" : "not running"}`,
+      );
+      if (status.pid !== undefined) emitHuman(`pid     : ${status.pid}`);
+      if (status.url) emitHuman(`url     : ${status.url}`);
+      emitHuman(`lease   : ${formatLeaseLine(status)}`);
+      return 0;
+    }
+    emit({ ok: true, data_dir: ctx.dataDir, instances: [instance], live });
+    return 0;
+  }
   if (ctx.human) {
     emitHuman(`running : ${status.running}`);
     if (status.running) {
       emitHuman(`url     : ${status.url}`);
       emitHuman(`pid     : ${status.pid}`);
+      emitHuman(`lease   : ${formatLeaseLine(status)}`);
       emitHuman(`data dir: ${ctx.dataDir}`);
     } else if (status.stale) {
       emitHuman(`stale server.json (pid ${status.pid}); run serve to restart`);
@@ -983,18 +1025,20 @@ async function cmdDraft(ctx: CliContext): Promise<number> {
 async function cmdExport(ctx: CliContext): Promise<number> {
   const out = flagValue(ctx.args, "out");
   const keep = flagInt(ctx.args, "keep");
+  const viewer = flagValue(ctx.args, "as") ?? ctx.env.values.FDE2E_REPORT_ACCOUNT ?? undefined;
   try {
     const result = runExport({
       dataDir: ctx.dataDir,
       outDir: out ? resolve(ctx.cwd, out) : null,
       prune: hasFlag(ctx.args, "prune"),
       keep,
+      viewer,
     });
     setPendingExportFlag(ctx.dataDir, false);
     if (ctx.human) {
       emitHuman(
-        `exported ${result.threads} thread page(s), ${result.pages} timeline page(s), ` +
-          `${result.media} media file(s) -> ${result.out_dir} (as-of seq ${result.as_of_seq})`,
+        `exported static archive (${result.threads} thread(s), ${result.media} media file(s)) ` +
+          `-> ${result.out_dir} (as-of seq ${result.as_of_seq})`,
       );
       return 0;
     }
@@ -1012,6 +1056,27 @@ async function cmdExport(ctx: CliContext): Promise<number> {
 
 async function cmdStatus(ctx: CliContext): Promise<number> {
   return statusCommand(ctx);
+}
+
+async function cmdGc(ctx: CliContext): Promise<number> {
+  const result = await garbageCollect(ctx.dataDir);
+  if (ctx.human) {
+    if (result.removed.length === 0) {
+      emitHuman("gc: nothing to reclaim");
+    } else {
+      for (const item of result.removed) {
+        emitHuman(`gc: removed ${item.kind} (${item.reason}) — ${item.path}`);
+      }
+    }
+    return 0;
+  }
+  emit({
+    ok: true,
+    data_dir: result.data_dir,
+    removed: result.removed,
+    removed_count: result.removed.length,
+  });
+  return 0;
 }
 
 export async function dispatch(args: ParsedArgs): Promise<number> {
@@ -1064,6 +1129,8 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
       return cmdExport(ctx);
     case "status":
       return cmdStatus(ctx);
+    case "gc":
+      return cmdGc(ctx);
     case "auth": {
       const sub = args.positionals[0];
       if (sub !== "status") fail("BAD_REQUEST", "auth status is the only auth subcommand");

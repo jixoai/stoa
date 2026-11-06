@@ -177,7 +177,10 @@ describe("CLI surface (design §15, P3)", () => {
     const exportBody = JSON.parse(exported.stdout) as { out_dir: string; threads: number };
     expect(exportBody.threads).toBeGreaterThanOrEqual(1);
     expect(await Bun.file(join(ws.dataDir, "export", "index.html")).exists()).toBe(true);
-    expect(await Bun.file(join(ws.dataDir, "export", "p", `${rootId}.html`)).exists()).toBe(true);
+    expect(await Bun.file(join(ws.dataDir, "export", "assets", "app.js")).exists()).toBe(true);
+    const archive = await Bun.file(join(ws.dataDir, "export", "index.html")).text();
+    expect(archive).toContain('id="report-snapshot"');
+    expect(archive).toContain(rootId);
   }, 60000);
 
   test("bare EOF fails, keeps the draft, then --draft resumes and commits", async () => {

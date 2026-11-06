@@ -10,6 +10,7 @@ import { newUlid } from "../core/ids.ts";
 import type { AuthManager } from "./auth.ts";
 import type { Presence } from "./presence.ts";
 import type { Store } from "./store.ts";
+import type { IdleLease } from "./lease.ts";
 import { runExport } from "./export.ts";
 import { join, resolve } from "node:path";
 
@@ -24,6 +25,8 @@ export interface AppDeps {
   port: number | null;
   /** built static UI (same-origin); served when present */
   uiDir?: string | null;
+  /** idle lease (design §1); absent in unit-test apps and when disabled */
+  lease?: IdleLease | null;
 }
 
 /**
@@ -128,7 +131,13 @@ export function createApp(deps: AppDeps): Hono {
     if (c.req.method === "OPTIONS") {
       return c.body(null, 204);
     }
-    await next();
+    // Every request is activity; while one is in flight the lease cannot expire.
+    const releaseLease = deps.lease?.hold() ?? null;
+    try {
+      await next();
+    } finally {
+      releaseLease?.();
+    }
   });
 
   app.onError((err, c) => {
@@ -154,6 +163,7 @@ export function createApp(deps: AppDeps): Hono {
       port: deps.port,
       protocol: capabilities().protocol,
       version: capabilities().version,
+      lease: deps.lease?.snapshot() ?? null,
     }),
   );
 
@@ -203,41 +213,47 @@ export function createApp(deps: AppDeps): Hono {
     // filter, not a follow edge — `follows` never participates here.
     const authorFilter = (c.req.query("author") ?? "").trim() || null;
     const release = deps.presence.connect(who.id);
+    // An open event stream is a subscription: it keeps the instance alive.
+    const releaseLease = deps.lease?.hold();
     c.header("X-Accel-Buffering", "no");
     c.header("Cache-Control", "no-cache, no-transform");
     c.header("Connection", "keep-alive");
     try {
       const sseResponse = await streamSSE(c, async (stream) => {
         let lastSeq = deps.store.getCursor(who.id);
-        await stream.writeSSE({
-          event: "hello",
-          data: JSON.stringify({
-            account: who.id,
-            cursor: lastSeq,
-            as_of_seq: deps.store.maxEventSeq(),
-            auth_mode: mode,
-            author: authorFilter,
-          }),
-        });
-        for (;;) {
-          const changed = await deps.store.waitForChange(15_000);
-          deps.presence.touch(who.id);
-          if (changed) {
-            // Visibility is already applied inside notificationLines; the author
-            // filter is a single actor match on top of it. `lastSeq` keeps
-            // advancing over *all* visible events (the account-global coordinate),
-            // so a filtered stream never re-delivers or skips cursor positions.
-            const snapshot = deps.store.notificationLines(who.id, lastSeq, { includeSelf: true });
-            for (const line of snapshot.lines) {
-              if ("type" in line && line.type === "thread.snapshot") continue;
-              const seq = (line as { seq?: number }).seq;
-              if (typeof seq === "number" && seq > lastSeq) lastSeq = seq;
-              if (authorFilter && (line as { actor?: string }).actor !== authorFilter) continue;
-              await stream.writeSSE({ event: "report", data: JSON.stringify(line as NotificationLine) });
+        try {
+          await stream.writeSSE({
+            event: "hello",
+            data: JSON.stringify({
+              account: who.id,
+              cursor: lastSeq,
+              as_of_seq: deps.store.maxEventSeq(),
+              auth_mode: mode,
+              author: authorFilter,
+            }),
+          });
+          for (;;) {
+            const changed = await deps.store.waitForChange(15_000);
+            deps.presence.touch(who.id);
+            if (changed) {
+              // Visibility is already applied inside notificationLines; the author
+              // filter is a single actor match on top of it. `lastSeq` keeps
+              // advancing over *all* visible events (the account-global coordinate),
+              // so a filtered stream never re-delivers or skips cursor positions.
+              const snapshot = deps.store.notificationLines(who.id, lastSeq, { includeSelf: true });
+              for (const line of snapshot.lines) {
+                if ("type" in line && line.type === "thread.snapshot") continue;
+                const seq = (line as { seq?: number }).seq;
+                if (typeof seq === "number" && seq > lastSeq) lastSeq = seq;
+                if (authorFilter && (line as { actor?: string }).actor !== authorFilter) continue;
+                await stream.writeSSE({ event: "report", data: JSON.stringify(line as NotificationLine) });
+              }
+            } else {
+              await stream.write(": ping\n\n");
             }
-          } else {
-            await stream.write(": ping\n\n");
           }
+        } finally {
+          releaseLease?.();
         }
       });
       const headers = new Headers(sseResponse.headers);
@@ -250,6 +266,7 @@ export function createApp(deps: AppDeps): Hono {
       });
     } catch {
       release();
+      releaseLease?.();
       throw new ReportError("INTERNAL", "stream failed");
     }
   });
@@ -570,6 +587,8 @@ export function createApp(deps: AppDeps): Hono {
     const peek = c.req.query("peek") === "1";
     const cursorOverride = optionalInt(c, "cursor");
     const release = deps.presence.connect(account.id);
+    // A blocking long poll (wait-notifications) is activity while it blocks.
+    const releaseLease = deps.lease?.hold();
     try {
       const deadline = Date.now() + 25_000;
       for (;;) {
@@ -597,6 +616,7 @@ export function createApp(deps: AppDeps): Hono {
       }
     } finally {
       release();
+      releaseLease?.();
     }
   });
 
@@ -633,6 +653,7 @@ export function createApp(deps: AppDeps): Hono {
         startedAt: deps.startedAt,
         openMode: deps.auth.current().mode === "open",
         openExposed: deps.openExposed,
+        lease: deps.lease?.snapshot() ?? null,
       },
       account: { id: account.id, role: account.role },
       auth: deps.auth.status(deps.openExposed),
@@ -646,7 +667,7 @@ export function createApp(deps: AppDeps): Hono {
     const account = identity(c, deps);
     requireGlobal(account);
     try {
-      const result = runExport({ dataDir: deps.dataDir });
+      const result = runExport({ dataDir: deps.dataDir, viewer: account.id });
       deps.store.setPendingExport(false);
       return c.json({ ok: true, ...result });
     } catch (err) {

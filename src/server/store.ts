@@ -1562,6 +1562,45 @@ export class Store {
     return all<PostRow>(this.db, "SELECT * FROM posts ORDER BY created_at ASC, id ASC");
   }
 
+  /** Every post the viewer may see (roots + replies + tombstones), oldest first. */
+  visiblePostsForExport(viewer: Viewer): PostView[] {
+    const vis = visibleRootsClause(viewer.role, viewer.id);
+    const rows = all<PostRow>(
+      this.db,
+      `SELECT * FROM posts WHERE ${vis.sql} ORDER BY created_at ASC, id ASC`,
+      ...(vis.params as Bindings),
+    );
+    return this.hydratePosts(rows, viewer);
+  }
+
+  /** All follow edges (static-archive snapshot; ordering keeps output stable). */
+  allFollows(): Follow[] {
+    return all<FollowRow>(
+      this.db,
+      "SELECT * FROM follows ORDER BY follower_id ASC, followee_id ASC",
+    );
+  }
+
+  /** `{ root_id: [account_id...] }` for the given visible roots. */
+  participantsForRoots(rootIds: string[]): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    for (const group of chunks(rootIds)) {
+      const rows = all<{ root_id: string; account_id: string }>(
+        this.db,
+        `SELECT root_id, account_id FROM participants
+         WHERE root_id IN (${placeholders(group.length)})
+         ORDER BY added_at ASC`,
+        ...group,
+      );
+      for (const row of rows) {
+        const list = out[row.root_id] ?? [];
+        list.push(row.account_id);
+        out[row.root_id] = list;
+      }
+    }
+    return out;
+  }
+
   mediaForExport(): MediaRow[] {
     return all<MediaRowDb>(
       this.db,

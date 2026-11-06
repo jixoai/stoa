@@ -12,6 +12,7 @@ import {
 import { dirname, join, resolve, sep } from "node:path";
 import { fail } from "../core/errors.ts";
 import { VERSION } from "../core/protocol.ts";
+import type { LeaseSnapshot } from "./lease.ts";
 
 export interface ServerInfo {
   port: number;
@@ -24,6 +25,8 @@ export interface ServerInfo {
   host: string;
   envFiles: string[];
   openMode: boolean;
+  /** set right before an idle-timeout shutdown removes server.json (design §1) */
+  closedAt?: number;
 }
 
 export const SERVER_JSON = "server.json";
@@ -82,23 +85,58 @@ export function clearServerInfo(dataDir: string, instanceId: string): void {
   }
 }
 
-export async function probeHealth(
+/**
+ * Stamp `closedAt` into server.json right before an idle-timeout shutdown
+ * removes it (design §1). Best effort: the file may already be gone.
+ */
+export function markServerClosed(dataDir: string, instanceId: string, closedAt: number): void {
+  const info = readServerInfo(dataDir);
+  if (!info || info.instanceId !== instanceId) return;
+  try {
+    writeServerInfo(dataDir, { ...info, closedAt });
+  } catch {
+    // the shutdown path must not fail because the marker could not be written
+  }
+}
+
+export interface HealthBody {
+  ok?: boolean;
+  dataDir?: string;
+  instanceId?: string;
+  pid?: number;
+  port?: number;
+  lease?: LeaseSnapshot | null;
+}
+
+/**
+ * Probe `/healthz` and return the body. Every probe that reaches the server
+ * renews its idle lease (a CLI touch counts as activity).
+ */
+export async function probeHealthBody(
   info: Pick<ServerInfo, "url" | "dataDir" | "instanceId">,
   timeoutMs = 1500,
-): Promise<boolean> {
+): Promise<HealthBody | null> {
   try {
     const res = await fetch(`${info.url}/healthz`, {
       signal: AbortSignal.timeout(timeoutMs),
       headers: { accept: "application/json" },
     });
-    if (!res.ok) return false;
-    const body = (await res.json()) as { ok?: boolean; dataDir?: string; instanceId?: string };
-    return Boolean(
-      body.ok && body.dataDir === info.dataDir && body.instanceId === info.instanceId,
-    );
+    if (!res.ok) return null;
+    const body = (await res.json()) as HealthBody;
+    if (!body.ok || body.dataDir !== info.dataDir || body.instanceId !== info.instanceId) {
+      return null;
+    }
+    return body;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function probeHealth(
+  info: Pick<ServerInfo, "url" | "dataDir" | "instanceId">,
+  timeoutMs = 1500,
+): Promise<boolean> {
+  return (await probeHealthBody(info, timeoutMs)) !== null;
 }
 
 /** Discover the running instance for a data dir, verifying healthz + dataDir. */
@@ -224,7 +262,7 @@ export interface LockHandle {
   release: () => void;
 }
 
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);

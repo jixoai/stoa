@@ -13,15 +13,21 @@ import {
   acquireLock,
   assertSafeDataDir,
   clearServerInfo,
-  probeHealth,
+  markServerClosed,
+  probeHealthBody,
   readServerInfo,
   writeServerInfo,
+  type HealthBody,
   type LockHandle,
   type ServerInfo,
 } from "./discovery.ts";
 import { isLoopbackHost, listenInRange } from "./ports.ts";
 import { cleanupStaleExports, runExport } from "./export.ts";
+import { DEFAULT_IDLE_TIMEOUT_SEC, IdleLease } from "./lease.ts";
 import { VERSION } from "../core/protocol.ts";
+
+/** Default idle lease: 30 minutes (design §1). */
+export const DEFAULT_IDLE_TIMEOUT_MS = DEFAULT_IDLE_TIMEOUT_SEC * 1000;
 
 export interface StartServerOptions {
   dataDir: string;
@@ -33,6 +39,8 @@ export interface StartServerOptions {
   processEnv?: Record<string, string | undefined>;
   now?: number;
   quiet?: boolean;
+  /** 0 disables the idle lease; omitted means the 30-minute default */
+  idleTimeoutMs?: number;
 }
 
 export interface RunningServer {
@@ -45,6 +53,8 @@ export interface RunningServer {
   auth: AuthManager;
   server: Server<undefined>;
   banner: string;
+  /** resolved once the server closed (signal or idle timeout) */
+  closed: Promise<void>;
   close: (opts?: { keepServerJson?: boolean }) => Promise<void>;
 }
 
@@ -60,6 +70,10 @@ function readSecret(dataDir: string): string {
 }
 
 export async function startServer(opts: StartServerOptions): Promise<RunningServer> {
+  const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+  if (!Number.isInteger(idleTimeoutMs) || idleTimeoutMs < 0) {
+    fail("BAD_REQUEST", `--idle-timeout must be a non-negative integer of seconds`);
+  }
   const dataDir = assertSafeDataDir(opts.dataDir);
   if (!existsSync(join(dataDir, "report.sqlite"))) {
     fail("BAD_REQUEST", `data dir ${dataDir} is not initialized; run: fde2e-report-worker init --data-dir ${dataDir}`);
@@ -108,6 +122,8 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     openExposed: exposed && mode === "open",
     port: null as number | null,
     uiDir: join(import.meta.dir, "..", "..", "dist"),
+    // Assigned once the lease exists; createApp reads it lazily per request.
+    lease: null as IdleLease | null,
   };
   const app = createApp(deps);
 
@@ -155,10 +171,18 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   ].join("\n");
 
   let closed = false;
+  let resolveClosed = (): void => {};
+  const closedPromise = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  let lease: IdleLease | null = null;
   const close = async (closeOpts?: { keepServerJson?: boolean }) => {
     if (closed) return;
     closed = true;
+    lease?.stop();
     try {
+      // No idle shutdown ever runs with a request in flight, but `stop(true)`
+      // also covers an in-flight request racing the signal path.
       listening.server.stop(true);
     } catch {
       // already stopped
@@ -170,7 +194,21 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     } catch {
       // already closed
     }
+    resolveClosed();
   };
+
+  const shutdownForIdle = async (): Promise<void> => {
+    if (closed) return;
+    process.stderr.write("[report] idle timeout, shutting down\n");
+    markServerClosed(dataDir, instanceId, Date.now());
+    await close();
+  };
+
+  if (idleTimeoutMs > 0) {
+    lease = new IdleLease({ idleTimeoutMs, onIdle: shutdownForIdle });
+    deps.lease = lease;
+    lease.start();
+  }
 
   // Pending export retry (design §14): never block startup, never swallow errors.
   cleanupStaleExports(dataDir);
@@ -198,6 +236,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     auth,
     server: listening.server,
     banner,
+    closed: closedPromise,
     close,
   };
 }
@@ -211,13 +250,17 @@ export interface ServeStatus {
   instanceId?: string;
   startedAt?: number;
   stale?: boolean;
+  /** idle lease info reported by the live instance's `/healthz` */
+  lease?: HealthBody["lease"];
+  lease_remaining_ms?: number | null;
+  idle_timeout_ms?: number | null;
 }
 
 export async function serverStatus(dataDir: string): Promise<ServeStatus> {
   const info = readServerInfo(dataDir);
   if (!info) return { running: false, dataDir };
-  const healthy = await probeHealth(info);
-  if (!healthy) {
+  const health = await probeHealthBody(info);
+  if (!health) {
     return {
       running: false,
       dataDir,
@@ -237,5 +280,8 @@ export async function serverStatus(dataDir: string): Promise<ServeStatus> {
     pid: info.pid,
     instanceId: info.instanceId,
     startedAt: info.startedAt,
+    lease: health.lease ?? null,
+    lease_remaining_ms: health.lease?.lease_remaining_ms ?? null,
+    idle_timeout_ms: health.lease?.idle_timeout_ms ?? null,
   };
 }
