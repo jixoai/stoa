@@ -60,7 +60,7 @@ export default defineConfig({
       output: {
         format: "iife",
         name: "ReportShell",
-        entryFileNames: "assets/app.js",
+        entryFileNames: "assets/app-[hash].js",
         assetFileNames: "assets/[name]-[hash][extname]",
       },
     },
