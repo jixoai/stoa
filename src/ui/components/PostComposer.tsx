@@ -17,6 +17,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
@@ -359,11 +360,11 @@ export function PostComposer({
             >
               <PopoverTrigger
                 render={
-                  <button
+                  <Button
                     type="button"
                     tabIndex={-1}
                     aria-hidden
-                    className="pointer-events-none absolute inset-x-0 bottom-0 h-px opacity-0"
+                    className="pointer-events-none absolute inset-x-0 bottom-0 h-px w-full rounded-none border-0 p-0 opacity-0"
                   />
                 }
               />
@@ -463,7 +464,7 @@ export function PostComposer({
       ) : null}
 
       <div className="flex flex-wrap items-center gap-2">
-        <input
+        <Input
           ref={fileRef}
           type="file"
           multiple

@@ -3,7 +3,7 @@ import { cn } from "cn";
 import { ChevronRightIcon, EyeOffIcon } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
-import { useMediaUrl } from "@/lib/media";
+import { mediaFileName, mediaKind, useMediaUrl } from "@/lib/media";
 import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
 
@@ -12,6 +12,20 @@ function QuoteThumb({ quoted }: { quoted: QuotedView }) {
   const first = quoted.media[0];
   const state = useMediaUrl(client, first?.hash ?? null);
   if (!first || !state.url) return null;
+  const kind = mediaKind(first.ext);
+  if (kind === "video") {
+    return (
+      <video
+        src={`${state.url}#t=0.1`}
+        muted
+        playsInline
+        preload="metadata"
+        aria-label={`视频 ${mediaFileName(first)}`}
+        className="mt-2 max-h-40 w-full rounded-lg bg-black object-cover"
+      />
+    );
+  }
+  if (kind !== "image") return null;
   return (
     <img
       src={state.url}

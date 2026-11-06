@@ -5,6 +5,24 @@
 import { useEffect, useState } from "react";
 import type { ReportClient } from "./api";
 
+/** 附件分派：图片 <img> / 视频 <video> / 未知类型下载占位（按存储扩展名）。 */
+export type MediaKind = "image" | "video" | "file";
+
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "gif", "svg"]);
+const VIDEO_EXTS = new Set(["mp4", "webm"]);
+
+export function mediaKind(ext: string | null | undefined): MediaKind {
+  const normalized = (ext ?? "").toLowerCase();
+  if (IMAGE_EXTS.has(normalized)) return "image";
+  if (VIDEO_EXTS.has(normalized)) return "video";
+  return "file";
+}
+
+/** 媒体只有内容 hash，文件名展示取 hash 前缀 + 扩展名。 */
+export function mediaFileName(media: { hash: string; ext: string }): string {
+  return `${media.hash.slice(0, 8)}.${media.ext}`;
+}
+
 interface CacheEntry {
   promise: Promise<string>;
   url: string | null;

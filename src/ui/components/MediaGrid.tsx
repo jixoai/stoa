@@ -1,27 +1,73 @@
 import { useState } from "react";
 import { cn } from "cn";
 import type { MediaRef } from "@core/types";
-import { ImageOffIcon, Maximize2Icon } from "lucide-react";
+import { DownloadIcon, FileTextIcon, ImageOffIcon, Maximize2Icon } from "lucide-react";
 import { useConnection } from "@/state/connection";
-import { useMediaUrl } from "@/lib/media";
+import { mediaFileName, mediaKind, useMediaUrl } from "@/lib/media";
+import { formatBytes } from "@/lib/format";
+import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 
+/** 不可预览附件的下载占位：文件名 + 大小 + 下载按钮（design §12.5）。 */
+function MediaDownload({
+  media,
+  url,
+  testId,
+  className,
+}: {
+  media: MediaRef;
+  url: string;
+  testId?: string;
+  className?: string;
+}) {
+  const name = mediaFileName(media);
+  return (
+    <div
+      data-testid={testId}
+      data-media-kind="file"
+      className={cn(
+        "flex min-h-24 flex-col items-start justify-center gap-1 overflow-hidden bg-muted p-3 text-muted-foreground",
+        className,
+      )}
+    >
+      <FileTextIcon className="size-5" />
+      <span className="max-w-full truncate text-xs font-medium text-foreground">{name}</span>
+      <span className="text-[11px]">{formatBytes(media.bytes)}</span>
+      <Button
+        type="button"
+        variant="outline"
+        size="xs"
+        nativeButton={false}
+        render={<a href={url} download={name} />}
+        className="mt-1"
+      >
+        <DownloadIcon data-icon="inline-start" />
+        下载
+      </Button>
+    </div>
+  );
+}
+
 function MediaTile({
   media,
+  fill,
   className,
   onOpen,
   testId,
 }: {
   media: MediaRef;
+  /** 网格铺满模式：图片/视频绝对定位裁切（2~4 图等高格子） */
+  fill: boolean;
   className?: string;
   onOpen: () => void;
   testId: string;
 }) {
   const { client } = useConnection();
   const state = useMediaUrl(client, media.hash);
+  const kind = mediaKind(media.ext);
   if (state.loading)
-    return <Skeleton data-testid={testId} className={cn("h-full w-full rounded-none", className)} />;
+    return <Skeleton data-testid={testId} className={cn("h-full min-h-24 w-full rounded-none", className)} />;
   if (!state.url) {
     return (
       <span
@@ -35,33 +81,81 @@ function MediaTile({
       </span>
     );
   }
+  if (kind === "video") {
+    return (
+      <div
+        data-testid={testId}
+        data-media-kind="video"
+        className={cn("relative overflow-hidden bg-black", className)}
+      >
+        <video
+          src={state.url}
+          controls
+          playsInline
+          preload="metadata"
+          aria-label={`视频 ${mediaFileName(media)}`}
+          data-testid={`${testId}-video`}
+          className={cn(
+            "bg-black",
+            fill ? "absolute inset-0 h-full w-full object-cover" : "max-h-[510px] w-full",
+          )}
+        />
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon-xs"
+          aria-label="查看视频"
+          onClick={onOpen}
+          className="absolute right-2 top-2 opacity-90"
+        >
+          <Maximize2Icon />
+        </Button>
+      </div>
+    );
+  }
+  if (kind === "file") {
+    return (
+      <MediaDownload
+        media={media}
+        url={state.url}
+        testId={testId}
+        className={cn(fill && "h-full", className)}
+      />
+    );
+  }
   return (
-    <button
+    <Button
       type="button"
+      variant="ghost"
       data-testid={testId}
+      data-media-kind="image"
       onClick={onOpen}
+      aria-label="查看图片"
       className={cn(
-        "group relative block h-full w-full overflow-hidden bg-muted focus-visible:outline-none",
+        "group relative block h-auto w-full overflow-hidden rounded-none border-0 bg-muted p-0 focus-visible:outline-none",
         className,
       )}
-      aria-label="查看图片"
     >
       <img
         src={state.url}
         alt={media.hash.slice(0, 8)}
         loading="lazy"
-        className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.01]"
+        className={cn(
+          "w-full object-cover transition-transform duration-200 group-hover:scale-[1.01]",
+          fill ? "absolute inset-0 h-full" : "max-h-[510px]",
+        )}
       />
       <span className="absolute inset-0 hidden items-center justify-center bg-foreground/30 text-background group-hover:flex">
         <Maximize2Icon className="size-5" />
       </span>
-    </button>
+    </Button>
   );
 }
 
 /**
  * 媒体网格：1 图按原比例（高 ≤510）；2 图两列；3 图左大右二；4 图 2×2。
- * 统一 2px 间距、16px 圆角、object-fit: cover；点击开 lightbox（design §12.5）。
+ * 统一 2px 间距、16px 圆角；图片 object-fit: cover 收敛进等高格子，视频用
+ * `<video controls>` 播放，未知类型给下载占位；点击图片开 lightbox（design §12.5）。
  */
 export function MediaGrid({ media, className }: { media: MediaRef[]; className?: string }) {
   const [openIndex, setOpenIndex] = useState<number | null>(null);
@@ -74,7 +168,7 @@ export function MediaGrid({ media, className }: { media: MediaRef[]; className?:
       : count === 3
         ? "grid-cols-2 grid-rows-2"
         : "grid-cols-2";
-  const tileAspect = count === 1 ? "" : "aspect-square";
+  const fill = count > 1;
 
   return (
     <>
@@ -87,11 +181,12 @@ export function MediaGrid({ media, className }: { media: MediaRef[]; className?:
           <MediaTile
             key={item.hash}
             media={item}
+            fill={fill}
             testId={`media-tile-${index}`}
             onOpen={() => setOpenIndex(index)}
             className={cn(
-              tileAspect,
-              count === 3 && index === 0 && "row-span-2 aspect-auto h-full",
+              fill && "aspect-square",
+              count === 3 && index === 0 && "row-span-2 aspect-auto",
               count === 1 && "max-h-[510px]",
             )}
           />
@@ -103,9 +198,9 @@ export function MediaGrid({ media, className }: { media: MediaRef[]; className?:
           showCloseButton
           className="max-w-[calc(100%-1rem)] gap-0 p-2 sm:max-w-5xl"
         >
-          <DialogTitle className="sr-only">图片预览</DialogTitle>
+          <DialogTitle className="sr-only">媒体预览</DialogTitle>
           {openIndex !== null && items[openIndex] ? (
-            <LightboxImage media={items[openIndex]!} />
+            <LightboxMedia media={items[openIndex]!} />
           ) : null}
         </DialogContent>
       </Dialog>
@@ -113,21 +208,45 @@ export function MediaGrid({ media, className }: { media: MediaRef[]; className?:
   );
 }
 
-function LightboxImage({ media }: { media: MediaRef }) {
+function LightboxMedia({ media }: { media: MediaRef }) {
   const { client } = useConnection();
   const state = useMediaUrl(client, media.hash);
+  const kind = mediaKind(media.ext);
   if (state.loading) return <Skeleton className="h-[60vh] w-full rounded-lg" />;
   if (!state.url) {
     return (
       <span className="flex h-64 items-center justify-center text-muted-foreground">
-        <ImageOffIcon className="mr-2 size-5" /> 图片不可用
+        <ImageOffIcon className="mr-2 size-5" /> 媒体不可用
       </span>
+    );
+  }
+  if (kind === "video") {
+    return (
+      <video
+        src={state.url}
+        controls
+        playsInline
+        preload="metadata"
+        data-testid="lightbox-video"
+        className="max-h-[85vh] w-full rounded-lg bg-black object-contain"
+      />
+    );
+  }
+  if (kind === "file") {
+    return (
+      <MediaDownload
+        media={media}
+        url={state.url}
+        className="min-h-40 rounded-lg"
+        testId="lightbox-file"
+      />
     );
   }
   return (
     <img
       src={state.url}
       alt={media.hash.slice(0, 8)}
+      data-testid="lightbox-image"
       className="max-h-[85vh] w-full rounded-lg object-contain"
     />
   );

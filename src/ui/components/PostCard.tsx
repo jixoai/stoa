@@ -206,17 +206,19 @@ export function PostCard({
                 <Markdown source={post.body_md} />
               </div>
               {canClamp && longBody ? (
-                <button
+                <Button
                   type="button"
+                  variant="link"
+                  size="sm"
                   data-testid="expand-body"
-                  className="mt-1 text-sm text-link hover:underline"
+                  className="mt-1 h-auto justify-start p-0 text-sm text-link"
                   onClick={(event) => {
                     event.stopPropagation();
                     setExpanded((value) => !value);
                   }}
                 >
                   {expanded ? "收起" : "展开"}
-                </button>
+                </Button>
               ) : null}
               <MediaGrid media={post.media} />
               <QuoteCard post={post} />

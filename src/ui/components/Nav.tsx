@@ -157,12 +157,13 @@ export function MobileNav() {
         const Icon = item.icon;
         const isActive = active === item.key;
         return (
-          <button
+          <Button
             key={item.key}
             type="button"
+            variant="ghost"
             aria-current={isActive ? "page" : undefined}
             className={cn(
-              "relative flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] transition-colors",
+              "relative flex h-auto flex-1 flex-col items-center justify-center gap-0.5 rounded-none px-0 text-[11px] font-normal transition-colors hover:bg-transparent dark:hover:bg-transparent",
               isActive ? "text-foreground" : "text-muted-foreground hover:text-foreground",
             )}
             onClick={() => navigate(item.href)}
@@ -174,7 +175,7 @@ export function MobileNav() {
                 {displayCount(unread)}
               </span>
             ) : null}
-          </button>
+          </Button>
         );
       })}
     </nav>
