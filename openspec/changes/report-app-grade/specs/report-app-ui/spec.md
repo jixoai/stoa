@@ -51,11 +51,12 @@ localStorage），并在数据就绪后、首帧绘制前恢复；anchor 缺失�
 - **WHEN** 用户正在阅读中段，SSE 连续推来 5 条新帖
 - **THEN** 列表位置不动，只出现「N 条新帖子」胶囊
 
-### Requirement: 路由转场动画
-UI SHALL 提供与层级一致的转场：移动端子页从右滑入/滑出（带底层视差），根页 tab 切换淡入淡出；
-桌面端淡入上移、详情以覆盖层出现。共享元素（头像/标题）SHALL 做 FLIP 连续变形。
-动画 SHALL 只用 `transform/opacity`、可被手势中断、快速连点不堆叠；
-`prefers-reduced-motion` 时 SHALL 全部降级为瞬时；动画期间 SHALL 保留列表滚动位置与节点。
+### Requirement: 路由转场动画（成熟方案优先）
+转场 SHALL 优先使用**官方 View Transitions API**（`document.startViewTransition` ＋
+`view-transition-name` 共享元素），SHALL NOT 自行编排关键帧计时器或手算 FLIP 矩阵。
+API 不可用时 SHALL 降级到社区成熟库 `motion`；`prefers-reduced-motion` 时 SHALL 瞬时完成。
+方向语义 SHALL 由路由层级（depth）决定：进子页右进左移、返回反向、根页 tab 淡切。
+转场期间 SHALL 保留列表滚动位置与已渲染节点；快速连点 SHALL 合并而非堆叠。
 
 #### Scenario: 返回手势有方向感
 - **WHEN** 从详情页返回列表

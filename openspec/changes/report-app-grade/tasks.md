@@ -15,7 +15,7 @@
 ## C · 应用级 UI
 - [ ] C1 路由历史栈 + 详情返回按钮 + 合成栈 + 底部导航常驻
 - [ ] C1b **滚动位置记忆**：按 (path,tab) 持久化锚点，首帧前恢复、恢复期不重排；刷新/重开/切 tab/进出详情一致（容差 ≤2px）
-- [ ] C1c **路由转场动画**：移动端左右滑入滑出＋视差、tab 淡切、桌面淡入覆盖层、共享元素 FLIP、reduced-motion 降级
+- [ ] C1c **路由转场**：主路径用官方 View Transitions API（`startViewTransition` + `view-transition-name` 共享元素，含 depth 方向语义）；不支持时降级 `motion`；reduced-motion 瞬时；禁手写计时器/手算 FLIP
 - [ ] C2 图片查看器：pinch/双击/拖动/下滑关闭/左右切换/缩略条/键盘/加载与失败态
 - [ ] C3 列表行、操作栏（≥44px）、吸顶栏、下拉刷新、骨架/空/错误态
 - [ ] C4 发帖箱 sheet + 键盘避让 + 草稿；深色与 200% 字号

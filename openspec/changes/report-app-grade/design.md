@@ -71,15 +71,22 @@
 - **刷新/重开/切换 tab/进出详情** 都必须回到同一位置；SSE 重连、窗口 resize 不得改变锚点。
 - **可验收**：脚本化断言 `firstVisiblePostId` 与 `offsetPx` 在「滚动 → 刷新 → 恢复」后一致（容差 ≤2px）。
 
-## 7. 路由转场动画（最新体验标准）
+## 7. 路由转场动画（**用成熟方案，不手搓**）
 
-- **移动端**：进入子页 = 从右滑入 + 底层轻微左移视差；返回 = 反向滑出；顶部返回键与系统返回手势
-  共用同一动画。根页切换 tab = 淡入淡出（不做横向滑动，避免误认层级）。
-- **桌面端**：淡入 + 轻微上移（120ms），详情以覆盖层方式出现；不做全屏横向滑动。
-- **共享元素**：头像/标题在列表 → 详情之间做连续变形（FLIP），时长 220ms，可被用户滚动中断。
-- **性能与无障碍**：只用 `transform/opacity`（合成层），60fps；`prefers-reduced-motion` 时
-  全部降级为瞬时；动画期间不阻塞手势，快速连点不产生堆叠。
-- **返回后状态**：动画期间保留列表滚动位置与已渲染节点，禁止因卸载重建导致跳动。
+优先级：**官方 View Transitions API** → 不支持的平台降级到**社区成熟库 `motion`**（framer-motion
+后继）→ 再不行才是浏览器默认（瞬时）。
+
+- **主路径（官方）**：SPA 内导航包在 `document.startViewTransition(() => commitRoute())` 里；
+  列表项头像/标题与详情页页头声明同名 `view-transition-name`，由浏览器做**共享元素**连续变形
+  （不用自己算 FLIP）。入场/退场由 `::view-transition-old/new(*)` 的 CSS 关键帧控制。
+- **降级路径（社区）**：`HTMLViewTransition` 不存在或 `prefers-reduced-motion` 时——
+  reduced-motion 直接瞬时；不支持 API 的浏览器用 `motion` 的 `AnimatePresence` 做
+  进入/退出（抽离自 `motion/react`，只引需要的部分）。
+- **禁止**自己写 `requestAnimationFrame` 计时器编排转场、禁止手算矩阵做 FLIP。
+- **方向语义**：push（进子页）＝新页从右进、旧页轻微左移；pop（返回）＝反向；根页 tab 切换＝淡切。
+  方向信息通过路由 meta（`depth`）传给转场，不用猜测。
+- **性能与正确性**：转场期间禁止卸载列表（保滚动与节点）；快速连点用 `skipTransition`
+  合并；`view-transition-name` 必须唯一（同屏重复元素用 `auto` 或加索引后缀避免冲突）。
 
 ## 4. 影响面
 
