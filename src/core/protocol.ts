@@ -18,6 +18,9 @@ export const CLI_COMMANDS = [
   "reply",
   "read",
   "search",
+  "follow",
+  "following",
+  "profile",
   "wait-notifications",
   "draft",
   "export",
@@ -39,6 +42,11 @@ export const API_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/accounts/:id/rotate" },
   { method: "DELETE", path: "/api/accounts/:id" },
   { method: "GET", path: "/api/timeline" },
+  { method: "GET", path: "/api/feed" },
+  { method: "GET", path: "/api/profile/:account" },
+  { method: "GET", path: "/api/following" },
+  { method: "POST", path: "/api/follow/:account" },
+  { method: "DELETE", path: "/api/follow/:account" },
   { method: "GET", path: "/api/thread/:id" },
   { method: "GET", path: "/api/posts/:id" },
   { method: "POST", path: "/api/posts" },
@@ -75,6 +83,10 @@ export interface Capabilities {
     export: boolean;
     auth: "binary-live-read";
     pagination: "keyset";
+    tags: boolean;
+    follows: boolean;
+    feed: boolean;
+    profile: boolean;
   };
   limits: {
     body_chars: number;
@@ -101,6 +113,10 @@ export function capabilities(): Capabilities {
       export: true,
       auth: "binary-live-read",
       pagination: "keyset",
+      tags: true,
+      follows: true,
+      feed: true,
+      profile: true,
     },
     limits: {
       body_chars: 200_000,

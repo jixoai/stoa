@@ -38,6 +38,7 @@ export function summarizePost(post: PostView): Record<string, unknown> {
     self_thread_id: post.self_thread_id,
     self_thread_is_leaf: post.self_thread_is_leaf,
     reply_to_account_id: post.reply_to_account_id,
+    tags: post.tags,
     seq: post.seq,
     created_at: post.created_at,
     deleted: post.deleted_at !== null,
@@ -51,7 +52,8 @@ export function summarizePost(post: PostView): Record<string, unknown> {
 
 export function postLine(post: PostView): string {
   const author = post.author_account?.display ?? post.author;
-  const head = `@${post.author} (${author}) · ${formatTime(post.created_at)} · ${post.id}`;
+  const tags = post.tags.length ? ` ${post.tags.map((t) => `#${t}`).join(" ")}` : "";
+  const head = `@${post.author} (${author}) · ${formatTime(post.created_at)} · ${post.id}${tags}`;
   const body = post.deleted_at ? "[此帖已删除]" : post.body_md;
   const media = post.media.length ? `\n  media: ${post.media.map((m) => m.url).join(" ")}` : "";
   return `${head}\n  ${body.replace(/\n/g, "\n  ")}${media}`;

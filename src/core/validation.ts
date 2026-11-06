@@ -7,6 +7,9 @@ export const MAX_BODY_CHARS = 200_000;
 export const MAX_ATTACHMENTS = 4;
 export const MAX_BATCH_ITEMS = 500;
 export const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+/** Semantic/custom post tags (design §5.0): lowercase slug-ish, e.g. `result`. */
+export const TAG_RE = /^[a-z0-9-]{1,24}$/;
+export const MAX_TAGS = 8;
 
 export const MEDIA_TYPES: Record<string, string> = {
   "image/png": "png",
@@ -74,6 +77,42 @@ export function assertBody(body: unknown): string {
   return body;
 }
 
+/**
+ * Validate + normalize a tag list: array of `[a-z0-9-]{1,24}`, at most 8 distinct
+ * values, duplicates removed (first occurrence wins). Missing/null means `[]`.
+ */
+export function normalizeTags(input: unknown): string[] {
+  if (input === undefined || input === null) return [];
+  if (!Array.isArray(input)) fail("BAD_REQUEST", "tags must be an array of strings");
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of input) {
+    if (typeof raw !== "string") fail("BAD_REQUEST", "tags entries must be strings");
+    if (!TAG_RE.test(raw)) {
+      fail(
+        "BAD_REQUEST",
+        `invalid tag "${raw}": must match ${TAG_RE.source} (lowercase letters, digits, dashes; 1-24 chars)`,
+      );
+    }
+    if (seen.has(raw)) continue;
+    seen.add(raw);
+    out.push(raw);
+  }
+  if (out.length > MAX_TAGS) {
+    fail("BAD_REQUEST", `too many tags (${out.length}); max ${MAX_TAGS} distinct tags per post`);
+  }
+  return out;
+}
+
+/** Single-tag filter validation (read/search). */
+export function normalizeTagFilter(input: unknown): string | null {
+  if (input === undefined || input === null || input === "") return null;
+  if (typeof input !== "string" || !TAG_RE.test(input)) {
+    fail("BAD_REQUEST", `invalid tag filter: must match ${TAG_RE.source}`);
+  }
+  return input;
+}
+
 function normalizeMedia(media: unknown): string[] {
   if (media === undefined || media === null) return [];
   if (!Array.isArray(media)) fail("BAD_REQUEST", "media must be an array of sha256 hashes");
@@ -103,7 +142,14 @@ export function validateWriteOp(input: unknown): WriteOp {
     const body = assertBody(obj.body);
     const media = normalizeMedia(obj.media);
     const quote = typeof obj.quote === "string" && obj.quote ? assertRefSpec(obj.quote) : null;
-    return { op: "post", body, quote, media, ref: normalizeRef(obj.ref) };
+    return {
+      op: "post",
+      body,
+      quote,
+      media,
+      ref: normalizeRef(obj.ref),
+      tags: normalizeTags(obj.tags),
+    };
   }
   if (op === "reply") {
     if (typeof obj.parent !== "string" || !obj.parent) {
@@ -111,7 +157,13 @@ export function validateWriteOp(input: unknown): WriteOp {
     }
     const body = assertBody(obj.body);
     const media = normalizeMedia(obj.media);
-    return { op: "reply", parent: assertRefSpec(obj.parent), body, media };
+    return {
+      op: "reply",
+      parent: assertRefSpec(obj.parent),
+      body,
+      media,
+      tags: normalizeTags(obj.tags),
+    };
   }
   fail("BAD_REQUEST", `unknown op ${JSON.stringify(op)} (expected "post" or "reply")`);
 }

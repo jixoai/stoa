@@ -195,6 +195,10 @@ export function createApp(deps: AppDeps): Hono {
       account = found;
     }
     const who = account;
+    // Optional event-stream filter (member-page live subscription): only events
+    // produced by this author are pushed. This is a technical subscription
+    // filter, not a follow edge — `follows` never participates here.
+    const authorFilter = (c.req.query("author") ?? "").trim() || null;
     const release = deps.presence.connect(who.id);
     c.header("X-Accel-Buffering", "no");
     c.header("Cache-Control", "no-cache, no-transform");
@@ -209,18 +213,24 @@ export function createApp(deps: AppDeps): Hono {
             cursor: lastSeq,
             as_of_seq: deps.store.maxEventSeq(),
             auth_mode: mode,
+            author: authorFilter,
           }),
         });
         for (;;) {
           const changed = await deps.store.waitForChange(15_000);
           deps.presence.touch(who.id);
           if (changed) {
+            // Visibility is already applied inside notificationLines; the author
+            // filter is a single actor match on top of it. `lastSeq` keeps
+            // advancing over *all* visible events (the account-global coordinate),
+            // so a filtered stream never re-delivers or skips cursor positions.
             const snapshot = deps.store.notificationLines(who.id, lastSeq, { includeSelf: true });
             for (const line of snapshot.lines) {
               if ("type" in line && line.type === "thread.snapshot") continue;
               const seq = (line as { seq?: number }).seq;
-              await stream.writeSSE({ event: "report", data: JSON.stringify(line as NotificationLine) });
               if (typeof seq === "number" && seq > lastSeq) lastSeq = seq;
+              if (authorFilter && (line as { actor?: string }).actor !== authorFilter) continue;
+              await stream.writeSSE({ event: "report", data: JSON.stringify(line as NotificationLine) });
             }
           } else {
             await stream.write(": ping\n\n");
@@ -314,8 +324,88 @@ export function createApp(deps: AppDeps): Hono {
       limit: parseLimit(c.req.query("limit"), 20, 100),
       before: c.req.query("before") ?? null,
       after: c.req.query("after") ?? null,
+      tag: c.req.query("tag") ?? null,
     });
     return c.json({ ok: true, ...page });
+  });
+
+  // ── home feed (two independent tabs; design §5.0) ───────────────────────────
+  app.get("/api/feed", (c) => {
+    const account = identity(c, deps);
+    const tabRaw = c.req.query("tab") ?? "recommended";
+    if (tabRaw !== "following" && tabRaw !== "recommended") {
+      fail("BAD_REQUEST", `tab must be "recommended" or "following" (got "${tabRaw}")`);
+    }
+    const page = deps.store.feed({
+      viewer: viewer(account),
+      tab: tabRaw,
+      limit: parseLimit(c.req.query("limit"), 20, 100),
+      before: c.req.query("before") ?? null,
+      after: c.req.query("after") ?? null,
+    });
+    return c.json({ ok: true, ...page });
+  });
+
+  // ── member page: profile card + that member's visible root posts ────────────
+  app.get("/api/profile/:account", (c) => {
+    const account = identity(c, deps);
+    const page = deps.store.profile({
+      viewer: viewer(account),
+      accountId: c.req.param("account"),
+      limit: parseLimit(c.req.query("limit"), 20, 100),
+      before: c.req.query("before") ?? null,
+      after: c.req.query("after") ?? null,
+    });
+    if (!page) fail("NOT_FOUND", `account "${c.req.param("account")}" not found`);
+    const target = page.account;
+    const alwaysOnline = target.role === "owner" || target.role === "manager";
+    return c.json({
+      ok: true,
+      ...page,
+      account: {
+        ...target,
+        online: alwaysOnline || deps.presence.isOnline(target.id),
+        last_seen: deps.presence.lastSeenOf(target.id),
+      },
+    });
+  });
+
+  // ── follows (home-tab routing only) ─────────────────────────────────────────
+  app.get("/api/following", (c) => {
+    const account = identity(c, deps);
+    const accounts = deps.store.listFollowing(account.id).map(({ account: followed, followed_at }) => ({
+      ...publicAccount(followed),
+      followed_at,
+      online:
+        followed.role === "owner" || followed.role === "manager"
+          ? true
+          : deps.presence.isOnline(followed.id),
+      last_seen: deps.presence.lastSeenOf(followed.id),
+    }));
+    return c.json({ ok: true, follower: account.id, accounts });
+  });
+
+  app.post("/api/follow/:account", (c) => {
+    const account = identity(c, deps);
+    const target = c.req.param("account");
+    const edge = deps.store.follow(account.id, target);
+    return c.json(
+      {
+        ok: true,
+        follower: account.id,
+        followee: target,
+        following: true,
+        created_at: edge.created_at,
+      },
+      201,
+    );
+  });
+
+  app.delete("/api/follow/:account", (c) => {
+    const account = identity(c, deps);
+    const target = c.req.param("account");
+    const removed = deps.store.unfollow(account.id, target);
+    return c.json({ ok: true, follower: account.id, followee: target, following: false, removed });
   });
 
   app.get("/api/thread/:id", (c) => {
@@ -344,6 +434,7 @@ export function createApp(deps: AppDeps): Hono {
       body: assertBody(body.body),
       quote: typeof body.quote === "string" && body.quote ? body.quote : null,
       media: Array.isArray(body.media) ? (body.media as string[]) : [],
+      tags: Array.isArray(body.tags) ? (body.tags as string[]) : [],
     };
     const result = deps.store.commitOps({
       author: account.id,
@@ -361,6 +452,7 @@ export function createApp(deps: AppDeps): Hono {
       parent: c.req.param("id"),
       body: assertBody(body.body),
       media: Array.isArray(body.media) ? (body.media as string[]) : [],
+      tags: Array.isArray(body.tags) ? (body.tags as string[]) : [],
     };
     const result = deps.store.commitOps({
       author: account.id,
@@ -379,11 +471,24 @@ export function createApp(deps: AppDeps): Hono {
   app.get("/api/search", (c) => {
     const account = identity(c, deps);
     const q = c.req.query("q") ?? "";
-    const posts = deps.store.search({
-      viewer: viewer(account),
-      q,
-      limit: parseLimit(c.req.query("limit"), 30, 100),
-    });
+    const limit = parseLimit(c.req.query("limit"), 30, 100);
+    const posts = deps.store.search({ viewer: viewer(account), q, limit });
+    if (c.req.query("accounts") === "1") {
+      const accounts = deps.store.searchAccounts({ q, limit }).map((found) => ({
+        id: found.id,
+        role: found.role,
+        display: found.display,
+        profile: found.profile,
+        avatar: found.avatar,
+        disabled: found.disabled,
+        online:
+          found.role === "owner" || found.role === "manager"
+            ? true
+            : deps.presence.isOnline(found.id),
+        last_seen: deps.presence.lastSeenOf(found.id),
+      }));
+      return c.json({ ok: true, posts, query: q, accounts });
+    }
     return c.json({ ok: true, posts, query: q });
   });
 
@@ -403,6 +508,7 @@ export function createApp(deps: AppDeps): Hono {
     const result = deps.store.readPosts({
       viewer: viewer(account),
       author: c.req.query("author") ?? null,
+      tag: c.req.query("tag") ?? null,
       since: parseTime(c.req.query("since")),
       until: parseTime(c.req.query("until")),
       limit: parseLimit(c.req.query("limit"), 50, 200),

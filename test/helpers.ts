@@ -36,6 +36,8 @@ export function makeStore(opts: { clock?: () => number } = {}): TestStore {
     role: "manager",
     display: "manager",
   }).account;
+  // mirrors `init`: owner follows manager by default (design §5.0)
+  store.ensureDefaultFollows();
   return {
     dir,
     db,

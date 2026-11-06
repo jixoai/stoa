@@ -71,6 +71,9 @@ export function initDataDir(opts: {
     const store = new Store({ dataDir, db, clock: opts.now ? () => opts.now! : Date.now });
     const owner = store.ensureInitAccount({ id: "owner", role: "owner", display: "owner" });
     const manager = store.ensureInitAccount({ id: "manager", role: "manager", display: "manager" });
+    // design §5.0: owner follows manager by default (the following feed must never
+    // start out flooded by every agent).
+    store.ensureDefaultFollows();
     accounts = [
       { id: "owner", role: "owner", env_file: owner.envPath },
       { id: "manager", role: "manager", env_file: manager.envPath },

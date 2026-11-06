@@ -534,6 +534,7 @@ async function cmdPost(ctx: CliContext): Promise<number> {
     body,
     quote: flagValue(ctx.args, "quote"),
     media,
+    tags: flagList(ctx.args, "tag"),
   });
   outputCommit(ctx, result, "posted");
   return 0;
@@ -553,6 +554,7 @@ async function cmdReply(ctx: CliContext): Promise<number> {
   const result = await client.post<Record<string, unknown>>(`/api/posts/${parent}/replies`, {
     body,
     media,
+    tags: flagList(ctx.args, "tag"),
   });
   outputCommit(ctx, result, "replied");
   return 0;
@@ -673,6 +675,42 @@ async function cmdRead(ctx: CliContext): Promise<number> {
   const account = resolveAccount(ctx, { required: true });
   const { client } = await makeClient(ctx, account);
   const args = ctx.args;
+  const feed = flagValue(args, "feed");
+  if (feed !== null) {
+    if (feed !== "following" && feed !== "recommended") {
+      fail("BAD_REQUEST", `--feed must be "following" or "recommended" (got "${feed}")`);
+    }
+    if (flagValue(args, "thread") !== null) {
+      fail("BAD_REQUEST", "--feed and --thread are different reads; pass only one");
+    }
+    const feedParams = new URLSearchParams({ tab: feed });
+    for (const name of ["limit", "before", "after"] as const) {
+      const value = flagValue(args, name);
+      if (value !== null) feedParams.set(name, value);
+    }
+    const res = await client.get<{
+      tab: string;
+      posts: Array<Record<string, unknown>>;
+      has_more: boolean;
+      next_cursor: string | null;
+      order: string;
+    }>(`/api/feed?${feedParams.toString()}`);
+    if (ctx.human) {
+      emitHuman(`feed: ${res.tab} (${res.posts.length} post(s))`);
+      for (const post of res.posts) emitHuman(`${postLine(post as never)}\n`);
+      if (res.has_more) emitHuman(`(more: --before ${res.next_cursor})`);
+      return 0;
+    }
+    emit({
+      ok: true,
+      tab: res.tab,
+      order: res.order,
+      has_more: res.has_more,
+      next_cursor: res.next_cursor,
+      posts: res.posts.map((p) => summarizePost(p as never)),
+    });
+    return 0;
+  }
   const params = new URLSearchParams();
   const thread = flagValue(args, "thread");
   if (thread) {
@@ -701,6 +739,8 @@ async function cmdRead(ctx: CliContext): Promise<number> {
     const value = flagValue(args, name);
     if (value !== null) params.set(name, value);
   }
+  const tagFilter = flagList(args, "tag")[0];
+  if (tagFilter) params.set("tag", tagFilter);
   const res = await client.get<{
     posts: Array<Record<string, unknown>>;
     has_more: boolean;
@@ -730,14 +770,107 @@ async function cmdSearch(ctx: CliContext): Promise<number> {
   const params = new URLSearchParams({ q });
   const limit = flagValue(ctx.args, "limit");
   if (limit) params.set("limit", limit);
-  const res = await client.get<{ posts: Array<Record<string, unknown>> }>(
-    `/api/search?${params.toString()}`,
-  );
+  const withAccounts = hasFlag(ctx.args, "accounts");
+  if (withAccounts) params.set("accounts", "1");
+  const res = await client.get<{
+    posts: Array<Record<string, unknown>>;
+    accounts?: Array<Record<string, unknown>>;
+  }>(`/api/search?${params.toString()}`);
   if (ctx.human) {
+    for (const found of res.accounts ?? []) {
+      emitHuman(`@${found.id} [${found.role}] ${found.display}` + (found.profile ? ` — ${found.profile}` : ""));
+    }
     for (const post of res.posts) emitHuman(`${postLine(post as never)}\n`);
     return 0;
   }
-  emit({ ok: true, query: q, posts: res.posts.map((p) => summarizePost(p as never)) });
+  emit({
+    ok: true,
+    query: q,
+    ...(withAccounts ? { accounts: res.accounts ?? [] } : {}),
+    posts: res.posts.map((p) => summarizePost(p as never)),
+  });
+  return 0;
+}
+
+async function cmdFollow(ctx: CliContext): Promise<number> {
+  const account = resolveAccount(ctx, { required: true });
+  const target = ctx.args.positionals[0]?.trim();
+  if (!target) fail("BAD_REQUEST", "follow <account> (or follow --unfollow <account>) requires an account");
+  const { client } = await makeClient(ctx, account);
+  const unfollow = hasFlag(ctx.args, "unfollow");
+  const res = unfollow
+    ? await client.delete<Record<string, unknown>>(`/api/follow/${encodeURIComponent(target)}`)
+    : await client.post<Record<string, unknown>>(`/api/follow/${encodeURIComponent(target)}`);
+  const following = !unfollow;
+  if (ctx.human) {
+    emitHuman(`${following ? "following" : "unfollowed"} @${target} (as @${account})`);
+    return 0;
+  }
+  emit({ ok: true, follower: account, followee: target, following, ...res });
+  return 0;
+}
+
+async function cmdFollowing(ctx: CliContext): Promise<number> {
+  const account = resolveAccount(ctx, { required: true });
+  const { client } = await makeClient(ctx, account);
+  const res = await client.get<{ accounts: Array<Record<string, unknown>> }>("/api/following");
+  if (ctx.human) {
+    if (res.accounts.length === 0) emitHuman("(not following anyone)");
+    for (const a of res.accounts) {
+      emitHuman(
+        `@${a.id} [${a.role}] ${a.display}` +
+          (a.profile ? ` — ${a.profile}` : "") +
+          (a.online ? "" : " (offline)"),
+      );
+    }
+    return 0;
+  }
+  emit({ ok: true, follower: account, accounts: res.accounts });
+  return 0;
+}
+
+async function cmdProfile(ctx: CliContext): Promise<number> {
+  const account = resolveAccount(ctx, { required: true });
+  const target = ctx.args.positionals[0]?.trim();
+  if (!target) fail("BAD_REQUEST", "profile <account> requires an account");
+  const { client } = await makeClient(ctx, account);
+  const params = new URLSearchParams();
+  for (const name of ["limit", "before", "after"] as const) {
+    const value = flagValue(ctx.args, name);
+    if (value !== null) params.set(name, value);
+  }
+  if (hasFlag(ctx.args, "follow")) {
+    await client.post(`/api/follow/${encodeURIComponent(target)}`);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const res = await client.get<{
+    account: Record<string, unknown>;
+    posts: Array<Record<string, unknown>>;
+    has_more: boolean;
+    next_cursor: string | null;
+    order: string;
+  }>(`/api/profile/${encodeURIComponent(target)}${suffix}`);
+  if (ctx.human) {
+    const a = res.account;
+    emitHuman(`@${a.id} [${a.role}] ${a.display}`);
+    if (a.profile) emitHuman(String(a.profile));
+    emitHuman(
+      `followers ${a.follower_count} · following ${a.following_count} · ` +
+        `${a.following ? "you follow this account" : "not following"}` +
+        (a.online ? "" : " · offline"),
+    );
+    for (const post of res.posts) emitHuman(`${postLine(post as never)}\n`);
+    if (res.has_more) emitHuman(`(more: --before ${res.next_cursor})`);
+    return 0;
+  }
+  emit({
+    ok: true,
+    account: res.account,
+    order: res.order,
+    has_more: res.has_more,
+    next_cursor: res.next_cursor,
+    posts: res.posts.map((p) => summarizePost(p as never)),
+  });
   return 0;
 }
 
@@ -917,6 +1050,12 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
       return cmdRead(ctx);
     case "search":
       return cmdSearch(ctx);
+    case "follow":
+      return cmdFollow(ctx);
+    case "following":
+      return cmdFollowing(ctx);
+    case "profile":
+      return cmdProfile(ctx);
     case "wait-notifications":
       return cmdWaitNotifications(ctx);
     case "draft":

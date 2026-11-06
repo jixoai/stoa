@@ -27,6 +27,8 @@ export interface Post {
   self_thread_is_leaf: number;
   reply_to_account_id: string | null;
   quoted_post_id: string | null;
+  /** semantic labels (design §5.0); DB stores this as a JSON array string */
+  tags: string[];
   created_at: number;
   seq: number;
   batch_id: string;
@@ -103,6 +105,8 @@ export interface PostOp {
   media?: string[];
   /** in-batch reference name; later ops address it as "$ref:<name>" */
   ref?: string | null;
+  /** semantic labels (`result` / `discussion` / `note` / custom), defaults to [] */
+  tags?: string[];
 }
 
 export interface ReplyOp {
@@ -111,6 +115,7 @@ export interface ReplyOp {
   parent: string;
   body: string;
   media?: string[];
+  tags?: string[];
 }
 
 export type WriteOp = PostOp | ReplyOp;
@@ -177,6 +182,37 @@ export interface ThreadView {
 }
 
 export interface TimelinePage {
+  posts: PostView[];
+  has_more: boolean;
+  next_cursor: string | null;
+  order: "asc" | "desc";
+  as_of_seq: number;
+}
+
+/** Home tabs (design §5.0): recommended = result + @owner roots, following = follows feed. */
+export type FeedTab = "following" | "recommended";
+
+export interface FeedPage extends TimelinePage {
+  tab: FeedTab;
+}
+
+/** Directed follow edge; only powers the home "following" tab, never visibility. */
+export interface Follow {
+  follower_id: string;
+  followee_id: string;
+  created_at: number;
+}
+
+export interface AccountProfile extends AuthorView {
+  created_at: number;
+  /** whether the requesting viewer follows this account */
+  following: boolean;
+  follower_count: number;
+  following_count: number;
+}
+
+export interface ProfilePage {
+  account: AccountProfile;
   posts: PostView[];
   has_more: boolean;
   next_cursor: string | null;

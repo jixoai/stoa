@@ -9,6 +9,8 @@ import {
   MAX_MEDIA_BYTES,
   assertSlug,
   assertBody,
+  normalizeTagFilter,
+  normalizeTags,
 } from "../core/validation.ts";
 import { fail } from "../core/errors.ts";
 import { newUlid } from "../core/ids.ts";
@@ -36,6 +38,9 @@ import type {
   Account,
   AuthorView,
   Draft,
+  FeedPage,
+  FeedTab,
+  Follow,
   MediaRef,
   MediaRow,
   NotificationEventLine,
@@ -43,6 +48,7 @@ import type {
   NotificationSnapshot,
   Post,
   PostView,
+  ProfilePage,
   QuotedView,
   Role,
   ThreadNode,
@@ -62,7 +68,11 @@ interface AccountRow extends Omit<Account, "role" | "disabled"> {
   role: string;
   disabled: number;
 }
-interface PostRow extends Post {}
+/** Raw posts row: `tags` is the JSON array text as stored in SQLite. */
+interface PostRow extends Omit<Post, "tags"> {
+  tags: string;
+}
+interface FollowRow extends Follow {}
 interface DraftRow extends Draft {}
 interface EventRow {
   seq: number;
@@ -118,8 +128,18 @@ function toAccount(row: AccountRow): Account {
   };
 }
 
+function parseTagsJson(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function toPost(row: PostRow): Post {
-  return { ...row };
+  return { ...row, tags: parseTagsJson(row.tags) };
 }
 
 function mediaRef(row: MediaRowDb): MediaRef {
@@ -385,6 +405,109 @@ export class Store {
     return join(this.dataDir, "accounts", `${accountId}.env`);
   }
 
+  // ── follows (home-tab routing only; never visibility) ────────────────────────
+  /**
+   * Seed the default edge `owner → manager` (design §5.0). Runs only when the
+   * follows table is still empty and both fixed accounts exist, so re-running it
+   * on an existing database is safe and idempotent.
+   */
+  ensureDefaultFollows(now = this.clock()): boolean {
+    const existing = get<{ c: number }>(this.db, "SELECT COUNT(*) AS c FROM follows");
+    if ((existing?.c ?? 0) > 0) return false;
+    const pair = get<{ c: number }>(
+      this.db,
+      "SELECT COUNT(*) AS c FROM accounts WHERE id IN ('owner', 'manager') AND disabled != 2",
+    );
+    if ((pair?.c ?? 0) !== 2) return false;
+    run(
+      this.db,
+      "INSERT OR IGNORE INTO follows(follower_id, followee_id, created_at) VALUES ('owner', 'manager', ?)",
+      now,
+    );
+    return true;
+  }
+
+  follow(followerId: string, followeeId: string): Follow {
+    this.requireActiveAccount(followerId);
+    const followee = this.getAccount(followeeId);
+    if (!followee || followee.disabled === 2) {
+      fail("NOT_FOUND", `account "${followeeId}" not found`);
+    }
+    if (followee.disabled !== 0) fail("FORBIDDEN", `account "${followeeId}" is disabled`);
+    if (followerId === followeeId) fail("BAD_REQUEST", "cannot follow yourself");
+    const now = this.clock();
+    run(
+      this.db,
+      "INSERT OR IGNORE INTO follows(follower_id, followee_id, created_at) VALUES (?, ?, ?)",
+      followerId,
+      followeeId,
+      now,
+    );
+    const row = get<FollowRow>(
+      this.db,
+      "SELECT * FROM follows WHERE follower_id = ? AND followee_id = ?",
+      followerId,
+      followeeId,
+    );
+    if (!row) fail("INTERNAL", "follow edge did not persist");
+    return row;
+  }
+
+  unfollow(followerId: string, followeeId: string): boolean {
+    this.requireActiveAccount(followerId);
+    const res = run(
+      this.db,
+      "DELETE FROM follows WHERE follower_id = ? AND followee_id = ?",
+      followerId,
+      followeeId,
+    );
+    return res.changes > 0;
+  }
+
+  isFollowing(followerId: string, followeeId: string): boolean {
+    const row = get<{ one: number }>(
+      this.db,
+      "SELECT 1 AS one FROM follows WHERE follower_id = ? AND followee_id = ?",
+      followerId,
+      followeeId,
+    );
+    return row !== null;
+  }
+
+  listFollowing(accountId: string): Array<{ account: Account; followed_at: number }> {
+    const rows = all<AccountRow & { followed_at: number }>(
+      this.db,
+      `SELECT a.*, f.created_at AS followed_at
+       FROM follows f JOIN accounts a ON a.id = f.followee_id
+       WHERE f.follower_id = ? AND a.disabled != 2
+       ORDER BY f.created_at ASC, a.id ASC`,
+      accountId,
+    );
+    return rows.map((row) => ({ account: toAccount(row), followed_at: row.followed_at }));
+  }
+
+  followerCount(accountId: string): number {
+    return (
+      get<{ c: number }>(
+        this.db,
+        `SELECT COUNT(*) AS c FROM follows f JOIN accounts a ON a.id = f.follower_id
+         WHERE f.followee_id = ? AND a.disabled != 2`,
+        accountId,
+      )?.c ?? 0
+    );
+  }
+
+  followingCount(accountId: string): number {
+    return (
+      get<{ c: number }>(
+        this.db,
+        `SELECT COUNT(*) AS c FROM follows f JOIN accounts a ON a.id = f.followee_id
+         WHERE f.follower_id = ? AND a.disabled != 2`,
+        accountId,
+      )?.c ?? 0
+    );
+  }
+
   // ── cursors ─────────────────────────────────────────────────────────────────
   maxEventSeq(): number {
     const row = get<{ seq: number | null }>(this.db, "SELECT MAX(seq) AS seq FROM events");
@@ -587,6 +710,7 @@ export class Store {
         const op = rawOp;
         if (op.op === "post") {
           const body = assertBody(op.body);
+          const tags = normalizeTags(op.tags);
           const id = newUlid(now);
           let quoted: PostRow | null = null;
           if (op.quote) {
@@ -599,14 +723,15 @@ export class Store {
           run(
             this.db,
             `INSERT INTO posts(id, author, body_md, parent_id, root_id, self_thread_id,
-               self_thread_is_leaf, reply_to_account_id, quoted_post_id, created_at, seq, batch_id, deleted_at)
-             VALUES (?, ?, ?, NULL, ?, ?, 1, NULL, ?, ?, 0, ?, NULL)`,
+               self_thread_is_leaf, reply_to_account_id, quoted_post_id, tags, created_at, seq, batch_id, deleted_at)
+             VALUES (?, ?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, 0, ?, NULL)`,
             id,
             opts.author,
             body,
             id,
             id,
             op.quote ?? null,
+            JSON.stringify(tags),
             now,
             opts.batchId,
           );
@@ -632,6 +757,7 @@ export class Store {
           }
         } else if (op.op === "reply") {
           const body = assertBody(op.body);
+          const tags = normalizeTags(op.tags);
           const parentId = resolveBatchRef(op.parent);
           const parent = this.postRow(parentId);
           if (!parent) fail("BAD_REQUEST", `parent post "${parentId}" not found`);
@@ -646,8 +772,8 @@ export class Store {
           run(
             this.db,
             `INSERT INTO posts(id, author, body_md, parent_id, root_id, self_thread_id,
-               self_thread_is_leaf, reply_to_account_id, quoted_post_id, created_at, seq, batch_id, deleted_at)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, 0, ?, NULL)`,
+               self_thread_is_leaf, reply_to_account_id, quoted_post_id, tags, created_at, seq, batch_id, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?, 0, ?, NULL)`,
             id,
             opts.author,
             body,
@@ -655,6 +781,7 @@ export class Store {
             parent.root_id,
             selfThreadId,
             replyTo,
+            JSON.stringify(tags),
             now,
             opts.batchId,
           );
@@ -941,7 +1068,8 @@ export class Store {
       }
     }
 
-    return posts.map((post) => {
+    return posts.map((row) => {
+      const post = toPost(row);
       const deleted = post.deleted_at !== null;
       const visibleQuoted = post.quoted_post_id
         ? quotedRows.get(post.quoted_post_id) ?? null
@@ -990,8 +1118,103 @@ export class Store {
     limit?: number;
     before?: string | null;
     after?: string | null;
+    tag?: string | null;
   }): TimelinePage {
     const limit = opts.limit ?? 20;
+    const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);
+    const keyset = keysetClause({ before: opts.before, after: opts.after });
+    const direction: PageDirection = keyset.direction;
+    const orderSql =
+      direction === "desc" ? "ORDER BY created_at DESC, id DESC" : "ORDER BY created_at ASC, id ASC";
+    const tag = normalizeTagFilter(opts.tag);
+    const tagSql = tag ? "AND tags LIKE ? ESCAPE '\\'" : "";
+    const tagParams: Bindings = tag ? [`%"${tag}"%`] : [];
+    const rows = all<PostRow>(
+      this.db,
+      `SELECT * FROM posts
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND ${vis.sql} AND ${keyset.sql} ${tagSql}
+       ${orderSql} LIMIT ?`,
+      ...(vis.params as Bindings),
+      ...(keyset.params as Bindings),
+      ...tagParams,
+      limit + 1,
+    );
+    const page = finalizePage(rows, limit);
+    return {
+      posts: this.hydratePosts(page.items, opts.viewer),
+      has_more: page.has_more,
+      next_cursor: page.next_cursor,
+      order: direction,
+      as_of_seq: this.maxEventSeq(),
+    };
+  }
+
+  /**
+   * Home feed (design §5.0). Both tabs share the root-post + visibility + keyset
+   * semantics but are separate queries: a cursor from one tab is never reused for
+   * the other (each call carries its own `before`), so switching tabs restarts
+   * from that tab's head.
+   *
+   *  - recommended: roots tagged `result`, or roots that mention `owner`;
+   *  - following: roots authored by accounts the viewer follows.
+   *
+   * Visibility is applied with the same clause as every other read path:
+   * following never widens what a viewer may see.
+   */
+  feed(opts: {
+    viewer: Viewer;
+    tab: FeedTab;
+    limit?: number;
+    before?: string | null;
+    after?: string | null;
+  }): FeedPage {
+    const limit = Math.min(opts.limit ?? 20, 100);
+    const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);
+    const keyset = keysetClause({ before: opts.before, after: opts.after });
+    const direction: PageDirection = keyset.direction;
+    const orderSql =
+      direction === "desc" ? "ORDER BY created_at DESC, id DESC" : "ORDER BY created_at ASC, id ASC";
+    const clauses = ["parent_id IS NULL", "deleted_at IS NULL", vis.sql, keyset.sql];
+    const params: Bindings = [...(vis.params as Bindings), ...(keyset.params as Bindings)];
+    if (opts.tab === "recommended") {
+      // tags are stored as JSON text by our own writer (validated charset, no
+      // quotes), so the quoted-substring match is exact for our data.
+      clauses.push(
+        `(tags LIKE ? ESCAPE '\\' OR id IN (SELECT post_id FROM mentions WHERE account_id = 'owner'))`,
+      );
+      params.push('%"result"%');
+    } else {
+      clauses.push("author IN (SELECT followee_id FROM follows WHERE follower_id = ?)");
+      params.push(opts.viewer.id);
+    }
+    const rows = all<PostRow>(
+      this.db,
+      `SELECT * FROM posts WHERE ${clauses.join(" AND ")} ${orderSql} LIMIT ?`,
+      ...params,
+      limit + 1,
+    );
+    const page = finalizePage(rows, limit);
+    return {
+      tab: opts.tab,
+      posts: this.hydratePosts(page.items, opts.viewer),
+      has_more: page.has_more,
+      next_cursor: page.next_cursor,
+      order: direction,
+      as_of_seq: this.maxEventSeq(),
+    };
+  }
+
+  /** Member page (design §5.0): account card + that member's visible root posts. */
+  profile(opts: {
+    viewer: Viewer;
+    accountId: string;
+    limit?: number;
+    before?: string | null;
+    after?: string | null;
+  }): ProfilePage | null {
+    const account = this.getAccount(opts.accountId);
+    if (!account) return null;
+    const limit = Math.min(opts.limit ?? 20, 100);
     const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);
     const keyset = keysetClause({ before: opts.before, after: opts.after });
     const direction: PageDirection = keyset.direction;
@@ -1000,14 +1223,27 @@ export class Store {
     const rows = all<PostRow>(
       this.db,
       `SELECT * FROM posts
-       WHERE parent_id IS NULL AND deleted_at IS NULL AND ${vis.sql} AND ${keyset.sql}
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND author = ? AND ${vis.sql} AND ${keyset.sql}
        ${orderSql} LIMIT ?`,
+      opts.accountId,
       ...(vis.params as Bindings),
       ...(keyset.params as Bindings),
       limit + 1,
     );
     const page = finalizePage(rows, limit);
     return {
+      account: {
+        id: account.id,
+        display: account.display,
+        profile: account.profile,
+        avatar: account.avatar,
+        role: account.role,
+        disabled: account.disabled,
+        created_at: account.created_at,
+        following: this.isFollowing(opts.viewer.id, account.id),
+        follower_count: this.followerCount(account.id),
+        following_count: this.followingCount(account.id),
+      },
       posts: this.hydratePosts(page.items, opts.viewer),
       has_more: page.has_more,
       next_cursor: page.next_cursor,
@@ -1075,8 +1311,10 @@ export class Store {
     const rows = all<PostRow>(
       this.db,
       `SELECT * FROM posts
-       WHERE deleted_at IS NULL AND body_md LIKE ? ESCAPE '\\' AND ${vis.sql}
+       WHERE deleted_at IS NULL AND (body_md LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
+         AND ${vis.sql}
        ORDER BY created_at DESC, id DESC LIMIT ?`,
+      `%${escaped}%`,
       `%${escaped}%`,
       ...(vis.params as Bindings),
       limit,
@@ -1084,9 +1322,33 @@ export class Store {
     return this.hydratePosts(rows, opts.viewer);
   }
 
+  /** Account search (member pages / `search --accounts`); tombstones excluded. */
+  searchAccounts(opts: { q: string; limit?: number }): Account[] {
+    const q = opts.q.trim();
+    if (!q) fail("BAD_REQUEST", "search query must not be empty");
+    const limit = Math.min(opts.limit ?? 20, 100);
+    const escaped = q.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+    const pattern = `%${escaped}%`;
+    const rows = all<AccountRow>(
+      this.db,
+      `SELECT * FROM accounts
+       WHERE disabled != 2
+         AND (id LIKE ? ESCAPE '\\' OR display LIKE ? ESCAPE '\\' OR profile LIKE ? ESCAPE '\\')
+       ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, created_at ASC, id ASC
+       LIMIT ?`,
+      pattern,
+      pattern,
+      pattern,
+      q,
+      limit,
+    );
+    return rows.map(toAccount);
+  }
+
   readPosts(opts: {
     viewer: Viewer;
     author?: string | null;
+    tag?: string | null;
     since?: number | null;
     until?: number | null;
     limit?: number;
@@ -1100,6 +1362,11 @@ export class Store {
     if (opts.author) {
       clauses.push("author = ?");
       params.push(opts.author);
+    }
+    const tag = normalizeTagFilter(opts.tag);
+    if (tag) {
+      clauses.push("tags LIKE ? ESCAPE '\\'");
+      params.push(`%"${tag}"%`);
     }
     if (opts.since !== null && opts.since !== undefined) {
       clauses.push("created_at >= ?");

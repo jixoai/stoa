@@ -46,7 +46,12 @@ export function run(
   return { changes: Number(res.changes), lastInsertRowid: Number(res.lastInsertRowid) };
 }
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+function hasColumn(db: Database, table: string, column: string): boolean {
+  const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === column);
+}
 
 export function migrate(db: Database): void {
   db.exec(`
@@ -86,6 +91,7 @@ export function migrate(db: Database): void {
       self_thread_is_leaf INTEGER NOT NULL DEFAULT 1,
       reply_to_account_id TEXT,
       quoted_post_id TEXT,
+      tags TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
       seq INTEGER NOT NULL,
       batch_id TEXT NOT NULL,
@@ -168,7 +174,41 @@ export function migrate(db: Database): void {
       created_at INTEGER NOT NULL
     );
 
-    INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', '${SCHEMA_VERSION}');
+    CREATE TABLE IF NOT EXISTS follows (
+      follower_id TEXT NOT NULL,
+      followee_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (follower_id, followee_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows(followee_id);
+  `);
+
+  // ── additive migrations for databases created before schema v2 ──────────────
+  // CREATE TABLE IF NOT EXISTS never adds columns, so old `posts` tables need an
+  // explicit ALTER. The PRAGMA guard makes re-running `migrate()` idempotent.
+  if (!hasColumn(db, "posts", "tags")) {
+    db.exec("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  // Backfill the default follow for existing instances (design §5.0: owner only
+  // follows manager by default). Runs only while the edge table is still empty —
+  // the documented "empty table" backfill — and never touches a populated one.
+  const followCount =
+    (db.query("SELECT COUNT(*) AS c FROM follows").get() as { c: number } | null)?.c ?? 0;
+  if (followCount === 0) {
+    const pair = db
+      .query("SELECT COUNT(*) AS c FROM accounts WHERE id IN ('owner', 'manager') AND disabled != 2")
+      .get() as { c: number } | null;
+    if ((pair?.c ?? 0) === 2) {
+      db.query(
+        "INSERT OR IGNORE INTO follows(follower_id, followee_id, created_at) VALUES ('owner', 'manager', ?)",
+      ).run(Date.now());
+    }
+  }
+
+  db.exec(`
+    INSERT INTO meta(key, value) VALUES ('schema_version', '${SCHEMA_VERSION}')
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value;
   `);
 }
 

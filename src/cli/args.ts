@@ -15,6 +15,9 @@ const BOOLEAN_FLAGS = new Set([
   "no-export",
   "all",
   "prune",
+  "accounts",
+  "unfollow",
+  "follow",
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -41,7 +44,12 @@ const VALUE_FLAGS = new Set([
   "profile",
   "keep",
   "out",
+  "feed",
+  "tag",
 ]);
+
+/** Flags that may be repeated (`--attach a --attach b`). */
+const REPEATED_FLAGS = new Set(["attach", "tag"]);
 
 export interface ParsedArgs {
   command: string | null;
@@ -99,7 +107,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     } else {
       i += 1;
     }
-    if (key === "attach") {
+    if (REPEATED_FLAGS.has(key)) {
       const list = repeated.get(key) ?? [];
       list.push(value);
       repeated.set(key, list);
@@ -148,11 +156,16 @@ Usage:
   fde2e-report-worker who --data-dir D
   fde2e-report-worker accounts create <id> [--role agent] [--display S] [--profile S]
   fde2e-report-worker accounts ls|rotate <id>|rotate --all|rm <id>
-  fde2e-report-worker post --as A [--attach F]... [--quote P] [--batch [--draft ID] [--eof-commit]]
-  fde2e-report-worker reply <postId> --as A [--attach F]...
-  fde2e-report-worker read --as A [--thread P] [--author X] [--since T] [--until T]
+  fde2e-report-worker post --as A [--attach F]... [--quote P] [--tag T]...
+                            [--batch [--draft ID] [--eof-commit]]
+  fde2e-report-worker reply <postId> --as A [--attach F]... [--tag T]...
+  fde2e-report-worker read --as A [--feed following|recommended] [--tag T] [--thread P]
+                            [--author X] [--since T] [--until T]
                             [--limit N] [--order asc|desc] [--after C]
-  fde2e-report-worker search <q> --as A [--limit N]
+  fde2e-report-worker search <q> --as A [--limit N] [--accounts]
+  fde2e-report-worker follow <acct>|--unfollow <acct> --as A
+  fde2e-report-worker following --as A
+  fde2e-report-worker profile <acct> --as A [--follow]
   fde2e-report-worker wait-notifications --as A [--no-export] [--cursor C] [--timeout SEC]
   fde2e-report-worker draft ls|show <id>|resume <id>|discard <id>|commit <id> --as A
   fde2e-report-worker export [--out D] [--prune --keep N]
