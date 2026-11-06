@@ -41,7 +41,10 @@ export function corsHeaders(origin: string | undefined): Record<string, string> 
   };
 }
 
-const ALLOWED_ORIGINS = new Set(["https://report.worker.fde2e.com"]);
+const ALLOWED_ORIGINS = new Set([
+  "https://report.worker.fde2e.com",
+  "https://alpha-report.fde2e.com",
+]);
 const LOCAL_HOST_RE = /^https:\/\/local-[a-z0-9-]+\.fde2e\.com$/;
 const LOCALHOST_RE = /^http:\/\/localhost(:\d+)?$/;
 const LOOPBACK_RE = /^http:\/\/(127\.0\.0\.1|\[::1\])(:\d+)?$/;

@@ -497,10 +497,11 @@ fde2e-report-worker [--env-files=a,b] --version | capabilities
 - 产物：`src/ui` 的构建结果 `dist/`，**纯静态**：无后端依赖、无环境变量、无硬编码地址。
 - **hash 路由**（`#/`、`#/p/<id>`、`#/search`、`#/notifications`、`#/compose`）——任意静态
   服务器（含 `file://`）零配置可用，不依赖 SPA fallback / rewrite。
-- **本期不做线上部署**：`report.worker.fde2e.com` 的真实托管要等 Hive 的认证服务就绪
-  （Owner 2026-11-05：目前还没有带认证服务的工具集，这套先私下用）。本 change 只保证
-  "产物可被任意静态宿主直接托管"，不写部署脚本、不申请域名、不引入 celld/Workers 运行时。
-- 将来的在线形态＝把这份 `dist/` 放到某个域名下；数据仍由用户自己的 `ep` 提供。
+- **壳可以直接上线，且与任何其它产品无关**：壳零数据、零后端地址，托管到任何静态域名都不泄露；
+  数据由使用者的 `ep` 指向自己的后端，认证由**那个后端**负责（`FDE2E_REPORT_AUTH` 二值开关，
+  live-read，改值即踢线）。当前预交付地址 `https://alpha-report.fde2e.com/?ep=<后端>`；
+  正式域名 `report.worker.fde2e.com` 待定，切换只需换托管位置，代码零改动。
+- 在线形态＝把这份 `dist/` 放到某个域名下（已完成：`alpha-report.fde2e.com`）；数据仍由用户自己的 `ep` 提供。
 
 ## 18. 技术栈与仓库结构
 
