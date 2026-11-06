@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  appAssetPath,
   initWorkspace,
   parseJsonLines,
   runCli,
@@ -84,8 +85,8 @@ describe("E2E smoke (real daemon)", () => {
       const index = join(ws.dataDir, "export", "index.html");
       const html = readFileSync(index, "utf8");
       expect(html).toContain('id="report-snapshot"');
-      expect(html).toContain("assets/app.js");
-      expect(existsSync(join(ws.dataDir, "export", "assets", "app.js"))).toBe(true);
+      expect(html).toMatch(/assets\/app(-[\w-]+)?\.js/);
+      expect(appAssetPath(join(ws.dataDir, "export"))).not.toBeNull();
       expect(existsSync(join(ws.dataDir, "export", "media"))).toBe(true);
 
       const status = await runCli(["serve", ...["--data-dir", ws.dataDir], "--status"]);

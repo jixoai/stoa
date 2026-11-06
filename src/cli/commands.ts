@@ -17,7 +17,7 @@ import { initDataDir, describeAuthProvision } from "../server/init.ts";
 import { serverStatus, startServer, type ServeStatus } from "../server/serve.ts";
 import { garbageCollect } from "../server/gc.ts";
 import { runExport, setPendingExportFlag } from "../server/export.ts";
-import type { WriteOp } from "../core/types.ts";
+import type { SuggestedAccount, TrendingTag, WriteOp } from "../core/types.ts";
 import {
   flagInt,
   flagList,
@@ -834,6 +834,52 @@ async function cmdSearch(ctx: CliContext): Promise<number> {
   return 0;
 }
 
+async function cmdDiscover(ctx: CliContext): Promise<number> {
+  const account = resolveAccount(ctx, { required: true });
+  const wantTags = hasFlag(ctx.args, "tags");
+  const wantAccounts = hasFlag(ctx.args, "accounts");
+  if (wantTags === wantAccounts) {
+    fail("BAD_REQUEST", "discover requires exactly one of --tags or --accounts");
+  }
+  const { client } = await makeClient(ctx, account);
+  const params = new URLSearchParams();
+  const limit = flagValue(ctx.args, "limit");
+  if (limit !== null) params.set("limit", limit);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  if (wantTags) {
+    const res = await client.get<{ tags: TrendingTag[] }>(`/api/tags/trending${suffix}`);
+    if (ctx.human) {
+      if (res.tags.length === 0) emitHuman("(no trending tags)");
+      for (const tag of res.tags) {
+        emitHuman(
+          `#${tag.tag} · ${tag.count} post(s) · last ${formatTime(tag.last_used_at)} · ` +
+            `score ${tag.score.toFixed(3)}`,
+        );
+      }
+      return 0;
+    }
+    emit({ ok: true, tags: res.tags });
+    return 0;
+  }
+  const res = await client.get<{ accounts: SuggestedAccount[] }>(
+    `/api/accounts/suggested${suffix}`,
+  );
+  if (ctx.human) {
+    if (res.accounts.length === 0) emitHuman("(no suggested accounts)");
+    for (const row of res.accounts) {
+      emitHuman(
+        `@${row.id} [${row.role}] ${row.display}` +
+          (row.profile ? ` — ${row.profile}` : "") +
+          ` · ${row.followers} follower(s) · ${row.following ? "following" : "not following"}` +
+          (row.last_post_at !== null ? ` · last post ${formatTime(row.last_post_at)}` : " · no posts"),
+      );
+    }
+    return 0;
+  }
+  emit({ ok: true, accounts: res.accounts });
+  return 0;
+}
+
 async function cmdFollow(ctx: CliContext): Promise<number> {
   const account = resolveAccount(ctx, { required: true });
   const target = ctx.args.positionals[0]?.trim();
@@ -1115,6 +1161,8 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
       return cmdRead(ctx);
     case "search":
       return cmdSearch(ctx);
+    case "discover":
+      return cmdDiscover(ctx);
     case "follow":
       return cmdFollow(ctx);
     case "following":

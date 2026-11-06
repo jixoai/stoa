@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -276,6 +276,17 @@ export function accountEnvFile(workspace: TestWorkspace, id: string): string {
   const path = join(workspace.dataDir, "accounts", `${id}.env`);
   if (!existsSync(path)) throw new Error(`missing account env file ${path}`);
   return path;
+}
+
+/**
+ * Path of the built app bundle inside an export/static directory. Vite emits
+ * content-hashed names (`assets/app-<hash>.js`); older builds used `app.js`.
+ */
+export function appAssetPath(exportDir: string): string | null {
+  const assetsDir = join(exportDir, "assets");
+  if (!existsSync(assetsDir)) return null;
+  const entry = readdirSync(assetsDir).find((name) => /^app(-[\w-]+)?\.js$/.test(name));
+  return entry ? join(assetsDir, entry) : null;
 }
 
 export function tokenFor(workspace: TestWorkspace, id: string): string {

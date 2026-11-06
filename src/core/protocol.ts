@@ -18,6 +18,7 @@ export const CLI_COMMANDS = [
   "reply",
   "read",
   "search",
+  "discover",
   "follow",
   "following",
   "profile",
@@ -42,6 +43,8 @@ export const API_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/accounts" },
   { method: "POST", path: "/api/accounts/:id/rotate" },
   { method: "DELETE", path: "/api/accounts/:id" },
+  { method: "GET", path: "/api/tags/trending" },
+  { method: "GET", path: "/api/accounts/suggested" },
   { method: "GET", path: "/api/timeline" },
   { method: "GET", path: "/api/feed" },
   { method: "GET", path: "/api/profile/:account" },
@@ -88,6 +91,7 @@ export interface Capabilities {
     follows: boolean;
     feed: boolean;
     profile: boolean;
+    discover: boolean;
   };
   limits: {
     body_chars: number;
@@ -118,6 +122,7 @@ export function capabilities(): Capabilities {
       follows: true,
       feed: true,
       profile: true,
+      discover: true,
     },
     limits: {
       body_chars: 200_000,

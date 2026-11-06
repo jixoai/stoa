@@ -16,6 +16,7 @@ const BOOLEAN_FLAGS = new Set([
   "all",
   "prune",
   "accounts",
+  "tags",
   "unfollow",
   "follow",
 ]);
@@ -165,6 +166,7 @@ Usage:
                             [--author X] [--since T] [--until T]
                             [--limit N] [--order asc|desc] [--after C]
   fde2e-report-worker search <q> --as A [--limit N] [--accounts]
+  fde2e-report-worker discover --tags|--accounts [--limit N] --as A
   fde2e-report-worker follow <acct>|--unfollow <acct> --as A
   fde2e-report-worker following --as A
   fde2e-report-worker profile <acct> --as A [--follow]

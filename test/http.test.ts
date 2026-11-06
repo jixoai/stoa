@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createApp } from "../src/server/http.ts";
 import { AuthManager } from "../src/server/auth.ts";
 import { Presence } from "../src/server/presence.ts";
-import { makeStore, createAgents, tempDir } from "./helpers.ts";
+import { makeStore, createAgents, tempDir, appAssetPath } from "./helpers.ts";
 
 const T0 = 1_700_000_000_000;
 
@@ -409,11 +409,11 @@ describe("HTTP API (report-surface: health/CORS/SEED)", () => {
       const body = await json(exported);
       expect(body.as_of_seq).toBe(t.store.maxEventSeq());
       expect(existsSync(join(t.dir, "export", "index.html"))).toBe(true);
-      expect(existsSync(join(t.dir, "export", "assets", "app.js"))).toBe(true);
+      expect(appAssetPath(join(t.dir, "export"))).not.toBeNull();
       expect(existsSync(join(t.dir, "export", "p"))).toBe(false);
       const index = await Bun.file(join(t.dir, "export", "index.html")).text();
       expect(index).toContain('id="report-snapshot"');
-      expect(index).toContain('src="./assets/app.js"');
+      expect(index).toMatch(/src="\.\/assets\/app(-[\w-]+)?\.js"/);
       expect(index).toContain(rootId);
       expect(index).not.toContain("</script><script>alert(1)");
       expect(index).toContain("\\u003c/script");

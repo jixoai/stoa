@@ -336,6 +336,27 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ ok: true, removed: c.req.param("id"), tombstone: true });
   });
 
+  // ── discovery (report-ux-r2 §5): trending tags + suggested members ──────────
+  // Both paths reuse the caller's visibility slice; an agent only aggregates the
+  // conversations it participates in, so no hidden thread's tags or activity leak.
+  app.get("/api/tags/trending", (c) => {
+    const account = identity(c, deps);
+    const tags = deps.store.trendingTags({
+      viewer: viewer(account),
+      limit: parseLimit(c.req.query("limit"), 12, 50),
+    });
+    return c.json({ ok: true, tags });
+  });
+
+  app.get("/api/accounts/suggested", (c) => {
+    const account = identity(c, deps);
+    const accounts = deps.store.suggestedAccounts({
+      viewer: viewer(account),
+      limit: parseLimit(c.req.query("limit"), 6, 50),
+    });
+    return c.json({ ok: true, accounts });
+  });
+
   // ── posts / timeline / thread / search / read ───────────────────────────────
   app.get("/api/timeline", (c) => {
     const account = identity(c, deps);

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { accountTokenEnvKey } from "../src/core/auth.ts";
 import { parseEnv } from "../src/core/env.ts";
 import { runExport, type Snapshot } from "../src/server/export.ts";
-import { createAgents, makeStore, tempDir } from "./helpers.ts";
+import { createAgents, appAssetPath, makeStore, tempDir } from "./helpers.ts";
 
 const SNAPSHOT_RE =
   /<script type="application\/json" id="report-snapshot">([\s\S]*?)<\/script>/;
@@ -199,9 +199,9 @@ describe("static export (design §2/§5)", () => {
         runExport({ dataDir: t.dir, outDir });
         const index = readFileSync(join(outDir, "index.html"), "utf8");
         expect(index).toContain('id="report-snapshot"');
-        expect(index).toContain("./assets/app.js");
+        expect(index).toMatch(/\.\/assets\/app(-[\w-]+)?\.js/);
         expect(index).not.toContain('type="module"');
-        expect(existsSync(join(outDir, "assets", "app.js"))).toBe(true);
+        expect(appAssetPath(outDir)).not.toBeNull();
         const snapshot = readSnapshot(index);
         expect(snapshot.posts.some((post) => post.body_md === "real build archive")).toBe(true);
       } finally {

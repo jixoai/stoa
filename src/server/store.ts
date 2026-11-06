@@ -51,10 +51,12 @@ import type {
   ProfilePage,
   QuotedView,
   Role,
+  SuggestedAccount,
   ThreadNode,
   ThreadSnapshotLine,
   ThreadView,
   TimelinePage,
+  TrendingTag,
   WriteOp,
 } from "../core/types.ts";
 import { all, get, getMeta, run, setMeta, type Bindings } from "./db.ts";
@@ -1250,6 +1252,115 @@ export class Store {
       order: direction,
       as_of_seq: this.maxEventSeq(),
     };
+  }
+
+  /**
+   * Trending tags (report-ux-r2 §5): aggregate `tags` over the viewer's visible,
+   * non-deleted **root** posts. Root-only by design — replies live inside their
+   * root's conversation, so a root rollup cannot surface a tag from a thread the
+   * caller may not see.
+   *
+   * `score = count × exp(-age_days / 7)` with `age_days` measured from the tag's
+   * most recent use. Ties fall back to count, then recency, then tag name so the
+   * order is deterministic across runs.
+   */
+  trendingTags(opts: { viewer: Viewer; limit?: number; now?: number }): TrendingTag[] {
+    const limit = Math.min(opts.limit ?? 12, 50);
+    if (limit <= 0) return [];
+    const now = opts.now ?? this.clock();
+    const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);
+    const rows = all<{ tags: string; created_at: number }>(
+      this.db,
+      `SELECT tags, created_at FROM posts
+       WHERE parent_id IS NULL AND deleted_at IS NULL AND ${vis.sql}`,
+      ...(vis.params as Bindings),
+    );
+    const aggregate = new Map<string, { count: number; last_used_at: number }>();
+    for (const row of rows) {
+      // one use per root post even if a legacy row repeats a tag
+      for (const tag of new Set(parseTagsJson(row.tags))) {
+        const existing = aggregate.get(tag);
+        if (existing) {
+          existing.count += 1;
+          if (row.created_at > existing.last_used_at) existing.last_used_at = row.created_at;
+        } else {
+          aggregate.set(tag, { count: 1, last_used_at: row.created_at });
+        }
+      }
+    }
+    const ranked: TrendingTag[] = [...aggregate.entries()].map(([tag, agg]) => {
+      const ageDays = Math.max(0, now - agg.last_used_at) / 86_400_000;
+      return {
+        tag,
+        count: agg.count,
+        last_used_at: agg.last_used_at,
+        score: agg.count * Math.exp(-ageDays / 7),
+      };
+    });
+    ranked.sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.count - a.count ||
+        b.last_used_at - a.last_used_at ||
+        a.tag.localeCompare(b.tag),
+    );
+    return ranked.slice(0, limit);
+  }
+
+  /**
+   * Suggested members (report-ux-r2 §5): everyone the viewer could follow except
+   * themselves, ordered by follower count desc, then most recent post desc.
+   * `last_post_at` only considers posts inside the viewer's visibility slice, so
+   * the column cannot advertise activity in a hidden thread.
+   */
+  suggestedAccounts(opts: { viewer: Viewer; limit?: number }): SuggestedAccount[] {
+    const limit = Math.min(opts.limit ?? 6, 50);
+    if (limit <= 0) return [];
+    const candidates = this.listAccounts(false).filter(
+      (account) => account.id !== opts.viewer.id && account.disabled === 0,
+    );
+    if (candidates.length === 0) return [];
+
+    const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);
+    const lastPosts = all<{ author: string; last_post_at: number }>(
+      this.db,
+      `SELECT author, MAX(created_at) AS last_post_at FROM posts
+       WHERE deleted_at IS NULL AND ${vis.sql}
+       GROUP BY author`,
+      ...(vis.params as Bindings),
+    );
+    const lastPostBy = new Map(lastPosts.map((row) => [row.author, row.last_post_at]));
+
+    const followerRows = all<{ followee_id: string; c: number }>(
+      this.db,
+      `SELECT f.followee_id, COUNT(*) AS c
+       FROM follows f JOIN accounts a ON a.id = f.follower_id
+       WHERE a.disabled != 2
+       GROUP BY f.followee_id`,
+    );
+    const followerBy = new Map(followerRows.map((row) => [row.followee_id, row.c]));
+
+    const followed = new Set(
+      this.listFollowing(opts.viewer.id).map(({ account }) => account.id),
+    );
+
+    const ranked: SuggestedAccount[] = candidates.map((account) => ({
+      id: account.id,
+      display: account.display,
+      profile: account.profile,
+      avatar: account.avatar,
+      role: account.role,
+      followers: followerBy.get(account.id) ?? 0,
+      last_post_at: lastPostBy.get(account.id) ?? null,
+      following: followed.has(account.id),
+    }));
+    ranked.sort(
+      (a, b) =>
+        b.followers - a.followers ||
+        (b.last_post_at ?? 0) - (a.last_post_at ?? 0) ||
+        a.id.localeCompare(b.id),
+    );
+    return ranked.slice(0, limit);
   }
 
   thread(opts: { viewer: Viewer; postId: string; focalId?: string | null }): ThreadView | null {

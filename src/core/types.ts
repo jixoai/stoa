@@ -220,6 +220,30 @@ export interface ProfilePage {
   as_of_seq: number;
 }
 
+/**
+ * Trending tag row (report-ux-r2 §5). Aggregated over the viewer's visible,
+ * non-deleted root posts; `last_used_at` is the tag's most recent use and
+ * `score = count × exp(-age_days / 7)`.
+ */
+export interface TrendingTag {
+  tag: string;
+  count: number;
+  last_used_at: number;
+  score: number;
+}
+
+/** Suggested member row (report-ux-r2 §5): self excluded, followers desc. */
+export interface SuggestedAccount {
+  id: string;
+  display: string;
+  profile: string;
+  avatar: string;
+  role: Role;
+  followers: number;
+  last_post_at: number | null;
+  following: boolean;
+}
+
 export interface NotificationEventLine {
   seq: number;
   type: EventType;

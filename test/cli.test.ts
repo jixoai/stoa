@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appAssetPath,
   BUN,
   CLI,
   initWorkspace,
@@ -177,7 +178,7 @@ describe("CLI surface (design §15, P3)", () => {
     const exportBody = JSON.parse(exported.stdout) as { out_dir: string; threads: number };
     expect(exportBody.threads).toBeGreaterThanOrEqual(1);
     expect(await Bun.file(join(ws.dataDir, "export", "index.html")).exists()).toBe(true);
-    expect(await Bun.file(join(ws.dataDir, "export", "assets", "app.js")).exists()).toBe(true);
+    expect(appAssetPath(join(ws.dataDir, "export"))).not.toBeNull();
     const archive = await Bun.file(join(ws.dataDir, "export", "index.html")).text();
     expect(archive).toContain('id="report-snapshot"');
     expect(archive).toContain(rootId);
