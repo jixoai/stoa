@@ -65,3 +65,17 @@ API 不可用时 SHALL 降级到社区成熟库 `motion`；`prefers-reduced-moti
 #### Scenario: 减少动态效果
 - **WHEN** 系统开启「减少动态效果」
 - **THEN** 转场瞬时完成，功能与位置不变
+
+### Requirement: 确定性生成头像
+账号头像 SHALL 由账号 id **确定性生成**（同一账号在任何会话、任何设备、刷新前后都是同一图形），
+SHALL 使用成熟库（DiceBear `identicon` 或 `boring-avatars` 一类）而不是自绘字母块；
+SHALL NOT 依赖后端存储或外网请求；配色 SHALL 取自主题令牌（深浅色各一套可读配色）；
+同一账号在列表、详情、成员页、导航中的头像 SHALL 完全一致，加载过程 SHALL NOT 闪烁或回退成字母。
+
+#### Scenario: 同一账号到处一致
+- **WHEN** 同一个账号出现在时间线、详情页、成员列表和成员页
+- **THEN** 四处头像完全相同；刷新或换设备后仍相同
+
+#### Scenario: 不依赖网络
+- **WHEN** 断网打开静态归档
+- **THEN** 头像照常渲染（本地生成，不发请求）
