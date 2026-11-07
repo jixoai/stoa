@@ -135,9 +135,7 @@ export function SearchPage() {
               autoFocus
             />
             <InputGroupAddon align="inline-end">
-              <InputGroupButton type="submit" variant="default" size="sm">
-                搜索
-              </InputGroupButton>
+              <InputGroupButton type="submit">搜索</InputGroupButton>
             </InputGroupAddon>
           </InputGroup>
         </form>

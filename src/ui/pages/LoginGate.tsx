@@ -73,7 +73,7 @@ export function LoginGate() {
                   <InputGroupButton
                     type="submit"
                     variant="default"
-                    size="sm"
+                    size="xs"
                     disabled={busy || !secret}
                     data-testid="login-submit"
                   >

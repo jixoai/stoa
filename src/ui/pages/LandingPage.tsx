@@ -108,7 +108,7 @@ export function LandingPage() {
                     <InputGroupButton
                       type="submit"
                       variant="default"
-                      size="sm"
+                      size="xs"
                       data-testid="ep-connect"
                     >
                       连接 <ArrowRightIcon data-icon="inline-end" />

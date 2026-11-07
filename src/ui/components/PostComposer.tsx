@@ -22,6 +22,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupText,
   InputGroupTextarea,
 } from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -481,15 +484,18 @@ export function PostComposer({
     >
       <InputGroup className="h-auto flex-col items-stretch gap-0">
       <Tabs value={tab} onValueChange={(value) => setTab(value as "write" | "preview")} className="gap-0">
-        <div className="flex items-center justify-between border-b border-border/60 px-2 py-1">
+        <InputGroupAddon
+          align="block-start"
+          className="justify-between border-b border-border/60 px-2 py-1"
+        >
           <TabsList variant="line" aria-label="编辑与预览">
             <TabsTrigger value="write">撰写</TabsTrigger>
             <TabsTrigger value="preview">预览</TabsTrigger>
           </TabsList>
-          <span className="text-xs text-muted-foreground">
+          <InputGroupText className="text-xs">
             {body.length.toLocaleString()} / 200,000 · ⌘/Ctrl+Enter 发布
-          </span>
-        </div>
+          </InputGroupText>
+        </InputGroupAddon>
 
         <TabsContent value="write">
           <div className="relative px-3 py-2">
@@ -669,7 +675,10 @@ export function PostComposer({
         </Alert>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-2 py-1.5">
+      <InputGroupAddon
+        align="block-end"
+        className="flex-wrap gap-2 border-t border-border/60 px-2 py-1.5"
+      >
         <Input
           ref={fileRef}
           type="file"
@@ -682,7 +691,7 @@ export function PostComposer({
             void addFiles(files);
           }}
         />
-        <Button
+        <InputGroupButton
           type="button"
           variant="outline"
           size="sm"
@@ -691,12 +700,10 @@ export function PostComposer({
         >
           <ImagePlusIcon data-icon="inline-start" />
           附件 {items.length > 0 ? `${items.length}/4` : ""}
-        </Button>
-        <Badge variant="outline" className="hidden sm:inline-flex">
-          可拖拽文件到这里
-        </Badge>
+        </InputGroupButton>
+        <InputGroupText className="hidden text-xs sm:flex">可拖拽文件到这里</InputGroupText>
         <div className="ml-auto flex items-center gap-2">
-          <Button
+          <InputGroupButton
             type="button"
             size="sm"
             data-testid="composer-submit"
@@ -705,9 +712,9 @@ export function PostComposer({
           >
             {busy ? <Loader2Icon data-icon="inline-start" className="animate-spin" /> : <SendIcon data-icon="inline-start" />}
             {submitLabel ?? (mode === "post" ? "发布" : "回复")}
-          </Button>
+          </InputGroupButton>
         </div>
-      </div>
+      </InputGroupAddon>
       </InputGroup>
     </div>
   );
