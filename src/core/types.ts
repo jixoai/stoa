@@ -65,11 +65,16 @@ export interface Mention {
   created_at: number;
 }
 
-export type EventType = "post.created" | "thread.invited";
+/**
+ * Event kinds stored in the `events` table. `post.deleted` is a system event:
+ * it is pushed by the event hub but never delivered as a notification.
+ */
+export type EventType = "post.created" | "post.deleted" | "thread.invited";
 
 /**
- * 进入通知列表的事件类型（单一信源）：history 只读这些类型；event-hub 新增
- * 通知类事件（如 `post.deleted`）时先扩 EventType 再改这里。
+ * 进入通知列表的事件类型（单一信源）：REST peek、CLI wait-notifications、
+ * history、未读计数都只读这些类型；event-hub 的 `post.deleted` 等系统事件
+ * 可以存库并推送，但通知读路径 SHALL NOT 返回它们。
  */
 export const NOTIFICATION_TYPES: readonly EventType[] = ["post.created", "thread.invited"];
 
@@ -275,6 +280,25 @@ export interface ThreadSnapshotLine {
 }
 
 export type NotificationLine = NotificationEventLine | ThreadSnapshotLine;
+
+/**
+ * An event line plus the read-time `post_deleted` projection. Used by the event
+ * hub (and by `notificationLines`, which delegates to `eventLines`). The flag is
+ * computed with `LEFT JOIN posts`, never stored.
+ */
+export interface EventLine extends NotificationEventLine {
+  /** the referenced post is soft-deleted (deleted events never count as unread) */
+  post_deleted: boolean;
+}
+
+/** Result of `store.eventLines`: a bounded, visibility-filtered event slice. */
+export interface EventLinesPage {
+  lines: EventLine[];
+  /** global `MAX(events.seq)` at snapshot time — the replay ceiling */
+  as_of_seq: number;
+  /** the visible slice exceeded `limit`; callers must reset, never silently gap */
+  truncated: boolean;
+}
 
 export interface NotificationSnapshot {
   events: NotificationEventLine[];

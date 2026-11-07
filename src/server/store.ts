@@ -40,6 +40,8 @@ import type {
   Account,
   AuthorView,
   Draft,
+  EventLine,
+  EventLinesPage,
   FeedPage,
   FeedTab,
   Follow,
@@ -48,7 +50,6 @@ import type {
   NotificationEventLine,
   NotificationHistoryPage,
   NotificationLine,
-  NotificationSnapshot,
   Post,
   PostView,
   ProfilePage,
@@ -88,6 +89,8 @@ interface EventRow {
   batch_id: string;
   created_at: number;
   payload_json: string;
+  /** only present on `eventLines` rows (`LEFT JOIN posts`) */
+  post_deleted?: number | null;
 }
 interface MediaRowDb extends MediaRow {}
 interface BatchRow {
@@ -141,6 +144,26 @@ function parseTagsJson(raw: string | null): string[] {
   } catch {
     return [];
   }
+}
+
+function toEventLine(row: EventRow): EventLine {
+  let payload: unknown = {};
+  try {
+    payload = JSON.parse(row.payload_json);
+  } catch {
+    payload = {};
+  }
+  return {
+    seq: row.seq,
+    type: row.type as EventLine["type"],
+    actor: row.actor,
+    post_id: row.post_id,
+    root_id: row.root_id,
+    batch_id: row.batch_id,
+    created_at: row.created_at,
+    payload,
+    post_deleted: row.post_deleted === 1,
+  };
 }
 
 function toPost(row: PostRow): Post {
@@ -212,18 +235,30 @@ export class Store {
     }
   }
 
-  waitForChange(timeoutMs: number): Promise<boolean> {
+  /**
+   * Resolve on the next committed change, on timeout, or when `signal` aborts.
+   * The optional signal lets long-lived readers (legacy SSE) exit promptly on
+   * client disconnect without changing their wait cadence.
+   */
+  waitForChange(timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
     return new Promise((resolve) => {
+      if (signal?.aborted) {
+        resolve(false);
+        return;
+      }
       let done = false;
       const finish = (changed: boolean) => {
         if (done) return;
         done = true;
         this.listeners.delete(listener);
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         resolve(changed);
       };
       const listener = () => finish(true);
+      const onAbort = () => finish(false);
       const timer = setTimeout(() => finish(false), timeoutMs);
+      signal?.addEventListener("abort", onAbort, { once: true });
       this.listeners.add(listener);
     });
   }
@@ -1547,7 +1582,20 @@ export class Store {
       fail("FORBIDDEN", "only the author or owner/manager can delete a post");
     }
     if (post.deleted_at !== null) return;
-    run(this.db, "UPDATE posts SET deleted_at = ? WHERE id = ?", this.clock(), postId);
+    const now = this.clock();
+    // The tombstone and its `post.deleted` event commit together: an event hub
+    // subscriber can never observe one without the other. The payload carries
+    // ids only (no tags/author) — clients match deletion by the ids they
+    // currently render, never by actor/tags.
+    const tx = this.db.transaction(() => {
+      run(this.db, "UPDATE posts SET deleted_at = ? WHERE id = ?", now, postId);
+      this.insertEvent("post.deleted", viewer.id, post.id, post.root_id, post.batch_id, now, {
+        post_id: post.id,
+        root_id: post.root_id,
+        parent_id: post.parent_id,
+      });
+    });
+    tx();
     this.notifyChange();
   }
 
@@ -1641,76 +1689,198 @@ export class Store {
     return row.role;
   }
 
-  // ── notifications ───────────────────────────────────────────────────────────
-  /** Delivery lines (events + inline thread snapshots), in order. */
+  // ── viewer-scoped events / notifications ────────────────────────────────────
+
+  /**
+   * Viewer-scoped event slice: `since < seq <= MAX(seq)` at snapshot time.
+   *
+   * - `visibleRootsClause(..., "e")` is the only visibility source (an aliased
+   *   fragment is mandatory here: `events e LEFT JOIN posts p` has `root_id` on
+   *   both sides, and the unqualified form raises `ambiguous column name`).
+   * - The `MAX(seq)` ceiling is read first inside the transaction so a write
+   *   landing mid-read cannot leak into this slice: new events have a larger
+   *   seq and arrive in the next call (no gaps, no duplicates).
+   * - `truncated` is the *only* overflow signal (visible rows are a sparse
+   *   subset of seq; `as_of_seq - since` must never be used to infer overflow).
+   * - `LEFT JOIN posts` yields the read-time `post_deleted` projection.
+   */
+  eventLines(opts: {
+    viewer: Viewer;
+    since: number;
+    limit?: number;
+    includeSelf?: boolean;
+    types?: readonly string[] | null;
+  }): EventLinesPage {
+    const since = opts.since;
+    if (!Number.isInteger(since) || since < 0) {
+      fail("BAD_REQUEST", "since must be a non-negative integer seq");
+    }
+    // -1 is SQLite's "no limit"; `truncated` stays false in that mode.
+    const limit = opts.limit ?? -1;
+    if (limit !== -1 && (!Number.isInteger(limit) || limit < 1)) {
+      fail("BAD_REQUEST", "limit must be a positive integer");
+    }
+    const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id, "e");
+    const tx = this.db.transaction((): EventLinesPage => {
+      const asOfSeq = this.maxEventSeq();
+      const clauses = ["e.seq > ?", "e.seq <= ?"];
+      const params: Bindings = [since, asOfSeq];
+      if (opts.includeSelf === false) {
+        clauses.push("e.actor != ?");
+        params.push(opts.viewer.id);
+      }
+      if (opts.types) {
+        if (opts.types.length === 0) {
+          clauses.push("1=0");
+        } else {
+          clauses.push(`e.type IN (${placeholders(opts.types.length)})`);
+          params.push(...([...opts.types] as Bindings));
+        }
+      }
+      clauses.push(vis.sql);
+      params.push(...(vis.params as Bindings));
+      // Ask for one extra row so `truncated` is observable without a second query.
+      const sqlLimit = limit === -1 ? -1 : limit + 1;
+      const rows = all<EventRow>(
+        this.db,
+        `SELECT e.seq, e.type, e.actor, e.post_id, e.root_id, e.batch_id, e.created_at,
+                e.payload_json, (p.deleted_at IS NOT NULL) AS post_deleted
+         FROM events e
+         LEFT JOIN posts p ON p.id = e.post_id
+         WHERE ${clauses.join(" AND ")}
+         ORDER BY e.seq ASC
+         LIMIT ?`,
+        ...params,
+        sqlLimit,
+      );
+      const truncated = limit !== -1 && rows.length > limit;
+      const page = truncated ? rows.slice(0, limit) : rows;
+      return {
+        lines: page.map(toEventLine),
+        as_of_seq: asOfSeq,
+        truncated,
+      };
+    });
+    return tx();
+  }
+
+  /**
+   * Unread notifications for the account cursor: visible + not self + only
+   * `NOTIFICATION_TYPES` + live post. Shares the exact predicate with
+   * `unreadByTarget` and `eventLines` (same alias, same join).
+   */
+  private unreadClause(accountId: string, cursor: number): { where: string; params: Bindings } {
+    const account = this.requireActiveAccount(accountId);
+    const vis = visibleRootsClause(account.role, accountId, "e");
+    const where = [
+      "e.seq > ?",
+      "e.actor != ?",
+      `e.type IN (${placeholders(NOTIFICATION_TYPES.length)})`,
+      "p.deleted_at IS NULL",
+      vis.sql,
+    ].join(" AND ");
+    const params: Bindings = [
+      cursor,
+      accountId,
+      ...([...NOTIFICATION_TYPES] as Bindings),
+      ...(vis.params as Bindings),
+    ];
+    return { where, params };
+  }
+
+  unreadCount(accountId: string, cursorOverride?: number | null): number {
+    const cursor = cursorOverride ?? this.getCursor(accountId);
+    const { where, params } = this.unreadClause(accountId, cursor);
+    return (
+      get<{ c: number }>(
+        this.db,
+        `SELECT COUNT(*) AS c FROM events e LEFT JOIN posts p ON p.id = e.post_id
+         WHERE ${where}`,
+        ...params,
+      )?.c ?? 0
+    );
+  }
+
+  /** Unread events grouped by `COALESCE(post_id, root_id)` (read-set 精确扣减用). */
+  unreadByTarget(accountId: string, cursorOverride?: number | null): Record<string, number> {
+    const cursor = cursorOverride ?? this.getCursor(accountId);
+    const { where, params } = this.unreadClause(accountId, cursor);
+    const rows = all<{ target: string | null; c: number }>(
+      this.db,
+      `SELECT COALESCE(e.post_id, e.root_id) AS target, COUNT(*) AS c
+       FROM events e LEFT JOIN posts p ON p.id = e.post_id
+       WHERE ${where}
+       GROUP BY target`,
+      ...params,
+    );
+    const out: Record<string, number> = {};
+    for (const row of rows) {
+      if (row.target === null) continue;
+      out[row.target] = row.c;
+    }
+    return out;
+  }
+
+  /**
+   * Delivery lines (events + inline thread snapshots), in order.
+   *
+   * Delegates to `eventLines` so visibility/aliasing/`post.deleted` exclusion
+   * live in exactly one SQL. Keeps the legacy contract: REST/CLI exclude the
+   * account's own events by default and only `NOTIFICATION_TYPES` are delivered
+   * (`post.deleted` and any future system event never show up as a reminder).
+   */
   notificationLines(
     accountId: string,
     cursorOverride?: number | null,
-    opts: { includeSelf?: boolean } = {},
+    opts: { includeSelf?: boolean; limit?: number } = {},
   ): {
     lines: NotificationLine[];
     target: number | null;
     cursor: number;
     role: Role;
+    truncated: boolean;
+    as_of_seq: number;
   } {
     const account = this.requireActiveAccount(accountId);
     const cursor = cursorOverride ?? this.getCursor(accountId);
-    const vis = visibleRootsClause(account.role, accountId);
+    const page = this.eventLines({
+      viewer: { id: accountId, role: account.role },
+      since: cursor,
+      limit: opts.limit,
+      // REST/CLI default excludes the account's own events; the legacy SSE
+      // stream passes `includeSelf: true` explicitly.
+      includeSelf: opts.includeSelf === true,
+      types: NOTIFICATION_TYPES,
+    });
     const lines: NotificationLine[] = [];
     let target: number | null = null;
-    const selfClause = opts.includeSelf ? "1=1" : "actor != ?";
-    const params: Bindings = opts.includeSelf
-      ? [cursor, ...(vis.params as Bindings)]
-      : [cursor, accountId, ...(vis.params as Bindings)];
-    this.db.exec("BEGIN");
-    try {
-      const events = all<EventRow>(
-        this.db,
-        `SELECT * FROM events
-         WHERE seq > ? AND ${selfClause} AND ${vis.sql}
-         ORDER BY seq ASC`,
-        ...params,
-      );
-      for (const event of events) {
-        let payload: unknown = {};
-        try {
-          payload = JSON.parse(event.payload_json);
-        } catch {
-          payload = {};
-        }
-        lines.push({
-          seq: event.seq,
-          type: event.type as NotificationEventLine["type"],
-          actor: event.actor,
-          post_id: event.post_id,
-          root_id: event.root_id,
-          batch_id: event.batch_id,
-          created_at: event.created_at,
-          payload,
+    for (const event of page.lines) {
+      lines.push(event);
+      if (target === null || event.seq > target) target = event.seq;
+      if (event.type === "thread.invited" && event.root_id) {
+        const thread = this.thread({
+          viewer: { id: accountId, role: account.role },
+          postId: event.post_id ?? event.root_id,
+          focalId: event.post_id,
         });
-        if (target === null || event.seq > target) target = event.seq;
-        if (event.type === "thread.invited" && event.root_id) {
-          const thread = this.thread({
-            viewer: { id: accountId, role: account.role },
-            postId: event.post_id ?? event.root_id,
-            focalId: event.post_id,
+        if (thread) {
+          lines.push({
+            type: "thread.snapshot",
+            of_seq: event.seq,
+            root_id: event.root_id,
+            thread,
           });
-          if (thread) {
-            lines.push({
-              type: "thread.snapshot",
-              of_seq: event.seq,
-              root_id: event.root_id,
-              thread,
-            });
-          }
         }
       }
-      this.db.exec("COMMIT");
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
     }
-    return { lines, target, cursor, role: account.role };
+    return {
+      lines,
+      target,
+      cursor,
+      role: account.role,
+      truncated: page.truncated,
+      as_of_seq: page.as_of_seq,
+    };
   }
 
   /**

@@ -25,14 +25,23 @@ export function canViewRoot(opts: {
   return set.has(opts.accountId);
 }
 
-/** SQL WHERE fragment selecting visible root ids for the viewer. */
+/**
+ * SQL WHERE fragment selecting visible root ids for the viewer.
+ *
+ * `tableAlias` qualifies `root_id` for multi-table queries (`events e LEFT JOIN
+ * posts p ON ...` has `root_id` on both sides; an unqualified fragment raises
+ * `ambiguous column name: root_id`). Global roles return `1=1`, which names no
+ * column, so the alias is irrelevant for them.
+ */
 export function visibleRootsClause(
   role: Role,
   accountId: string,
+  tableAlias?: string,
 ): { sql: string; params: string[] } {
   if (isGlobalRole(role)) return { sql: "1=1", params: [] };
+  const prefix = tableAlias ? `${tableAlias}.` : "";
   return {
-    sql: "root_id IN (SELECT root_id FROM participants WHERE account_id = ?)",
+    sql: `${prefix}root_id IN (SELECT root_id FROM participants WHERE account_id = ?)`,
     params: [accountId],
   };
 }

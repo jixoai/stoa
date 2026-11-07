@@ -9,6 +9,7 @@ import { Presence } from "./presence.ts";
 import { Store } from "./store.ts";
 import { openDatabase, migrate } from "./db.ts";
 import { createApp } from "./http.ts";
+import { Hub } from "./hub.ts";
 import {
   acquireLock,
   assertSafeDataDir,
@@ -114,6 +115,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   }
 
   const presence = new Presence();
+  const hub = new Hub({ store, presence, instanceId });
   const deps = {
     store,
     auth,
@@ -126,6 +128,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     uiDir: join(import.meta.dir, "..", "..", "dist"),
     // Assigned once the lease exists; createApp reads it lazily per request.
     lease: null as IdleLease | null,
+    hub,
   };
   const app = createApp(deps);
 
@@ -182,6 +185,19 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     if (closed) return;
     closed = true;
     lease?.stop();
+    // Give live SSE clients a `bye{shutdown}` before the socket is torn down.
+    try {
+      await Promise.race([
+        hub.shutdown(),
+        new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 1000);
+          timer.unref?.();
+        }),
+      ]);
+    } catch {
+      // shutdown frames are best-effort
+    }
+    hub.dispose();
     try {
       // No idle shutdown ever runs with a request in flight, but `stop(true)`
       // also covers an in-flight request racing the signal path.
@@ -209,6 +225,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   if (idleTimeoutMs > 0) {
     lease = new IdleLease({ idleTimeoutMs, onIdle: shutdownForIdle });
     deps.lease = lease;
+    hub.setLease(lease);
     lease.start();
   }
 

@@ -83,6 +83,8 @@ export interface Capabilities {
     drafts: boolean;
     notifications: boolean;
     sse: boolean;
+    /** `GET /api/stream?hub=2` event hub semantics (hello/backlog/heartbeat/bye) */
+    event_hub: boolean;
     media: boolean;
     export: boolean;
     auth: "binary-live-read";
@@ -114,6 +116,7 @@ export function capabilities(): Capabilities {
       drafts: true,
       notifications: true,
       sse: true,
+      event_hub: true,
       media: true,
       export: true,
       auth: "binary-live-read",

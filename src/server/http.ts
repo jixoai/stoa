@@ -11,6 +11,7 @@ import type { AuthManager } from "./auth.ts";
 import type { Presence } from "./presence.ts";
 import type { Store } from "./store.ts";
 import type { IdleLease } from "./lease.ts";
+import { Hub } from "./hub.ts";
 import { runExport } from "./export.ts";
 import { join, resolve } from "node:path";
 
@@ -27,6 +28,8 @@ export interface AppDeps {
   uiDir?: string | null;
   /** idle lease (design §1); absent in unit-test apps and when disabled */
   lease?: IdleLease | null;
+  /** shared event hub; created on demand when the caller does not inject one */
+  hub?: Hub;
 }
 
 /**
@@ -103,8 +106,43 @@ function optionalInt(c: Context, name: string): number | null {
   return n;
 }
 
+/** Strict seq parser for SSE resume params; invalid values are treated as absent. */
+function parseSeqParam(raw: string | undefined | null): number | null {
+  if (raw === null || raw === undefined) return null;
+  const text = raw.trim();
+  if (!/^\d+$/.test(text)) return null;
+  const value = Number(text);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+/** `effectiveSince = max(since, after, Last-Event-ID)`; null when none is valid. */
+function parseEffectiveSince(
+  candidates: Array<string | undefined | null>,
+): number | null {
+  let max: number | null = null;
+  for (const raw of candidates) {
+    const value = parseSeqParam(raw);
+    if (value !== null && (max === null || value > max)) max = value;
+  }
+  return max;
+}
+
 function viewer(account: Account): { id: string; role: Role } {
   return { id: account.id, role: account.role };
+}
+
+/**
+ * Legacy `report` frames predate the hub's read-time projection: strip
+ * `post_deleted` so old shells receive exactly the historical field set.
+ */
+function legacyReportLine(line: NotificationLine): NotificationLine {
+  if ("post_deleted" in line) {
+    const { post_deleted: _postDeleted, ...rest } = line as NotificationLine & {
+      post_deleted: boolean;
+    };
+    return rest as NotificationLine;
+  }
+  return line;
 }
 
 function publicAccount(account: Account): Record<string, unknown> {
@@ -123,6 +161,14 @@ function publicAccount(account: Account): Record<string, unknown> {
 
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
+  const hub =
+    deps.hub ??
+    new Hub({
+      store: deps.store,
+      presence: deps.presence,
+      instanceId: deps.instanceId,
+      lease: deps.lease ?? null,
+    });
 
   app.use("*", async (c, next) => {
     const headers = corsHeaders(c.req.header("origin"));
@@ -164,6 +210,7 @@ export function createApp(deps: AppDeps): Hono {
       protocol: capabilities().protocol,
       version: capabilities().version,
       lease: deps.lease?.snapshot() ?? null,
+      hub: hub.snapshot(),
     }),
   );
 
@@ -208,19 +255,74 @@ export function createApp(deps: AppDeps): Hono {
       account = found;
     }
     const who = account;
+
+    // ── hub=2 (event hub, design §3.4): explicit opt-in; legacy path untouched ──
+    if (c.req.query("hub") === "2") {
+      // `since` is the documented resume param; `after` is accepted as an alias
+      // for probe/back-compat parity with the pagination vocabulary.
+      const effectiveSince = parseEffectiveSince([
+        c.req.query("since"),
+        c.req.query("after"),
+        c.req.header("last-event-id"),
+      ]);
+      if (!hub.admit(who.id)) {
+        // Any non-200 makes EventSource fail permanently; the client state
+        // machine owns reconnect + ticket rotation (design §3.5).
+        c.header("Retry-After", "5");
+        c.header("Cache-Control", "no-store");
+        return c.body(null, 503);
+      }
+      c.header("X-Accel-Buffering", "no");
+      c.header("Cache-Control", "no-cache, no-transform");
+      c.header("Connection", "keep-alive");
+      const sseResponse = await streamSSE(c, async (stream) => {
+        await hub.serve({
+          account: who,
+          stream,
+          authMode: mode,
+          since: effectiveSince,
+          signal: c.req.raw.signal,
+        });
+      });
+      const headers = new Headers(sseResponse.headers);
+      headers.set("cache-control", "no-cache, no-transform");
+      headers.set("x-accel-buffering", "no");
+      return new Response(sseResponse.body, {
+        status: sseResponse.status,
+        statusText: sseResponse.statusText,
+        headers,
+      });
+    }
+
+    hub.noteLegacyConnect();
+    // ── legacy stream (no `hub` param): wire format stays byte-for-byte ───────
     // Optional event-stream filter (member-page live subscription): only events
     // produced by this author are pushed. This is a technical subscription
     // filter, not a follow edge — `follows` never participates here.
     const authorFilter = (c.req.query("author") ?? "").trim() || null;
+    const signal = c.req.raw.signal;
     const release = deps.presence.connect(who.id);
     // An open event stream is a subscription: it keeps the instance alive.
     const releaseLease = deps.lease?.hold();
+    // Idempotent: Hono swallows write errors, so abort/signal is the only
+    // reliable recycle signal (same rule as the hub). Kept byte-identical:
+    // no extra frames, only presence/lease release + loop exit.
+    let cleanedUp = false;
+    const cleanup = (): void => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      releaseLease?.();
+      release();
+    };
     c.header("X-Accel-Buffering", "no");
     c.header("Cache-Control", "no-cache, no-transform");
     c.header("Connection", "keep-alive");
     try {
       const sseResponse = await streamSSE(c, async (stream) => {
         let lastSeq = deps.store.getCursor(who.id);
+        stream.onAbort(cleanup);
+        const onSignalAbort = (): void => cleanup();
+        signal.addEventListener("abort", onSignalAbort);
         try {
           await stream.writeSSE({
             event: "hello",
@@ -233,7 +335,9 @@ export function createApp(deps: AppDeps): Hono {
             }),
           });
           for (;;) {
-            const changed = await deps.store.waitForChange(15_000);
+            if (stream.aborted || signal.aborted) return;
+            const changed = await deps.store.waitForChange(15_000, signal);
+            if (stream.aborted || signal.aborted) return;
             deps.presence.touch(who.id);
             if (changed) {
               // Visibility is already applied inside notificationLines; the author
@@ -246,14 +350,18 @@ export function createApp(deps: AppDeps): Hono {
                 const seq = (line as { seq?: number }).seq;
                 if (typeof seq === "number" && seq > lastSeq) lastSeq = seq;
                 if (authorFilter && (line as { actor?: string }).actor !== authorFilter) continue;
-                await stream.writeSSE({ event: "report", data: JSON.stringify(line as NotificationLine) });
+                await stream.writeSSE({
+                  event: "report",
+                  data: JSON.stringify(legacyReportLine(line)),
+                });
               }
             } else {
               await stream.write(": ping\n\n");
             }
           }
         } finally {
-          releaseLease?.();
+          signal.removeEventListener("abort", onSignalAbort);
+          cleanup();
         }
       });
       const headers = new Headers(sseResponse.headers);
@@ -265,8 +373,7 @@ export function createApp(deps: AppDeps): Hono {
         headers,
       });
     } catch {
-      release();
-      releaseLease?.();
+      cleanup();
       throw new ReportError("INTERNAL", "stream failed");
     }
   });
@@ -641,13 +748,19 @@ export function createApp(deps: AppDeps): Hono {
     const wait = c.req.query("wait") === "1";
     const peek = c.req.query("peek") === "1";
     const cursorOverride = optionalInt(c, "cursor");
+    // `limit` applies to one-shot peeks (default 100 / max 200); the blocking
+    // long poll keeps its historical unbounded delivery so a large committed
+    // batch is never split across invocations.
+    const peekLimit = peek ? parseLimit(c.req.query("limit"), 100, 200) : null;
     const release = deps.presence.connect(account.id);
     // A blocking long poll (wait-notifications) is activity while it blocks.
     const releaseLease = deps.lease?.hold();
     try {
       const deadline = Date.now() + 25_000;
       for (;;) {
-        const snapshot = deps.store.notificationLines(account.id, cursorOverride);
+        const snapshot = deps.store.notificationLines(account.id, cursorOverride, {
+          limit: peekLimit ?? undefined,
+        });
         if (snapshot.lines.length > 0 || !wait || peek) {
           return c.json({
             ok: true,
@@ -655,6 +768,13 @@ export function createApp(deps: AppDeps): Hono {
             target: snapshot.target,
             cursor: snapshot.cursor,
             role: snapshot.role,
+            // `unread_count` is always the ACCOUNT-wide unread (stored cursor).
+            // A `?cursor=` override only replays the list for debug/CLI use; it
+            // must not change the badge semantics.
+            unread_count: deps.store.unreadCount(account.id),
+            unread_by_target: deps.store.unreadByTarget(account.id),
+            limit: peekLimit,
+            has_more: snapshot.truncated,
           });
         }
         if (Date.now() >= deadline) {
@@ -664,6 +784,10 @@ export function createApp(deps: AppDeps): Hono {
             target: null,
             cursor: snapshot.cursor,
             role: snapshot.role,
+            unread_count: deps.store.unreadCount(account.id),
+            unread_by_target: deps.store.unreadByTarget(account.id),
+            limit: peekLimit,
+            has_more: false,
           });
         }
         deps.presence.touch(account.id);
@@ -690,6 +814,8 @@ export function createApp(deps: AppDeps): Hono {
       cursor: page.cursor,
       has_more: page.has_more,
       next_before: page.next_before,
+      unread_count: deps.store.unreadCount(account.id, page.cursor),
+      unread_by_target: deps.store.unreadByTarget(account.id, page.cursor),
     });
   });
 
@@ -701,7 +827,11 @@ export function createApp(deps: AppDeps): Hono {
       fail("BAD_REQUEST", "target must be a non-negative integer seq");
     }
     const cursor = deps.store.advanceCursor(account.id, target);
-    return c.json({ ok: true, cursor });
+    const unreadCount = deps.store.unreadCount(account.id, cursor);
+    // Multi-tab/multi-device: every live stream of this account learns the new
+    // cursor (and the authoritative unread count) within one frame.
+    hub.broadcastCursor(account.id, cursor, unreadCount);
+    return c.json({ ok: true, cursor, unread_count: unreadCount });
   });
 
   app.get("/api/cursor", (c) => {
@@ -733,6 +863,7 @@ export function createApp(deps: AppDeps): Hono {
       counts: deps.store.statusCounts(),
       drafts,
       pending_export: deps.store.pendingExport(),
+      hub: hub.snapshot(),
     });
   });
 
