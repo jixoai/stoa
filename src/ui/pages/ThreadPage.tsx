@@ -23,6 +23,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PageHeader } from "@/components/PageHeader";
 import { Separator } from "@/components/ui/separator";
 import { useConnection } from "@/state/connection";
+import { useNotifications } from "@/state/notifications";
 import { getCachedThread, getThreadSeed, rememberThread } from "@/state/cache";
 import {
   goBack,
@@ -248,6 +249,15 @@ export function ThreadPage() {
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const focalRef = useRef<HTMLDivElement | null>(null);
+  // 打开详情即已读（Owner 2026-11-07）：按帖记录到本端读集合，不管从哪条路径进来
+  // （时间线/成员页/搜索/通知）都生效；不推进服务端游标，别的旧帖不受影响。
+  const notifications = useNotifications();
+  const markPostRead = notifications.markPostRead;
+  useEffect(() => {
+    if (!postId) return;
+    markPostRead(postId);
+  }, [postId, markPostRead]);
+
   /** 沉浸式回复编辑器：默认收起，点回复入口 / ?reply=1 才展开。 */
   const [replyOpen, setReplyOpen] = useState(false);
   const autoReplyOpened = useRef(false);

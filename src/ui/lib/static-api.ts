@@ -15,6 +15,7 @@ import type {
   FeedPage,
   FeedTab,
   MediaRef,
+  NotificationHistoryPage,
   PostView,
   ProfilePage,
   QuotedView,
@@ -744,6 +745,11 @@ export class StaticReportClient extends ReportClient {
     role: AuthorView["role"];
   }> {
     return { events: [], target: null, cursor: 0, role: this.viewerAccount.role };
+  }
+
+  /** 归档快照不含事件流：历史列表为空，页面对应空态（只读）。 */
+  override async notificationHistory(): Promise<NotificationHistoryPage> {
+    return { events: [], cursor: 0, has_more: false, next_before: null };
   }
 
   /** 静态媒体：快照里的相对路径直接交给 <img>/<video>，不 fetch blob。 */

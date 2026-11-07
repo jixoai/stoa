@@ -83,12 +83,8 @@ interface PostComposerProps {
   showTabs?: boolean;
   /** 沉浸式编辑：正文区更高，铺出编辑空间。 */
   tall?: boolean;
-  /** 提交按钮交给外部标题栏时隐藏内置按钮（附件工具条保留）。 */
-  hideSubmit?: boolean;
-  /** 把最新提交函数交给外部（标题栏「回复」按钮调用）。 */
-  submitRef?: { current: (() => void) | null };
-  /** 正文/上传状态变化，供外部同步提交按钮的禁用态。 */
-  onStateChange?: (state: { canSubmit: boolean; busy: boolean }) => void;
+  /** 提交按钮的 testid（回复编辑器用 reply-submit；发帖箱默认 composer-submit）。 */
+  submitTestId?: string;
 }
 
 function extOf(name: string): string {
@@ -154,9 +150,7 @@ export function PostComposer({
   submitLabel,
   showTabs = true,
   tall = false,
-  hideSubmit = false,
-  submitRef,
-  onStateChange,
+  submitTestId = "composer-submit",
 }: PostComposerProps) {
   const { client, accounts, staticMode } = useConnection();
   const key = draftKey ?? draftKeyOf(mode, parentId);
@@ -473,24 +467,6 @@ export function PostComposer({
     }
   };
 
-  // 外部标题栏提交：始终调用最新一次渲染的 submit（闭包捕获当前正文/附件）。
-  const submitLatest = useRef<() => void>(() => {});
-  submitLatest.current = () => void submit();
-  useEffect(() => {
-    if (!submitRef) return;
-    submitRef.current = () => submitLatest.current();
-    return () => {
-      submitRef.current = null;
-    };
-  }, [submitRef]);
-
-  const canSubmit = Boolean(body.trim()) && !busy && !uploadsPending && !uploadError;
-  const stateReporter = useRef(onStateChange);
-  stateReporter.current = onStateChange;
-  useEffect(() => {
-    stateReporter.current?.({ canSubmit, busy });
-  }, [canSubmit, busy]);
-
   if (staticMode) {
     return (
       <div
@@ -738,20 +714,16 @@ export function PostComposer({
         </InputGroupButton>
         <InputGroupText className="hidden text-xs sm:flex">可拖拽文件到这里</InputGroupText>
         <div className="ml-auto flex items-center gap-2">
-          {hideSubmit ? (
-            <InputGroupText className="text-xs">{body.length.toLocaleString()} 字</InputGroupText>
-          ) : (
-            <InputGroupButton
-              type="button"
-              size="sm"
-              data-testid="composer-submit"
-              disabled={busy || uploadsPending || !body.trim()}
-              onClick={() => void submit()}
-            >
-              {busy ? <Loader2Icon data-icon="inline-start" className="animate-spin" /> : <SendIcon data-icon="inline-start" />}
-              {submitLabel ?? (mode === "post" ? "发布" : "回复")}
-            </InputGroupButton>
-          )}
+          <InputGroupButton
+            type="button"
+            size="sm"
+            data-testid={submitTestId}
+            disabled={busy || uploadsPending || !body.trim()}
+            onClick={() => void submit()}
+          >
+            {busy ? <Loader2Icon data-icon="inline-start" className="animate-spin" /> : <SendIcon data-icon="inline-start" />}
+            {submitLabel ?? (mode === "post" ? "发布" : "回复")}
+          </InputGroupButton>
         </div>
       </InputGroupAddon>
       </InputGroup>

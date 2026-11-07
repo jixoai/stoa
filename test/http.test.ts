@@ -354,6 +354,69 @@ describe("HTTP API (report-surface: health/CORS/SEED)", () => {
     }
   });
 
+  test("notification history: read flags, before pagination and visibility", async () => {
+    const { t, app } = buildApp({ mode: "open" });
+    try {
+      createAgents(t.store, ["a", "b", "c"]);
+      const onlyB = t.store.commitOps({
+        author: "a",
+        batchId: "Q1",
+        ops: [{ op: "post", body: "history for b @b" }],
+      }).posts[0]!;
+      t.store.commitOps({
+        author: "a",
+        batchId: "Q2",
+        ops: [{ op: "post", body: "history for c @c" }],
+      });
+      const headers = { "x-report-account": "b" };
+      const first = await json(
+        await app.request("/api/notifications/history?limit=1", { headers }),
+      );
+      const firstEvents = first.events as Array<{ seq: number; read: boolean; root_id: string }>;
+      expect(firstEvents).toHaveLength(1);
+      expect(firstEvents[0]!.read).toBe(false);
+      expect(firstEvents[0]!.root_id).toBe(onlyB.id);
+      expect(first.has_more).toBe(true);
+      const before = first.next_before as number;
+      const second = await json(
+        await app.request(`/api/notifications/history?limit=1&before=${before}`, { headers }),
+      );
+      const secondEvents = second.events as Array<{ seq: number }>;
+      expect(secondEvents[0]!.seq).toBeLessThan(before);
+
+      const cHistory = await json(
+        await app.request("/api/notifications/history?limit=100", {
+          headers: { "x-report-account": "c" },
+        }),
+      );
+      expect(
+        (cHistory.events as Array<{ root_id: string }>).some((event) => event.root_id === onlyB.id),
+      ).toBe(false);
+
+      const all = await json(
+        await app.request("/api/notifications/history?limit=100", { headers }),
+      );
+      const allEvents = all.events as Array<{ seq: number; read: boolean }>;
+      const target = allEvents.reduce((max, event) => Math.max(max, event.seq), 0);
+      await app.request("/api/notifications/ack", {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      const readBack = await json(
+        await app.request("/api/notifications/history?limit=100", { headers }),
+      );
+      expect((readBack.events as Array<{ read: boolean }>).every((event) => event.read)).toBe(true);
+      expect(readBack.cursor).toBe(target);
+
+      expect(
+        (await app.request("/api/notifications/history?before=nope", { headers })).status,
+      ).toBe(400);
+    } finally {
+      t.close();
+    }
+  });
+
   test("accounts endpoints never return tokens", async () => {
     const { t, app } = buildApp({ mode: "open" });
     try {

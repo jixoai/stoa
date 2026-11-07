@@ -675,6 +675,24 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
+  // 历史列表（始终可见）：已读/未读一并返回，read 由账号游标判定；纯读，不推进游标。
+  app.get("/api/notifications/history", (c) => {
+    const account = identity(c, deps);
+    const limit = optionalInt(c, "limit");
+    const before = optionalInt(c, "before");
+    const page = deps.store.notificationHistory(account.id, {
+      limit: limit ?? 50,
+      before,
+    });
+    return c.json({
+      ok: true,
+      events: page.events,
+      cursor: page.cursor,
+      has_more: page.has_more,
+      next_before: page.next_before,
+    });
+  });
+
   app.post("/api/notifications/ack", async (c) => {
     const account = identity(c, deps);
     const body = await readJson(c);

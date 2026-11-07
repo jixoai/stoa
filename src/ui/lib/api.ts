@@ -14,6 +14,7 @@ import type {
   FeedPage,
   FeedTab,
   NotificationEventLine,
+  NotificationHistoryPage,
   NotificationLine,
   PostView,
   ProfilePage,
@@ -458,6 +459,16 @@ export class ReportClient {
       cursor: number;
       role: Account["role"];
     };
+  }
+
+  async notificationHistory(
+    opts: { limit?: number; before?: number | null } = {},
+  ): Promise<NotificationHistoryPage> {
+    const params = new URLSearchParams();
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.before !== undefined && opts.before !== null) params.set("before", String(opts.before));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return (await this.request(`/api/notifications/history${suffix}`)) as NotificationHistoryPage;
   }
 
   async ackNotifications(target: number): Promise<number> {

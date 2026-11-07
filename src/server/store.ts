@@ -24,6 +24,7 @@ import {
 } from "../core/pagination.ts";
 import { assembleThread } from "../core/thread.ts";
 import { isGlobalRole, visibleRootsClause } from "../core/visibility.ts";
+import { NOTIFICATION_TYPES } from "../core/types.ts";
 import {
   assertCanAppend,
   parseDraftItems,
@@ -45,6 +46,7 @@ import type {
   MediaRef,
   MediaRow,
   NotificationEventLine,
+  NotificationHistoryPage,
   NotificationLine,
   NotificationSnapshot,
   Post,
@@ -1182,7 +1184,8 @@ export class Store {
    * the other (each call carries its own `before`), so switching tabs restarts
    * from that tab's head.
    *
-   *  - recommended: roots tagged `result`, or roots that mention `owner`;
+   *  - recommended: roots tagged `result`, roots that mention `owner`, or roots authored
+   *    by the viewer themselves (Owner 2026-11-07：本人帖应当出现在自己的推荐流里);
    *  - following: roots authored by accounts the viewer follows.
    *
    * Visibility is applied with the same clause as every other read path:
@@ -1207,9 +1210,9 @@ export class Store {
       // tags are stored as JSON text by our own writer (validated charset, no
       // quotes), so the quoted-substring match is exact for our data.
       clauses.push(
-        `(tags LIKE ? ESCAPE '\\' OR id IN (SELECT post_id FROM mentions WHERE account_id = 'owner'))`,
+        `(tags LIKE ? ESCAPE '\\' OR id IN (SELECT post_id FROM mentions WHERE account_id = 'owner') OR author = ?)`,
       );
-      params.push('%"result"%');
+      params.push('%"result"%', opts.viewer.id);
     } else {
       clauses.push("author IN (SELECT followee_id FROM follows WHERE follower_id = ?)");
       params.push(opts.viewer.id);
@@ -1708,6 +1711,72 @@ export class Store {
       throw err;
     }
     return { lines, target, cursor, role: account.role };
+  }
+
+  /**
+   * 通知历史（「始终可见列表」的服务端分页）：该账号可见的事件，按 seq 倒序，
+   * `read` = 事件 seq ≤ 该账号游标。与 `notificationLines` 同口径：REST 排除本人
+   * 事件、可见性走 `visibleRootsClause`。纯读接口：不推进游标、不改 schema——
+   * 游标推进仍只由「全部已读」的 ack 承担。
+   */
+  notificationHistory(
+    accountId: string,
+    opts: { limit?: number; before?: number | null } = {},
+  ): NotificationHistoryPage {
+    const account = this.requireActiveAccount(accountId);
+    const limit = Math.min(Math.max(opts.limit ?? 50, 1), 100);
+    const cursor = this.getCursor(accountId);
+    const vis = visibleRootsClause(account.role, accountId);
+    const before = opts.before ?? null;
+    // 只读「通知类」事件：event-hub 的 post.deleted 等非通知事件不混进历史列表。
+    const clauses = [
+      `type IN (${NOTIFICATION_TYPES.map(() => "?").join(",")})`,
+      "actor != ?",
+      vis.sql,
+    ];
+    const params: Bindings = [...NOTIFICATION_TYPES, accountId, ...(vis.params as Bindings)];
+    if (before !== null) {
+      if (!Number.isInteger(before) || before < 0) {
+        fail("BAD_REQUEST", "before must be a non-negative integer seq");
+      }
+      clauses.push("seq < ?");
+      params.push(before);
+    }
+    const rows = all<EventRow>(
+      this.db,
+      `SELECT * FROM events
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY seq DESC LIMIT ?`,
+      ...params,
+      limit + 1,
+    );
+    const page = rows.slice(0, limit);
+    const events = page.map((event) => {
+      let payload: unknown = {};
+      try {
+        payload = JSON.parse(event.payload_json);
+      } catch {
+        payload = {};
+      }
+      return {
+        seq: event.seq,
+        type: event.type as NotificationEventLine["type"],
+        actor: event.actor,
+        post_id: event.post_id,
+        root_id: event.root_id,
+        batch_id: event.batch_id,
+        created_at: event.created_at,
+        payload,
+        read: event.seq <= cursor,
+      };
+    });
+    const hasMore = rows.length > limit;
+    return {
+      events,
+      cursor,
+      has_more: hasMore,
+      next_before: hasMore && page.length > 0 ? page[page.length - 1]!.seq : null,
+    };
   }
 
   // ── media ───────────────────────────────────────────────────────────────────

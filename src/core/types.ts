@@ -67,6 +67,12 @@ export interface Mention {
 
 export type EventType = "post.created" | "thread.invited";
 
+/**
+ * 进入通知列表的事件类型（单一信源）：history 只读这些类型；event-hub 新增
+ * 通知类事件（如 `post.deleted`）时先扩 EventType 再改这里。
+ */
+export const NOTIFICATION_TYPES: readonly EventType[] = ["post.created", "thread.invited"];
+
 export interface ReportEvent {
   seq: number;
   type: EventType;
@@ -276,6 +282,20 @@ export interface NotificationSnapshot {
   target: number | null;
   cursor: number;
   role: Role;
+}
+
+/** 历史列表的一行：事件 + 服务端游标口径的已读标记（seq ≤ cursor）。 */
+export interface NotificationHistoryLine extends NotificationEventLine {
+  read: boolean;
+}
+
+export interface NotificationHistoryPage {
+  events: NotificationHistoryLine[];
+  /** 该账号当前游标（read 标记的判定基准） */
+  cursor: number;
+  has_more: boolean;
+  /** 下一页 `before`（把本页最旧一条的 seq 传回去），没有更多时为 null */
+  next_before: number | null;
 }
 
 export interface WhoEntry extends AuthorView {

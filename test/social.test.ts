@@ -63,6 +63,23 @@ describe("P9 social model (store)", () => {
     }
   });
 
+  test("推荐流含本人根帖：owner 自己的无标签根帖进自己的推荐流，对他人不可见", () => {
+    const t = makeStore({ clock: () => T0 });
+    try {
+      createAgents(t.store, ["a"]);
+      const mine = post(t, "owner", "我自己的进展：推荐流里应该能看到这条。", ["note"]);
+      // 注意：正文不能出现 "@owner" 字样，否则会被 mentions 提取（推荐流的另一条入口）。
+      const other = post(t, "a", "普通进展：既无标签也无提及。", ["note"]);
+      const mineFeed = t.store.feed({ viewer: OWNER, tab: "recommended" });
+      expect(mineFeed.posts.map((p) => p.id)).toEqual([mine.posts[0]!.id]);
+      const otherViewer = { id: "a", role: "agent" as const };
+      const otherFeed = t.store.feed({ viewer: otherViewer, tab: "recommended" });
+      expect(otherFeed.posts.map((p) => p.id)).toEqual([other.posts[0]!.id]);
+    } finally {
+      t.close();
+    }
+  });
+
   test("tabs paginate independently: switching tabs restarts from that tab's head", () => {
     let now = T0;
     const t = makeStore({ clock: () => now });
