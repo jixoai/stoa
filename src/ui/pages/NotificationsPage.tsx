@@ -42,6 +42,21 @@ export function NotificationsPage() {
 
   const actorOf = (event: NotificationEventLine) => accounts.find((row) => row.id === event.actor) ?? null;
 
+  // 通知 → 详情也要有 shared-element：仅当「展示的头像就是目标帖作者」且同一帖只登记一次。
+  const sharedBySeq = useMemo(() => {
+    const seen = new Set<string>();
+    const map = new Map<number, string>();
+    for (const item of notifications.items) {
+      const post = item.post;
+      if (!post || item.deleted) continue;
+      if (post.author !== item.event.actor) continue;
+      if (seen.has(post.id)) continue;
+      seen.add(post.id);
+      map.set(item.event.seq, post.id);
+    }
+    return map;
+  }, [notifications.items]);
+
   const renderRow = (item: NotificationItem) => {
     const { event, post } = item;
     const actor = actorOf(event);
@@ -67,9 +82,17 @@ export function NotificationsPage() {
           if (item.targetId) navigate(`/p/${encodeURIComponent(item.targetId)}`);
         }}
       >
-        <AuthorAvatar account={actor} fallbackId={event.actor} />
+        <AuthorAvatar
+          account={actor}
+          fallbackId={event.actor}
+          sharedId={sharedBySeq.get(event.seq)}
+        />
         <div className="min-w-0 flex-1">
-          <AuthorLine account={actor} fallbackId={event.actor} />
+          <AuthorLine
+            account={actor}
+            fallbackId={event.actor}
+            sharedId={sharedBySeq.get(event.seq)}
+          />
           <div className="mt-0.5 text-sm">
             <span className="font-medium">{eventText(event, item)}</span>
             <span className="ml-1 text-xs text-muted-foreground">{dateTimeShort(event.created_at)}</span>

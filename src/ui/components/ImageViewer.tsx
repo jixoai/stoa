@@ -9,7 +9,6 @@
  * - 加载中骨架、失败重试；关闭只卸载覆盖层，不改变列表布局与滚动位置。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import type { MediaRef } from "@core/types";
 import { cn } from "cn";
 import {
@@ -21,7 +20,9 @@ import {
   XIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useBackClose } from "@/lib/back-close";
 import { useConnection } from "@/state/connection";
 import { mediaFileName, mediaKind, useMediaUrl } from "@/lib/media";
 
@@ -194,6 +195,9 @@ export function ImageViewer({ media, index, onIndexChange, onClose }: ImageViewe
     setClosing(true);
     window.setTimeout(onClose, 160);
   }, [closing, onClose]);
+
+  // 平台关闭请求（Android 返回键/手势）先关预览层，而不是让路由后退。
+  useBackClose(true, closeNow);
 
   // 切换图片时重置缩放/位移。
   useEffect(() => {
@@ -413,14 +417,17 @@ export function ImageViewer({ media, index, onIndexChange, onClose }: ImageViewe
   const chromeOpacity = Math.max(0, 1 - dragY / 260);
   const zoomed = view.scale > 1.05;
 
-  return createPortal(
+  return (
+    <Dialog open onOpenChange={(open) => { if (!open) closeNow(); }}>
+      <DialogContent
+        showCloseButton={false}
+        className="inset-0 top-0 left-0 h-dvh w-screen max-w-none translate-x-0 translate-y-0 gap-0 rounded-none bg-transparent p-0 text-inherit ring-0 shadow-none duration-0 data-open:animate-none data-closed:animate-none"
+      >
+        <DialogTitle className="sr-only">媒体查看器</DialogTitle>
     <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="媒体查看器"
       data-testid="image-viewer"
       className={cn(
-        "fixed inset-0 z-[100] select-none transition-opacity duration-150",
+        "absolute inset-0 z-10 select-none transition-opacity duration-150",
         closing && "opacity-0",
       )}
       style={{ touchAction: "none" }}
@@ -529,7 +536,8 @@ export function ImageViewer({ media, index, onIndexChange, onClose }: ImageViewe
           ) : null}
         </div>
       ) : null}
-    </div>,
-    document.body,
+    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

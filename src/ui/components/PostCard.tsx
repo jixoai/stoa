@@ -76,7 +76,9 @@ export function PostCard({
   const longPressed = useRef(false);
   const deleted = post.deleted_at !== null;
   const author = post.author_account;
-  const canShare = variant === "feed" || variant === "focal";
+  // 所有可点击进入详情的卡片都参与共享元素：feed/focal/reply/ancestor。
+  const canShare =
+    variant === "feed" || variant === "focal" || variant === "reply" || variant === "ancestor";
 
   const canClamp = variant === "feed" && !deleted;
   const longBody = post.body_md.length > 420 || post.body_md.split("\n").length > 6;
