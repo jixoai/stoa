@@ -8,7 +8,12 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useConnection } from "@/state/connection";
 
@@ -55,24 +60,36 @@ export function LoginGate() {
           <form onSubmit={submit} className="flex flex-col gap-3">
             <label className="flex flex-col gap-1 text-sm">
               <span className="text-muted-foreground">FDE2E_REPORT_AUTH</span>
-              <Input
-                type="password"
-                value={secret}
-                onChange={(event) => setSecret(event.target.value)}
-                placeholder="输入实例密码"
-                autoFocus
-                data-testid="login-secret"
-              />
+              <InputGroup>
+                <InputGroupInput
+                  type="password"
+                  value={secret}
+                  onChange={(event) => setSecret(event.target.value)}
+                  placeholder="输入实例密码"
+                  autoFocus
+                  data-testid="login-secret"
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton
+                    type="submit"
+                    variant="default"
+                    size="sm"
+                    disabled={busy || !secret}
+                    data-testid="login-submit"
+                  >
+                    {busy ? (
+                      <Loader2Icon data-icon="inline-start" className="animate-spin" />
+                    ) : null}
+                    登录
+                  </InputGroupButton>
+                </InputGroupAddon>
+              </InputGroup>
             </label>
             {loginError ? (
               <Alert variant="destructive">
                 <AlertDescription>{loginError}</AlertDescription>
               </Alert>
             ) : null}
-            <Button type="submit" disabled={busy || !secret} data-testid="login-submit">
-              {busy ? <Loader2Icon data-icon="inline-start" className="animate-spin" /> : null}
-              登录
-            </Button>
             <Button type="button" variant="ghost" size="sm" onClick={switchBackend}>
               切换后端
             </Button>

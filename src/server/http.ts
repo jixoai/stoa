@@ -37,7 +37,7 @@ export function corsHeaders(origin: string | undefined): Record<string, string> 
   if (!origin || !isAllowedOrigin(origin)) return {};
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET,POST,DELETE,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "authorization, content-type, x-report-account",
     "Access-Control-Max-Age": "600",
     Vary: "Origin",
@@ -447,6 +447,40 @@ export function createApp(deps: AppDeps): Hono {
     const target = c.req.param("account");
     const removed = deps.store.unfollow(account.id, target);
     return c.json({ ok: true, follower: account.id, followee: target, following: false, removed });
+  });
+
+  // ── bookmarks（收藏；账号私有，列表仍过滤可见性）────────────────────────
+  app.get("/api/bookmarks/ids", (c) => {
+    const account = identity(c, deps);
+    return c.json({ ok: true, ids: deps.store.bookmarkedIds(account.id) });
+  });
+
+  app.get("/api/bookmarks", (c) => {
+    const account = identity(c, deps);
+    const page = deps.store.bookmarks({
+      viewer: viewer(account),
+      limit: parseLimit(c.req.query("limit"), 20, 100),
+      before: c.req.query("before") ?? null,
+      after: c.req.query("after") ?? null,
+    });
+    return c.json({ ok: true, ...page });
+  });
+
+  app.put("/api/bookmarks/:id", (c) => {
+    const account = identity(c, deps);
+    const postId = c.req.param("id");
+    const res = deps.store.bookmark(account.id, postId);
+    return c.json(
+      { ok: true, post_id: postId, account: account.id, bookmarked: true, created: res.created, created_at: res.created_at },
+      res.created ? 201 : 200,
+    );
+  });
+
+  app.delete("/api/bookmarks/:id", (c) => {
+    const account = identity(c, deps);
+    const postId = c.req.param("id");
+    const removed = deps.store.unbookmark(account.id, postId);
+    return c.json({ ok: true, post_id: postId, account: account.id, bookmarked: false, removed });
   });
 
   app.get("/api/thread/:id", (c) => {

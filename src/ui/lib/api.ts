@@ -104,7 +104,7 @@ export class AuthError extends ApiError {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "DELETE";
   body?: unknown;
   auth?: boolean;
   signal?: AbortSignal;
@@ -343,6 +343,36 @@ export class ReportClient {
       ok: boolean;
     } & ReadPage;
     return data;
+  }
+
+  /** 收藏：当前账号已收藏的帖子 id（按钮态用）。 */
+  async bookmarkIds(): Promise<string[]> {
+    const data = (await this.request("/api/bookmarks/ids")) as { ids?: string[] };
+    return Array.isArray(data.ids) ? data.ids : [];
+  }
+
+  /** 收藏列表（按帖子时间倒序，含回复）。 */
+  async bookmarks(opts: { before?: string | null; after?: string | null; limit?: number } = {}): Promise<TimelinePage> {
+    const params = new URLSearchParams();
+    if (opts.before) params.set("before", opts.before);
+    if (opts.after) params.set("after", opts.after);
+    params.set("limit", String(opts.limit ?? 30));
+    const data = (await this.request(`/api/bookmarks?${params.toString()}`)) as {
+      ok: boolean;
+    } & TimelinePage;
+    return data;
+  }
+
+  async bookmark(postId: string): Promise<{ bookmarked: boolean }> {
+    return (await this.request(`/api/bookmarks/${encodeURIComponent(postId)}`, {
+      method: "PUT",
+    })) as { bookmarked: boolean };
+  }
+
+  async unbookmark(postId: string): Promise<{ bookmarked: boolean }> {
+    return (await this.request(`/api/bookmarks/${encodeURIComponent(postId)}`, {
+      method: "DELETE",
+    })) as { bookmarked: boolean };
   }
 
   async thread(id: string, focal?: string | null): Promise<ThreadView> {

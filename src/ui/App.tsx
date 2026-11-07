@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toast";
 import { ConnectionProvider, useConnection } from "@/state/connection";
 import { HomeFeedsProvider } from "@/state/feed";
 import { NotificationsProvider } from "@/state/notifications";
+import { BookmarksProvider } from "@/state/bookmarks";
 import { LandingPage } from "@/pages/LandingPage";
 import { LoginGate } from "@/pages/LoginGate";
 import { AppShell } from "@/components/AppShell";
@@ -48,9 +49,11 @@ function ErrorScreen() {
 function ReadyApp() {
   return (
     <HomeFeedsProvider>
-      <NotificationsProvider>
-        <AppShell />
-      </NotificationsProvider>
+      <BookmarksProvider>
+        <NotificationsProvider>
+          <AppShell />
+        </NotificationsProvider>
+      </BookmarksProvider>
     </HomeFeedsProvider>
   );
 }

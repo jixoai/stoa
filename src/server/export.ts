@@ -79,6 +79,8 @@ export interface SnapshotAccount {
 
 export interface Snapshot {
   version: 1;
+  /** 导出 viewer 的收藏帖子 id（静态归档只读展示）。 */
+  bookmarks: string[];
   as_of_seq: number;
   viewer: string;
   accounts: SnapshotAccount[];
@@ -185,6 +187,7 @@ export function buildSnapshot(store: Store, viewerId = "owner"): Snapshot {
     follows,
     posts: snapshotPosts,
     participants: store.participantsForRoots(rootIds),
+    bookmarks: store.bookmarkedIds(viewerId),
     media: [...mediaByKey.values()].sort(
       (a, b) => a.hash.localeCompare(b.hash) || a.ext.localeCompare(b.ext),
     ),

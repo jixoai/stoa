@@ -4,7 +4,12 @@ import { HashIcon, SearchIcon, UserCheckIcon } from "lucide-react";
 import { cn } from "cn";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -116,22 +121,25 @@ export function SearchPage() {
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader title="搜索" />
       <div className="border-b border-border/60 p-3">
-        <form onSubmit={submit} className="flex gap-2">
-          <div className="relative flex-1">
-            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
+        <form onSubmit={submit}>
+          <InputGroup>
+            <InputGroupAddon>
+              <SearchIcon />
+            </InputGroupAddon>
+            <InputGroupInput
               ref={inputRef}
               value={input}
               onChange={(event) => setInput(event.target.value)}
               placeholder="搜索正文 / 作者 / 成员…"
-              className="pl-8"
               data-testid="search-input"
               autoFocus
             />
-          </div>
-          <Button type="submit" size="sm">
-            搜索
-          </Button>
+            <InputGroupAddon align="inline-end">
+              <InputGroupButton type="submit" variant="default" size="sm">
+                搜索
+              </InputGroupButton>
+            </InputGroupAddon>
+          </InputGroup>
         </form>
       </div>
 

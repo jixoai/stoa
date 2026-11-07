@@ -9,7 +9,12 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from "@/components/ui/input-group";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -86,18 +91,30 @@ export function LandingPage() {
               <CardDescription>只接受 https，或本机回环 http://localhost / 127.0.0.1</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
-              <form onSubmit={submit} className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  value={value}
-                  onChange={(event) => setValue(event.target.value)}
-                  placeholder="https://local-…  或  http://127.0.0.1:<端口>"
-                  aria-label="后端地址"
-                  data-testid="ep-input"
-                  autoFocus
-                />
-                <Button type="submit" data-testid="ep-connect">
-                  连接 <ArrowRightIcon data-icon="inline-end" />
-                </Button>
+              <form onSubmit={submit}>
+                <InputGroup>
+                  <InputGroupAddon>
+                    <ServerIcon />
+                  </InputGroupAddon>
+                  <InputGroupInput
+                    value={value}
+                    onChange={(event) => setValue(event.target.value)}
+                    placeholder="https://local-…  或  http://127.0.0.1:<端口>"
+                    aria-label="后端地址"
+                    data-testid="ep-input"
+                    autoFocus
+                  />
+                  <InputGroupAddon align="inline-end">
+                    <InputGroupButton
+                      type="submit"
+                      variant="default"
+                      size="sm"
+                      data-testid="ep-connect"
+                    >
+                      连接 <ArrowRightIcon data-icon="inline-end" />
+                    </InputGroupButton>
+                  </InputGroupAddon>
+                </InputGroup>
               </form>
               {shownError ? (
                 <Alert variant="destructive">

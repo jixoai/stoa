@@ -112,6 +112,10 @@ export class ApiClient {
     return this.request<T>({ path, method: "POST", body: body ?? {}, timeoutMs });
   }
 
+  put<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>({ path, method: "PUT", body: body ?? {} });
+  }
+
   delete<T = Record<string, unknown>>(path: string): Promise<T> {
     return this.request<T>({ path, method: "DELETE" });
   }

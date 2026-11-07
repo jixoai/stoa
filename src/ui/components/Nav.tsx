@@ -2,6 +2,7 @@ import { useState } from "react";
 import { cn } from "cn";
 import {
   BellIcon,
+  BookmarkIcon,
   ChevronDownIcon,
   HomeIcon,
   LockIcon,
@@ -11,6 +12,7 @@ import {
   SearchIcon,
   ServerIcon,
   SunIcon,
+  UserRoundIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -27,6 +29,7 @@ import {
 import { useConnection } from "@/state/connection";
 import { useNotifications } from "@/state/notifications";
 import { navigate, navigateTab, useRoute } from "@/lib/router";
+import { useTheme } from "@/lib/theme";
 import { displayCount } from "@/lib/format";
 import { toastReadOnly } from "@/lib/readonly";
 
@@ -50,21 +53,6 @@ function useActiveKey(): NavItem["key"] {
   if (route.name === "notifications") return "notifications";
   if (route.name === "compose") return "compose";
   return "home";
-}
-
-function useTheme() {
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
-  const toggle = () => {
-    const next = !document.documentElement.classList.contains("dark");
-    document.documentElement.classList.toggle("dark", next);
-    try {
-      localStorage.setItem("report.theme", next ? "dark" : "light");
-    } catch {
-      // ignore
-    }
-    setDark(next);
-  };
-  return { dark, toggle };
 }
 
 export function DesktopNav() {
@@ -137,6 +125,15 @@ export function DesktopNav() {
           <DropdownMenuContent align="start" className="w-56">
             <DropdownMenuGroup>
               <DropdownMenuLabel>@{account?.id ?? "unknown"}</DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => navigate(`/u/${encodeURIComponent(account?.id ?? "")}`)}
+              >
+                <UserRoundIcon className="size-4" /> 个人资料
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => navigate("/bookmarks")}>
+                <BookmarkIcon className="size-4" /> 收藏
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={toggle}>
                 {dark ? <SunIcon className="size-4" /> : <MoonIcon className="size-4" />}
                 {dark ? "切换到浅色" : "切换到深色"}

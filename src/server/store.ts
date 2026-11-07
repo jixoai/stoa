@@ -1548,6 +1548,96 @@ export class Store {
     this.notifyChange();
   }
 
+  // ── bookmarks（收藏；按账号私有，读路径仍受可见性约束）─────────────────────
+
+  bookmark(accountId: string, postId: string): { created: boolean; created_at: number } {
+    const viewer: Viewer = { id: accountId, role: this.accountRole(accountId) };
+    const vis = visibleRootsClause(viewer.role, viewer.id);
+    const row = get<{ id: string }>(
+      this.db,
+      `SELECT id FROM posts WHERE id = ? AND deleted_at IS NULL AND ${vis.sql}`,
+      postId,
+      ...(vis.params as Bindings),
+    );
+    if (!row) fail("NOT_FOUND", `post "${postId}" not found or not visible`);
+    const existing = get<{ created_at: number }>(
+      this.db,
+      "SELECT created_at FROM bookmarks WHERE account_id = ? AND post_id = ?",
+      accountId,
+      postId,
+    );
+    if (existing) return { created: false, created_at: existing.created_at };
+    const now = this.clock();
+    run(
+      this.db,
+      "INSERT INTO bookmarks(account_id, post_id, created_at) VALUES (?, ?, ?)",
+      accountId,
+      postId,
+      now,
+    );
+    return { created: true, created_at: now };
+  }
+
+  unbookmark(accountId: string, postId: string): boolean {
+    const res = run(
+      this.db,
+      "DELETE FROM bookmarks WHERE account_id = ? AND post_id = ?",
+      accountId,
+      postId,
+    );
+    return res.changes > 0;
+  }
+
+  bookmarkedIds(accountId: string): string[] {
+    return all<{ post_id: string }>(
+      this.db,
+      "SELECT post_id FROM bookmarks WHERE account_id = ? ORDER BY created_at DESC, post_id DESC",
+      accountId,
+    ).map((row) => row.post_id);
+  }
+
+  /** 收藏列表：被该账号收藏且仍可见的帖子（根帖与回复都算），按帖子时间倒序。 */
+  bookmarks(opts: {
+    viewer: Viewer;
+    limit?: number;
+    before?: string | null;
+    after?: string | null;
+  }): TimelinePage {
+    const limit = Math.min(opts.limit ?? 20, 100);
+    const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);
+    const keyset = keysetClause({ before: opts.before, after: opts.after });
+    const direction: PageDirection = keyset.direction;
+    const orderSql =
+      direction === "desc" ? "ORDER BY created_at DESC, id DESC" : "ORDER BY created_at ASC, id ASC";
+    const rows = all<PostRow>(
+      this.db,
+      `SELECT * FROM posts
+       WHERE deleted_at IS NULL AND ${vis.sql}
+         AND EXISTS (SELECT 1 FROM bookmarks b
+                     WHERE b.post_id = posts.id AND b.account_id = ?)
+         AND ${keyset.sql}
+       ${orderSql} LIMIT ?`,
+      ...(vis.params as Bindings),
+      opts.viewer.id,
+      ...(keyset.params as Bindings),
+      limit + 1,
+    );
+    const page = finalizePage(rows, limit);
+    return {
+      posts: this.hydratePosts(page.items, opts.viewer),
+      has_more: page.has_more,
+      next_cursor: page.next_cursor,
+      order: direction,
+      as_of_seq: this.maxEventSeq(),
+    };
+  }
+
+  private accountRole(accountId: string): Role {
+    const row = get<{ role: Role }>(this.db, "SELECT role FROM accounts WHERE id = ?", accountId);
+    if (!row) fail("NOT_FOUND", `account "${accountId}" not found`);
+    return row.role;
+  }
+
   // ── notifications ───────────────────────────────────────────────────────────
   /** Delivery lines (events + inline thread snapshots), in order. */
   notificationLines(

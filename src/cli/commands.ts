@@ -917,6 +917,57 @@ async function cmdFollowing(ctx: CliContext): Promise<number> {
   return 0;
 }
 
+async function cmdBookmark(ctx: CliContext): Promise<number> {
+  const account = resolveAccount(ctx, { required: true });
+  const postId = ctx.args.positionals[0]?.trim();
+  if (!postId) {
+    fail("BAD_REQUEST", "bookmark <postId> (or bookmark --remove <postId>) requires a post id");
+  }
+  const { client } = await makeClient(ctx, account);
+  const remove = hasFlag(ctx.args, "remove");
+  const path = `/api/bookmarks/${encodeURIComponent(postId)}`;
+  const res = remove
+    ? await client.delete<Record<string, unknown>>(path)
+    : await client.put<Record<string, unknown>>(path);
+  if (ctx.human) {
+    emitHuman(`${remove ? "removed bookmark" : "bookmarked"} ${postId} (as @${account})`);
+    return 0;
+  }
+  emit({ ok: true, post_id: postId, account, bookmarked: !remove, ...res });
+  return 0;
+}
+
+async function cmdBookmarks(ctx: CliContext): Promise<number> {
+  const account = resolveAccount(ctx, { required: true });
+  const { client } = await makeClient(ctx, account);
+  const params = new URLSearchParams();
+  for (const name of ["limit", "before", "after"] as const) {
+    const value = flagValue(ctx.args, name);
+    if (value !== null) params.set(name, value);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const res = await client.get<{
+    posts: Array<Record<string, unknown>>;
+    has_more: boolean;
+    next_cursor: string | null;
+    order: string;
+  }>(`/api/bookmarks${suffix}`);
+  if (ctx.human) {
+    if (res.posts.length === 0) emitHuman("(no bookmarks)");
+    for (const post of res.posts) emitHuman(`${postLine(post as never)}\n`);
+    if (res.has_more) emitHuman(`(more: --before ${res.next_cursor})`);
+    return 0;
+  }
+  emit({
+    ok: true,
+    order: res.order,
+    has_more: res.has_more,
+    next_cursor: res.next_cursor,
+    posts: res.posts.map((p) => summarizePost(p as never)),
+  });
+  return 0;
+}
+
 async function cmdProfile(ctx: CliContext): Promise<number> {
   const account = resolveAccount(ctx, { required: true });
   const target = ctx.args.positionals[0]?.trim();
@@ -1167,6 +1218,10 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
       return cmdFollow(ctx);
     case "following":
       return cmdFollowing(ctx);
+    case "bookmark":
+      return cmdBookmark(ctx);
+    case "bookmarks":
+      return cmdBookmarks(ctx);
     case "profile":
       return cmdProfile(ctx);
     case "wait-notifications":

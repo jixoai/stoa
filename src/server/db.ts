@@ -46,7 +46,7 @@ export function run(
   return { changes: Number(res.changes), lastInsertRowid: Number(res.lastInsertRowid) };
 }
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 function hasColumn(db: Database, table: string, column: string): boolean {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -175,6 +175,14 @@ export function migrate(db: Database): void {
       used INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS bookmarks (
+      account_id TEXT NOT NULL,
+      post_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (account_id, post_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_bookmarks_account ON bookmarks(account_id, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS follows (
       follower_id TEXT NOT NULL,

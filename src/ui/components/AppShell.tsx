@@ -10,6 +10,7 @@ import { TagPage } from "@/pages/TagPage";
 import { ThreadPage } from "@/pages/ThreadPage";
 import { SearchPage } from "@/pages/SearchPage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
+import { BookmarksPage } from "@/pages/BookmarksPage";
 import { ComposePage } from "@/pages/ComposePage";
 import {
   historyDepth,
@@ -28,6 +29,8 @@ function RootView({ route }: { route: Route }) {
       return <SearchPage />;
     case "notifications":
       return <NotificationsPage />;
+    case "bookmarks":
+      return <BookmarksPage />;
     default:
       return <HomePage />;
   }

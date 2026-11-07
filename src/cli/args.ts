@@ -19,6 +19,7 @@ const BOOLEAN_FLAGS = new Set([
   "tags",
   "unfollow",
   "follow",
+  "remove",
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -169,6 +170,8 @@ Usage:
   fde2e-report-worker discover --tags|--accounts [--limit N] --as A
   fde2e-report-worker follow <acct>|--unfollow <acct> --as A
   fde2e-report-worker following --as A
+  fde2e-report-worker bookmark <postId> [--remove] --as A
+  fde2e-report-worker bookmarks --as A [--limit N] [--before C] [--after C]
   fde2e-report-worker profile <acct> --as A [--follow]
   fde2e-report-worker wait-notifications --as A [--no-export] [--cursor C] [--timeout SEC]
   fde2e-report-worker draft ls|show <id>|resume <id>|discard <id>|commit <id> --as A

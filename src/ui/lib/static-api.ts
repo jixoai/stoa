@@ -72,6 +72,8 @@ export interface ReportSnapshot {
   version: number;
   as_of_seq: number;
   viewer: string;
+  /** 导出 viewer 的收藏帖子 id（只读展示）。 */
+  bookmarks?: string[];
   accounts: SnapshotAccount[];
   follows: Array<[string, string]>;
   posts: SnapshotPost[];
@@ -105,6 +107,7 @@ export function readReportSnapshot(): ReportSnapshot | null {
       version: typeof parsed.version === "number" ? parsed.version : 1,
       as_of_seq: typeof parsed.as_of_seq === "number" ? parsed.as_of_seq : 0,
       viewer: typeof parsed.viewer === "string" ? parsed.viewer : "owner",
+      bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks : [],
       accounts: Array.isArray(parsed.accounts) ? parsed.accounts : [],
       follows: Array.isArray(parsed.follows) ? parsed.follows : [],
       posts: parsed.posts as SnapshotPost[],
@@ -511,6 +514,42 @@ export class StaticReportClient extends ReportClient {
         return (b.last_post_at ?? 0) - (a.last_post_at ?? 0) || a.id.localeCompare(b.id);
       });
     return rows.slice(0, Math.max(1, Math.min(limit, 50)));
+  }
+
+  override async bookmarkIds(): Promise<string[]> {
+    return [...(this.snapshot.bookmarks ?? [])];
+  }
+
+  override async bookmarks(opts: {
+    before?: string | null;
+    after?: string | null;
+    limit?: number;
+  } = {}): Promise<TimelinePage> {
+    const ids = new Set(this.snapshot.bookmarks ?? []);
+    const rows = this.snapshot.posts.filter(
+      (post) =>
+        ids.has(post.id) && (post.deleted_at === null || post.deleted_at === undefined),
+    );
+    const page = slicePage(rows, {
+      before: opts.before,
+      after: opts.after,
+      limit: opts.limit ?? 30,
+    });
+    return {
+      posts: page.items.map((post) => this.hydrate(post)),
+      has_more: page.has_more,
+      next_cursor: page.next_cursor,
+      order: page.order,
+      as_of_seq: this.snapshot.as_of_seq,
+    };
+  }
+
+  override async bookmark(_postId: string): Promise<{ bookmarked: boolean }> {
+    throw readOnlyError();
+  }
+
+  override async unbookmark(_postId: string): Promise<{ bookmarked: boolean }> {
+    throw readOnlyError();
   }
 
   override async timeline(opts: {

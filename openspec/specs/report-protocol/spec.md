@@ -141,3 +141,15 @@ SHALL 省略这两个字段而不是返回 null。帖子视图的 `media[]` 与�
 #### Scenario: 老库自动回填
 - **WHEN** 升级后用旧数据目录启动服务
 - **THEN** 缺 `w/h` 的媒体行被逐个解析并写回，日志输出回填数量
+
+### Requirement: 收藏接口
+
+服务 SHALL 提供：`GET /api/bookmarks/ids`（当前账号的收藏 id 列表）、
+`GET /api/bookmarks?limit&before&after`（按帖子时间倒序的 keyset 分页）、
+`PUT /api/bookmarks/:id`（幂等新增，201/200 带 `created`）、
+`DELETE /api/bookmarks/:id`（幂等删除，带 `removed`）。
+CORS 预检 SHALL 在 `Access-Control-Allow-Methods` 中包含 `PUT`。
+
+#### Scenario: 公网壳调用
+- **WHEN** 页面在 `https://report.worker.fde2e.com` 跨域调用 `PUT /api/bookmarks/<id>`
+- **THEN** 预检通过（Allow-Methods 含 PUT），请求成功

@@ -20,7 +20,10 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  InputGroup,
+  InputGroupTextarea,
+} from "@/components/ui/input-group";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -476,8 +479,9 @@ export function PostComposer({
       onDrop={onDrop}
       data-testid="composer"
     >
-      <Tabs value={tab} onValueChange={(value) => setTab(value as "write" | "preview")}>
-        <div className="flex items-center justify-between">
+      <InputGroup className="h-auto flex-col items-stretch gap-0">
+      <Tabs value={tab} onValueChange={(value) => setTab(value as "write" | "preview")} className="gap-0">
+        <div className="flex items-center justify-between border-b border-border/60 px-2 py-1">
           <TabsList variant="line" aria-label="编辑与预览">
             <TabsTrigger value="write">撰写</TabsTrigger>
             <TabsTrigger value="preview">预览</TabsTrigger>
@@ -488,8 +492,8 @@ export function PostComposer({
         </div>
 
         <TabsContent value="write">
-          <div className="relative">
-            <Textarea
+          <div className="relative px-3 py-2">
+            <InputGroupTextarea
               ref={textareaRef}
               value={body}
               onChange={onChange}
@@ -504,7 +508,7 @@ export function PostComposer({
                   ? "有什么要说？@ 提及某人，# 标注标签…"
                   : "发布你的回复…（支持 markdown，@ 提及，# 标签）")
               }
-              className={cn("min-h-28 resize-y", compact && "min-h-20")}
+              className={cn("min-h-28 px-0 py-0", compact && "min-h-20")}
               data-testid="composer-input"
             />
 
@@ -602,14 +606,14 @@ export function PostComposer({
         </TabsContent>
 
         <TabsContent value="preview">
-          <div className="min-h-20 rounded-lg bg-muted/30 px-3 py-2" data-testid="composer-preview">
+          <div className="mx-3 my-2 min-h-20 rounded-lg bg-muted/30 px-3 py-2" data-testid="composer-preview">
             {body.trim() ? <Markdown source={body} /> : <span className="text-sm text-muted-foreground">（空）</span>}
           </div>
         </TabsContent>
       </Tabs>
 
       {quotedPost ? (
-        <Card className="relative gap-1 p-3" data-testid="composer-quote">
+        <Card className="relative mx-2 mb-2 gap-1 p-3" data-testid="composer-quote">
           <div className="flex items-start justify-between gap-2">
             <AuthorLine
               account={quotedPost.author_account}
@@ -629,7 +633,7 @@ export function PostComposer({
       ) : null}
 
       {items.length > 0 ? (
-        <div className="grid grid-cols-2 gap-2">
+        <div className="mx-2 mb-2 grid grid-cols-2 gap-2">
           {items.map((item) => (
             <div key={item.id} className="relative overflow-hidden rounded-xl border border-border bg-muted/40">
               {item.previewUrl ? (
@@ -665,7 +669,7 @@ export function PostComposer({
         </Alert>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-2 py-1.5">
         <Input
           ref={fileRef}
           type="file"
@@ -704,6 +708,7 @@ export function PostComposer({
           </Button>
         </div>
       </div>
+      </InputGroup>
     </div>
   );
 }

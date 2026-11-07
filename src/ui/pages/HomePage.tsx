@@ -13,8 +13,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
 import { InfoSheet } from "@/components/InfoSheet";
+import { AccountSheet } from "@/components/AccountSheet";
+import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { useHomeFeeds } from "@/state/feed";
+import { useConnection } from "@/state/connection";
 import { navigate, usePageRoute } from "@/lib/router";
 
 const EMPTY: Record<FeedTab, { title: string; description: string }> = {
@@ -42,18 +45,26 @@ export function HomePage() {
 
   const empty = useMemo(() => EMPTY[tab], [tab]);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const { account, who, accounts } = useConnection();
+  const meRow = who.find((row) => row.id === account?.id) ?? accounts.find((row) => row.id === account?.id) ?? null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         title="主页"
         mobileBrand={
-          <span className="flex items-center gap-2" data-testid="home-brand">
-            <span className="glass-primary flex size-7 items-center justify-center rounded-lg text-sm font-semibold text-primary-foreground">
-              R
-            </span>
-            <span className="text-sm font-semibold">report</span>
-          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-9 rounded-full p-0"
+            aria-label="账号菜单"
+            title={`@${account?.id ?? "unknown"} · 账号菜单`}
+            data-testid="home-account-button"
+            onClick={() => setAccountOpen(true)}
+          >
+            <AuthorAvatar account={meRow} fallbackId={account?.id ?? "?"} size="small" />
+          </Button>
         }
         mobileActions={
           <Button
@@ -90,6 +101,11 @@ export function HomePage() {
       />
 
       <InfoSheet open={infoOpen} onOpenChange={setInfoOpen} />
+      <AccountSheet
+        open={accountOpen}
+        onOpenChange={setAccountOpen}
+        onOpenInfo={() => setInfoOpen(true)}
+      />
     </div>
   );
 }

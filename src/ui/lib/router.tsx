@@ -10,7 +10,7 @@
  * - `prefers-reduced-motion` 时全部瞬时（不调用 View Transitions）。
  *
  * 路由表：`#/`、`#/?tab=following`、`#/p/<id>`、`#/u/<account>`、`#/tag/<tag>`、
- *         `#/search[?q=]`、`#/notifications`、`#/compose[?quote=]`
+ *         `#/search[?q=]`、`#/notifications`、`#/bookmarks`、`#/compose[?quote=]`
  */
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import { flushSync } from "react-dom";
@@ -23,6 +23,7 @@ export type Route =
   | { name: "tag"; tag: string }
   | { name: "search"; q: string }
   | { name: "notifications" }
+  | { name: "bookmarks" }
   | { name: "compose"; quote: string | null };
 
 export type TransitionDirection = "forward" | "back" | "fade";
@@ -43,6 +44,7 @@ function parseHash(hash: string): Route {
   }
   if (segments[0] === "search") return { name: "search", q: params.get("q") ?? "" };
   if (segments[0] === "notifications") return { name: "notifications" };
+  if (segments[0] === "bookmarks") return { name: "bookmarks" };
   if (segments[0] === "compose") return { name: "compose", quote: params.get("quote") };
   return { name: "home", tab: params.get("tab") === "following" ? "following" : "recommended" };
 }
@@ -59,6 +61,8 @@ export function routePath(route: Route): string {
       return route.q ? `/search?q=${encodeURIComponent(route.q)}` : "/search";
     case "notifications":
       return "/notifications";
+    case "bookmarks":
+      return "/bookmarks";
     case "compose":
       return route.quote ? `/compose?quote=${encodeURIComponent(route.quote)}` : "/compose";
     default:
@@ -79,6 +83,8 @@ export function routeKey(route: Route): string {
       return `search:${route.q}`;
     case "notifications":
       return "notifications";
+    case "bookmarks":
+      return "bookmarks";
     case "compose":
       return `compose:${route.quote ?? ""}`;
     default:
@@ -98,6 +104,8 @@ export function routeLabel(route: Route): string {
       return "搜索";
     case "notifications":
       return "通知";
+    case "bookmarks":
+      return "收藏";
     case "compose":
       return "发帖";
     default:
@@ -107,7 +115,12 @@ export function routeLabel(route: Route): string {
 
 /** 0 = 根页（底部四导航）；1 = 详情/成员/标签/发帖箱（push 一层）。 */
 export function routeDepth(route: Route): number {
-  return route.name === "home" || route.name === "search" || route.name === "notifications" ? 0 : 1;
+  return route.name === "home" ||
+    route.name === "search" ||
+    route.name === "notifications" ||
+    route.name === "bookmarks"
+    ? 0
+    : 1;
 }
 
 export function isRootRoute(route: Route): boolean {

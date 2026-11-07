@@ -89,6 +89,8 @@ describe("HTTP API (report-surface: health/CORS/SEED)", () => {
       });
       expect(preflight.status).toBe(204);
       expect(preflight.headers.get("access-control-allow-headers")).toContain("authorization");
+      // 收藏走 PUT：预检必须放行，否则公网壳（跨域）静默失败
+      expect(preflight.headers.get("access-control-allow-methods")).toContain("PUT");
       const evilPreflight = await app.request("/api/posts", {
         method: "OPTIONS",
         headers: { origin: "https://local-x.fde2e.com.evil.com" },

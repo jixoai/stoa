@@ -4,6 +4,8 @@ import type { PostView } from "@core/types";
 
 type PostLike = PostView & { i?: number; n?: number };
 import {
+  BookmarkCheckIcon,
+  BookmarkIcon,
   CheckIcon,
   LinkIcon,
   MessageCircleIcon,
@@ -19,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { copyText, postLink } from "@/lib/copy";
 import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
+import { useBookmarks } from "@/state/bookmarks";
 import { prefetchThread } from "@/state/cache";
 import { toastReadOnly } from "@/lib/readonly";
 
@@ -66,6 +69,7 @@ export function PostCard({
   testId,
 }: PostCardProps) {
   const { staticMode, client } = useConnection();
+  const { isBookmarked, toggle: toggleBookmark } = useBookmarks();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<number | null>(null);
@@ -291,6 +295,30 @@ export function PostCard({
               >
                 <QuoteIcon data-icon="inline-start" />
                 引用
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                data-testid="action-bookmark"
+                aria-pressed={isBookmarked(post.id)}
+                aria-disabled={staticMode || undefined}
+                title={isBookmarked(post.id) ? "取消收藏" : "收藏（账号菜单 → 收藏）"}
+                className={cn(
+                  "h-11 min-w-11 gap-1.5 px-2",
+                  staticMode && "opacity-60",
+                  isBookmarked(post.id) && "text-foreground",
+                )}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleBookmark(post.id);
+                }}
+              >
+                {isBookmarked(post.id) ? (
+                  <BookmarkCheckIcon data-icon="inline-start" />
+                ) : (
+                  <BookmarkIcon data-icon="inline-start" />
+                )}
+                收藏
               </Button>
               <Button
                 variant="ghost"
