@@ -15,6 +15,7 @@
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import type { FeedTab } from "@core/types";
+import { clearSharedSubject } from "@/lib/shared-element";
 
 export type Route =
   | { name: "home"; tab: FeedTab }
@@ -272,6 +273,10 @@ function runTransition(direction: TransitionDirection, commit: () => void): void
   transitionRunning = true;
   try {
     const transition = doc.startViewTransition(() => {
+      // 旧快照已拍完、新快照未拍：此时清掉「点击意图」共享名。
+      // 根页在详情覆盖层下保持挂载，若名字留到新快照，会和目标页静态名重复，
+      // 浏览器会整次放弃转场（通知列表第二条 → 详情的实证）。
+      clearSharedSubject();
       commit();
     });
     void transition.finished

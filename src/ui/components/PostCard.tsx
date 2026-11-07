@@ -23,6 +23,7 @@ import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
 import { useBookmarks } from "@/state/bookmarks";
 import { prefetchThread } from "@/state/cache";
+import { markSharedSubject } from "@/lib/shared-element";
 import { toastReadOnly } from "@/lib/readonly";
 
 export type PostVariant = "feed" | "focal" | "reply" | "ancestor";
@@ -76,16 +77,19 @@ export function PostCard({
   const longPressed = useRef(false);
   const deleted = post.deleted_at !== null;
   const author = post.author_account;
-  // 所有可点击进入详情的卡片都参与共享元素：feed/focal/reply/ancestor。
-  const canShare =
-    variant === "feed" || variant === "focal" || variant === "reply" || variant === "ancestor";
+  // 目标页（焦点帖）用静态共享名；列表/回复/上文卡片不使用静态名，
+  // 由点击处理器按「被点击的主体」打标（lib/shared-element）。
+  const canShare = variant === "focal";
 
   const canClamp = variant === "feed" && !deleted;
   const longBody = post.body_md.length > 420 || post.body_md.split("\n").length > 6;
   const clamped = canClamp && longBody && !expanded;
 
-  const handleOpen = () => {
-    if (!deleted) onOpen?.(post);
+  const handleOpen = (host: Element | null) => {
+    if (deleted) return;
+    // 共享元素主体＝被点的这条帖子（不是“列表里第一张同名卡片”）。
+    markSharedSubject(host, post.id);
+    onOpen?.(post);
   };
 
   const handleCopy = async () => {
@@ -117,12 +121,13 @@ export function PostCard({
     return (
       <article
         data-post-id={post.id}
+        data-shared-host
         data-author={post.author}
         data-testid={testId ?? "post-self-continuation"}
         className={cn("relative flex gap-2 px-3 py-1.5", selected && "bg-accent/50", className)}
         onClick={(event) => {
           if ((event.target as HTMLElement).closest("a,button,input,textarea")) return;
-          handleOpen();
+          handleOpen(event.currentTarget);
         }}
       >
         {chainPosition !== "none" && chainPosition !== "single" ? (
@@ -138,18 +143,20 @@ export function PostCard({
             }
           />
         ) : null}
-        <div className="relative z-[1] shrink-0">
+        <div className="relative z-[1] shrink-0" data-shared-avatar>
           <AuthorAvatar account={author} fallbackId={post.author} size="small" />
         </div>
         <div className="min-w-0 flex-1">
           {selfHeader ? (
             <div className="flex items-start justify-between gap-2">
-              <AuthorLine
-                account={author}
-                fallbackId={post.author}
-                time={timeShort(post.created_at)}
-                sharedId={canShare ? post.id : undefined}
-              />
+              <div data-shared-author>
+                <AuthorLine
+                  account={author}
+                  fallbackId={post.author}
+                  time={timeShort(post.created_at)}
+                  sharedId={canShare ? post.id : undefined}
+                />
+              </div>
               {post.i !== undefined && post.n !== undefined ? (
                 <Badge variant="secondary" className="shrink-0 h-4 px-1 text-[10px]">
                   {post.i}/{post.n}
@@ -179,6 +186,7 @@ export function PostCard({
   return (
     <article
       data-post-id={post.id}
+      data-shared-host
       data-author={post.author}
       data-testid={testId ?? "post-card"}
       data-variant={variant}
@@ -190,13 +198,13 @@ export function PostCard({
       )}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest("a,button,input,textarea")) return;
-        handleOpen();
+        handleOpen(event.currentTarget);
       }}
       onPointerEnter={() => prefetchThread(client, post.id)}
       onPointerDown={() => prefetchThread(client, post.id)}
     >
       <div className="flex gap-3">
-        <div className="shrink-0">
+        <div className="shrink-0" data-shared-avatar>
           <AuthorAvatar
             account={author}
             fallbackId={post.author}
@@ -207,12 +215,14 @@ export function PostCard({
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <AuthorLine
-                account={author}
-                fallbackId={post.author}
-                time={timeShort(post.created_at)}
-                sharedId={canShare ? post.id : undefined}
-              />
+              <div data-shared-author>
+                <AuthorLine
+                  account={author}
+                  fallbackId={post.author}
+                  time={timeShort(post.created_at)}
+                  sharedId={canShare ? post.id : undefined}
+                />
+              </div>
               {replyingTo ? (
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   回复 <span className="text-link">@{replyingTo}</span>

@@ -9,6 +9,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/PageHeader";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
+import { markSharedSubject } from "@/lib/shared-element";
 import { Markdown } from "@/components/Markdown";
 import { useConnection } from "@/state/connection";
 import { useNotifications, type NotificationItem } from "@/state/notifications";
@@ -42,20 +43,6 @@ export function NotificationsPage() {
 
   const actorOf = (event: NotificationEventLine) => accounts.find((row) => row.id === event.actor) ?? null;
 
-  // 通知 → 详情也要有 shared-element：仅当「展示的头像就是目标帖作者」且同一帖只登记一次。
-  const sharedBySeq = useMemo(() => {
-    const seen = new Set<string>();
-    const map = new Map<number, string>();
-    for (const item of notifications.items) {
-      const post = item.post;
-      if (!post || item.deleted) continue;
-      if (post.author !== item.event.actor) continue;
-      if (seen.has(post.id)) continue;
-      seen.add(post.id);
-      map.set(item.event.seq, post.id);
-    }
-    return map;
-  }, [notifications.items]);
 
   const renderRow = (item: NotificationItem) => {
     const { event, post } = item;
@@ -67,32 +54,35 @@ export function NotificationsPage() {
         role="button"
         tabIndex={0}
         data-testid={item.deleted ? "notification-deleted-row" : "notification-row"}
+        data-shared-host
+        data-post-id={item.targetId ?? undefined}
         className={cn(
           "flex w-full cursor-pointer items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/30 focus-visible:bg-muted/30 focus-visible:outline-none",
           item.deleted && "opacity-60",
         )}
         onClick={(clickEvent) => {
           if ((clickEvent.target as HTMLElement).closest("a,button")) return;
-          if (item.targetId) navigate(`/p/${encodeURIComponent(item.targetId)}`);
+          if (!item.targetId) return;
+          // 共享元素主体＝被点的这一行指向的帖子（而不是列表里第一张同帖卡片）。
+          markSharedSubject(clickEvent.currentTarget, item.targetId);
+          navigate(`/p/${encodeURIComponent(item.targetId)}`);
         }}
         onKeyDown={(keyEvent) => {
           if (keyEvent.key !== "Enter" && keyEvent.key !== " ") return;
           if ((keyEvent.target as HTMLElement).closest("a,button")) return;
           keyEvent.preventDefault();
-          if (item.targetId) navigate(`/p/${encodeURIComponent(item.targetId)}`);
+          if (!item.targetId) return;
+          markSharedSubject(keyEvent.currentTarget, item.targetId);
+          navigate(`/p/${encodeURIComponent(item.targetId)}`);
         }}
       >
-        <AuthorAvatar
-          account={actor}
-          fallbackId={event.actor}
-          sharedId={sharedBySeq.get(event.seq)}
-        />
+        <div data-shared-avatar>
+          <AuthorAvatar account={actor} fallbackId={event.actor} />
+        </div>
         <div className="min-w-0 flex-1">
-          <AuthorLine
-            account={actor}
-            fallbackId={event.actor}
-            sharedId={sharedBySeq.get(event.seq)}
-          />
+          <div data-shared-author>
+            <AuthorLine account={actor} fallbackId={event.actor} />
+          </div>
           <div className="mt-0.5 text-sm">
             <span className="font-medium">{eventText(event, item)}</span>
             <span className="ml-1 text-xs text-muted-foreground">{dateTimeShort(event.created_at)}</span>
