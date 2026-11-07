@@ -79,6 +79,16 @@ interface PostComposerProps {
   compact?: boolean;
   placeholder?: string;
   submitLabel?: string;
+  /** 沉浸式编辑器不需要「撰写/预览」切换，也不显示顶部计数条。 */
+  showTabs?: boolean;
+  /** 沉浸式编辑：正文区更高，铺出编辑空间。 */
+  tall?: boolean;
+  /** 提交按钮交给外部标题栏时隐藏内置按钮（附件工具条保留）。 */
+  hideSubmit?: boolean;
+  /** 把最新提交函数交给外部（标题栏「回复」按钮调用）。 */
+  submitRef?: { current: (() => void) | null };
+  /** 正文/上传状态变化，供外部同步提交按钮的禁用态。 */
+  onStateChange?: (state: { canSubmit: boolean; busy: boolean }) => void;
 }
 
 function extOf(name: string): string {
@@ -142,6 +152,11 @@ export function PostComposer({
   compact = false,
   placeholder,
   submitLabel,
+  showTabs = true,
+  tall = false,
+  hideSubmit = false,
+  submitRef,
+  onStateChange,
 }: PostComposerProps) {
   const { client, accounts, staticMode } = useConnection();
   const key = draftKey ?? draftKeyOf(mode, parentId);
@@ -458,6 +473,24 @@ export function PostComposer({
     }
   };
 
+  // 外部标题栏提交：始终调用最新一次渲染的 submit（闭包捕获当前正文/附件）。
+  const submitLatest = useRef<() => void>(() => {});
+  submitLatest.current = () => void submit();
+  useEffect(() => {
+    if (!submitRef) return;
+    submitRef.current = () => submitLatest.current();
+    return () => {
+      submitRef.current = null;
+    };
+  }, [submitRef]);
+
+  const canSubmit = Boolean(body.trim()) && !busy && !uploadsPending && !uploadError;
+  const stateReporter = useRef(onStateChange);
+  stateReporter.current = onStateChange;
+  useEffect(() => {
+    stateReporter.current?.({ canSubmit, busy });
+  }, [canSubmit, busy]);
+
   if (staticMode) {
     return (
       <div
@@ -484,18 +517,20 @@ export function PostComposer({
     >
       <InputGroup className="h-auto flex-col items-stretch gap-0">
       <Tabs value={tab} onValueChange={(value) => setTab(value as "write" | "preview")} className="gap-0">
-        <InputGroupAddon
-          align="block-start"
-          className="justify-between border-b border-border/60 px-2 py-1"
-        >
-          <TabsList variant="line" aria-label="编辑与预览">
-            <TabsTrigger value="write">撰写</TabsTrigger>
-            <TabsTrigger value="preview">预览</TabsTrigger>
-          </TabsList>
-          <InputGroupText className="text-xs">
-            {body.length.toLocaleString()} / 200,000 · ⌘/Ctrl+Enter 发布
-          </InputGroupText>
-        </InputGroupAddon>
+        {showTabs ? (
+          <InputGroupAddon
+            align="block-start"
+            className="justify-between border-b border-border/60 px-2 py-1"
+          >
+            <TabsList variant="line" aria-label="编辑与预览">
+              <TabsTrigger value="write">撰写</TabsTrigger>
+              <TabsTrigger value="preview">预览</TabsTrigger>
+            </TabsList>
+            <InputGroupText className="text-xs">
+              {body.length.toLocaleString()} / 200,000 · ⌘/Ctrl+Enter 发布
+            </InputGroupText>
+          </InputGroupAddon>
+        ) : null}
 
         <TabsContent value="write">
           <div className="relative px-3 py-2">
@@ -514,7 +549,7 @@ export function PostComposer({
                   ? "有什么要说？@ 提及某人，# 标注标签…"
                   : "发布你的回复…（支持 markdown，@ 提及，# 标签）")
               }
-              className={cn("min-h-28 px-0 py-0", compact && "min-h-20")}
+              className={cn("min-h-28 px-0 py-0", compact && "min-h-20", tall && "min-h-[32dvh] sm:min-h-32")}
               data-testid="composer-input"
             />
 
@@ -703,16 +738,20 @@ export function PostComposer({
         </InputGroupButton>
         <InputGroupText className="hidden text-xs sm:flex">可拖拽文件到这里</InputGroupText>
         <div className="ml-auto flex items-center gap-2">
-          <InputGroupButton
-            type="button"
-            size="sm"
-            data-testid="composer-submit"
-            disabled={busy || uploadsPending || !body.trim()}
-            onClick={() => void submit()}
-          >
-            {busy ? <Loader2Icon data-icon="inline-start" className="animate-spin" /> : <SendIcon data-icon="inline-start" />}
-            {submitLabel ?? (mode === "post" ? "发布" : "回复")}
-          </InputGroupButton>
+          {hideSubmit ? (
+            <InputGroupText className="text-xs">{body.length.toLocaleString()} 字</InputGroupText>
+          ) : (
+            <InputGroupButton
+              type="button"
+              size="sm"
+              data-testid="composer-submit"
+              disabled={busy || uploadsPending || !body.trim()}
+              onClick={() => void submit()}
+            >
+              {busy ? <Loader2Icon data-icon="inline-start" className="animate-spin" /> : <SendIcon data-icon="inline-start" />}
+              {submitLabel ?? (mode === "post" ? "发布" : "回复")}
+            </InputGroupButton>
+          )}
         </div>
       </InputGroupAddon>
       </InputGroup>

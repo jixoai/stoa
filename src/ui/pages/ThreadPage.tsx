@@ -13,7 +13,7 @@ import {
   ChevronRightIcon,
 } from "lucide-react";
 import { PostCard, type ChainPosition } from "@/components/PostCard";
-import { PostComposer } from "@/components/PostComposer";
+import { ReplyComposer } from "@/components/ReplyComposer";
 import { ContentSwap } from "@/components/ContentSwap";
 import { PostSkeleton, ThreadSkeleton } from "@/components/Skeletons";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -248,7 +248,9 @@ export function ThreadPage() {
   const [selectedIndex, setSelectedIndex] = useState(-1);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const focalRef = useRef<HTMLDivElement | null>(null);
-  const composerRef = useRef<HTMLDivElement | null>(null);
+  /** 沉浸式回复编辑器：默认收起，点回复入口 / ?reply=1 才展开。 */
+  const [replyOpen, setReplyOpen] = useState(false);
+  const autoReplyOpened = useRef(false);
   const anchoredFor = useRef<string | null>(null);
   const refreshTimer = useRef<number | null>(null);
   const threadRef = useRef<ThreadView | null>(null);
@@ -403,13 +405,14 @@ export function ThreadPage() {
     container.scrollTop = Math.max(0, Math.round(offset - 60));
   }, [thread, focal, postId, ancestorChain.length]);
 
+  // ?reply=1 是明确的回复意图：线程到位后直接展开编辑器（只自动展开一次，
+  // 关闭后即便线程刷新也不再弹回）。
   useEffect(() => {
-    if (!wantReply || !thread) return;
-    const timer = window.setTimeout(() => {
-      composerRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-    }, 120);
-    return () => window.clearTimeout(timer);
-  }, [wantReply, thread]);
+    if (!wantReply || !focal || focal.deleted_at !== null) return;
+    if (autoReplyOpened.current) return;
+    autoReplyOpened.current = true;
+    setReplyOpen(true);
+  }, [wantReply, focal]);
 
   // 键盘：j/k 移动，Enter 打开该条详情，r 回复
   const kbNodes = useMemo(() => (focal ? [focal, ...replyNodes.map((item) => item.node)] : []), [focal, replyNodes]);
@@ -578,18 +581,7 @@ export function ThreadPage() {
             <Card className="gap-0 p-3 text-sm text-muted-foreground" data-testid="reply-readonly">
               静态归档 · 只读：这条线程以导出时的快照为准，不能回复。
             </Card>
-          ) : focal.deleted_at === null ? (
-            <Card ref={composerRef} className="gap-0 p-3" data-testid="reply-box">
-              <PostComposer
-                mode="reply"
-                parentId={focal.id}
-                autoFocus={wantReply}
-                compact
-                placeholder={`回复 @${focal.author}…`}
-                onPosted={() => void load(false)}
-              />
-            </Card>
-          ) : (
+          ) : focal.deleted_at === null ? null : (
             <Card className="gap-0 p-3 text-sm text-muted-foreground" data-testid="reply-unavailable">
               此帖已删除，不能再回复。
             </Card>
@@ -715,7 +707,29 @@ export function ThreadPage() {
             </>
           ) : null}
         </ContentSwap>
+        {focal && focal.deleted_at === null && !staticMode ? (
+          <div className="sticky bottom-0 z-20 border-t border-border/60 bg-background/85 px-3 py-2 backdrop-blur-md">
+            <Button
+              type="button"
+              variant="outline"
+              data-testid="reply-open"
+              aria-label={`回复 @${focal.author}`}
+              onClick={() => setReplyOpen(true)}
+              className="h-10 w-full justify-start rounded-full border-border/70 bg-muted/40 px-4 text-sm font-normal text-muted-foreground hover:bg-muted/70"
+            >
+              发布你的回复
+            </Button>
+          </div>
+        ) : null}
       </div>
+      {focal && focal.deleted_at === null && !staticMode ? (
+        <ReplyComposer
+          post={focal}
+          open={replyOpen}
+          onOpenChange={setReplyOpen}
+          onPosted={() => void load(false)}
+        />
+      ) : null}
     </div>
   );
 }
