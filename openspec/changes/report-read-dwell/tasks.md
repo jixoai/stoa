@@ -9,7 +9,7 @@
 
 ## P1. 核心（观察器 + 计时 + 已读写入 + 高亮）
 
-- [ ] P1-1. 纯函数模块 `src/ui/lib/dwell-threshold.ts`：`dwellThresholdMs({bodyMd,hasMedia})`
+- [x] P1-1. 纯函数模块 `src/ui/lib/dwell-threshold.ts`：`dwellThresholdMs({bodyMd,hasMedia})`
   （`clamp(codePoints/80*1000 + media*300, 400, 1500)`）、`coverageOf(entry, viewportHeight)`
   （普通卡 `intersectionRatio`；高卡 `intersectionRect.height / rootHeight`，即
   `min(卡片高, 视口高)` 的 50%，Owner 2026-11-08 拍板）。
@@ -18,7 +18,7 @@
     **高卡（>2 屏）只露 50% 视口高即达标、只露 40% 不达标**。
   - 证据：`bun test test/read-dwell.test.ts` 全绿。
 
-- [ ] P1-2. 引擎 `src/ui/state/read-dwell.ts`：`ReadDwellEngine` 单例；懒创建
+- [x] P1-2. 引擎 `src/ui/state/read-dwell.ts`：`ReadDwellEngine` 单例；懒创建
   `IntersectionObserver`（`root:null`、密集 thresholds）、`observe/unobserve`、
   `idle→visible→dwell→paused→read` 状态机、`visibilitychange` 全暂停/恢复、`hold()/release()`
   引用计数门、卸载丢弃累计、`written` 去重。
@@ -27,7 +27,7 @@
     `entries.size` 归 0；跟踪集合为空时 `observer.disconnect()`。
   - 证据：`bun test test/read-dwell.test.ts`（状态迁移表逐行断言）。
 
-- [ ] P1-3. 已读订阅与持久化：`NotificationsValue` 加 `isPostRead(postId,seq)` 与
+- [x] P1-3. 已读订阅与持久化：`NotificationsValue` 加 `isPostRead(postId,seq)` 与
   `subscribePostRead(postId,cb)`；`markPostRead` 只通知该 id；`ack()`/账号切换 `notifyAll()`；
   持久化改为 250ms trailing debounce + `pagehide`/hidden/卸载 flush（key 不变；上限
   **2000/账号、按最近读取时间 LRU**；体积 <150KB/账号；LRU touch 用独立 ref，不触发订阅）。
@@ -38,13 +38,13 @@
   - 证据：`bun test test/read-dwell.test.ts test/notifications.test.ts`；
     `__reportReadDwell.persists` 在 QA 中可观测。
 
-- [ ] P1-4. `PostCard` 接入：根 `article` 挂 ref（普通/自接两个分支），`useEffect` 注册/注销；
+- [x] P1-4. `PostCard` 接入：根 `article` 挂 ref（普通/自接两个分支），`useEffect` 注册/注销；
   渲染 `data-read`（`usePostReadFlag`）与 `data-selected`；自己的帖/软删/已读在引擎侧 `skipped`。
   - 判据：feed/线程/搜索/收藏/成员页/详情六面均出现 `data-post-id` 且可被同一引擎观察；
     自己的帖与软删帖无 `data-read`、无底色；已读帖首帧即 `data-read="1"`。
   - 证据：Playwright 六面 DOM 断言（`scripts/qa/read-dwell.mjs` 的 surface 用例）。
 
-- [ ] P1-5. 高亮与动效：`app.css`（或主题文件）新增 `--read-tint/--read-tint-strong/
+- [x] P1-5. 高亮与动效：`app.css`（或主题文件）新增 `--read-tint/--read-tint-strong/
   --read-accent` 令牌与属性选择器规则；未读整卡淡底 + 左侧 3px 强调条（x=0..3，不碰
   x=38..40 导轨）；达标 1.2s 背景淡出、强调条 200ms 淡出；`prefers-reduced-motion` 瞬时；
   选中态压过未读底色；CLS=0。
@@ -54,13 +54,13 @@
     高亮前后卡片 `getBoundingClientRect().height` 不变。
   - 证据：截图 before/after（390/1280）+ computed style/矩形断言。
 
-- [ ] P1-6. 静态门控：`ReadDwellProvider` 在 `staticMode` 或 `!IntersectionObserver` 时不建引擎；
+- [x] P1-6. 静态门控：`ReadDwellProvider` 在 `staticMode` 或 `!IntersectionObserver` 时不建引擎；
   静态模式不渲染 `data-read`、不写 localStorage。
   - 判据：`file://` 打开导出归档，3s 内 `__reportReadDwell.enabled===false`、`observers===0`、
     卡片无 `data-read`、`localStorage` 无 `report.read.*` 新写入。
   - 证据：A5 用例 + 导出产物实测。
 
-- [ ] P1-7. 删除路由事件标记：移除 `ThreadPage.tsx:589-596` 的 `markPostRead(postId)` effect
+- [x] P1-7. 删除路由事件标记：移除 `ThreadPage.tsx:589-596` 的 `markPostRead(postId)` effect
   （保留 `useNotifications` 其它用法或按需清理 import）。
   - 判据：后台标签页（`Cmd+Click`/新标签）打开详情、不切回前台 → 该帖仍未读；
     前台打开详情并停留达标 → 已读；`rg "markPostRead\\(postId\\)" src/ui` 无残留。
@@ -69,34 +69,34 @@
     ① 点通知行路径语义不变，不改断言。
   - 证据：A3 扩展用例 + 代码检索 + `notifications-read.mjs` 全绿。
 
-- [ ] P1-8. QA 脚本 `scripts/qa/read-dwell.mjs`（Playwright + `qa-serve.mjs`）跑
+- [x] P1-8. QA 脚本 `scripts/qa/read-dwell.mjs`（Playwright + `qa-serve.mjs`）跑
   A1/A2/A3/A5/A7/A8/A13；`scripts/qa/README.md` 登记脚本与端口约定。
   - 判据：全部通过并留存 JSON 结果/截图；不写生产板（`--data-dir` 必须是临时目录）。
   - 证据：`bun scripts/qa/read-dwell.mjs` 输出 `results.json`（含每条断言与耗时）。
 
 ## P2. 扩展与细化
 
-- [ ] P2-1. 新帖入场高亮：`TimelineFeed` 的 `flashIds` 包装层加 `report-row-new`
+- [x] P2-1. 新帖入场高亮：`TimelineFeed` 的 `flashIds` 包装层加 `report-row-new`
   （900ms 背景脉冲 + 既有 `report-row-in` 位移）；仅新到达且未读的帖生效；
   reduced-motion 只保留未读底色。
   - 判据：SSE 推新帖并在顶部吸收 → 新行 900ms 内有背景脉冲，之后回到未读底色；
     reduced-motion 下无动画但仍有未读底色；其它行无变化。
   - 证据：A10 用例 + 两帧截图。
 
-- [ ] P2-2. 通知列表/角标同步验收：feed 停留已读后，通知历史行 `data-read` 翻转、
+- [x] P2-2. 通知列表/角标同步验收：feed 停留已读后，通知历史行 `data-read` 翻转、
   `notifications-unread-badge`/Nav 角标同步减少；同帖多条通知一次转已读。
   - 判据：A6 用例：两帖 A/B 各 1 条未读，停留 A → 角标 −1、A 行 `data-read="1"`、
     B 仍 `"0"`；同帖 `post.created`+`thread.invited` 两条事件一次全读。
   - 证据：`scripts/qa/read-dwell.mjs` 的 notification 用例 + 网络/DOM 证据。
 
-- [ ] P2-3. 诊断与指标：`window.__reportReadDwell = { enabled, observers, targets, timers,
+- [x] P2-3. 诊断与指标：`window.__reportReadDwell = { enabled, observers, targets, timers,
   marks, persists, lastMarkAt }`（只读快照，不参与业务）；卡片 `data-dwell-state`
   （`idle|visible|dwell|paused|read|skipped`）由引擎直接写，供 QA 断言暂停/恢复。
   - 判据：A2/A3 可读到 `visible`/`dwell`/`paused` 迁移；`marks` 与实际 read-set 新增数一致；
     生产环境无 console 噪音。
   - 证据：QA 断言 + 生产构建 smoke（无报错）。
 
-- [ ] P2-4. 边界细化：模态遮挡检测（`[data-slot=dialog-content]`/`[data-slot=sheet-content]`/
+- [x] P2-4. 边界细化：模态遮挡检测（`[data-slot=dialog-content]`/`[data-slot=sheet-content]`/
   `[role=dialog][data-open]` 存在即 hold）；高卡覆盖率（Owner 拍板口径）；同页同帖多实例去重；
   无 IO 环境降级；read-set 淘汰后重新计时的幂等。
   - 判据：打开图片查看器/发帖箱/sheet 停留 2s 不标；关闭后继续计时可标；
@@ -109,8 +109,11 @@
   - 判据：A9 全通过：`observers===1`、`targets<=200`、无 >50ms longtask、
     单帖标记只改一个节点的 `data-read`、列表父级无重渲染迹象。
   - 证据：性能 JSON（longtask 列表、observer/targets 计数、mutation 摘要）。
+  - 本轮实测（2026-11-08，未勾选）：基础断言通过——`observers===1`、`targets=17≤26
+    张已挂载卡`、滚动 8×0.9 屏无 >50ms longtask、节点身份不变；**200 帖全量 feed 的
+    10 屏审计未跑**（隔离板只种了 25 帖，未达到判据的 200 帖规模）。
 
-- [ ] P2-6. 无障碍与 reduced-motion 审计：A4/A10；屏幕阅读器线性浏览（无滚动）5s 不标；
+- [x] P2-6. 无障碍与 reduced-motion 审计：A4/A10；屏幕阅读器线性浏览（无滚动）5s 不标；
   键盘 `j/k` 滚动可标；「全部已读」兜底可用。
   - 判据：A4/A10 通过；无 `aria-live` 噪音；Tab 焦点移动不改变已读。
   - 证据：QA 用例 + 可访问性检查清单。

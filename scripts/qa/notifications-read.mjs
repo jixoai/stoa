@@ -129,8 +129,23 @@ try {
   await page.evaluate((id) => {
     location.hash = `#/p/${id}`;
   }, seedB);
-  await page.waitForTimeout(1600);
+  // report-read-dwell：已读不再由路由进入触发，改由卡片视窗停留达标（阈值上限
+  // 1500ms）——显式等 data-read="1"，不再用固定 1600ms（余量仅 100ms）。
+  await page.waitForFunction(
+    (id) =>
+      Boolean(
+        document.querySelector(
+          `[data-testid="thread-timeline"] [data-post-id="${CSS.escape(id)}"][data-read="1"]`,
+        ),
+      ),
+    seedB,
+    { timeout: 6000 },
+  );
   check("直接进详情（非通知入口）", (await page.evaluate(() => location.hash)).includes(seedB));
+  check(
+    "详情停留达标后标已读",
+    (await page.locator(`[data-testid="thread-timeline"] [data-post-id="${seedB}"][data-read="1"]`).count()) >= 1,
+  );
   await page.evaluate(() => {
     location.hash = "#/notifications";
   });

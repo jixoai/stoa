@@ -22,6 +22,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import type { NotificationEventLine, PostView } from "@core/types";
@@ -29,6 +30,14 @@ import { useConnection } from "@/state/connection";
 import { NotificationProjection } from "@/state/hub/notification-projection";
 import { useEventHub, useEventHubApi, useHubStatus } from "@/state/hub/provider";
 import type { HubEventLine } from "@/state/hub/types";
+import { noteReadSetPersist } from "@/state/read-dwell";
+import {
+  READ_SET_LIMIT,
+  READ_SET_PERSIST_DEBOUNCE_MS,
+  ReadSetStore,
+  readSetStorageKey,
+  type ReadSetStorage,
+} from "@/state/read-set-store";
 
 export interface NotificationItem {
   /** 代表事件（同帖多条提醒取 post.created 优先；用于文案/时间） */
@@ -63,10 +72,14 @@ interface NotificationsValue {
   error: string | null;
   refresh: () => Promise<void>;
   ack: () => Promise<void>;
-  /** 打开某帖详情时调用：只把该帖标记为已读（本端读集合） */
+  /** 打开某帖详情/停留达标时调用：只把该帖标记为已读（本端读集合） */
   markPostRead: (postId: string) => void;
   /** 统一已读判定：target 在本地读集合，或事件 seq ≤ 已 ack 游标 */
   isRead: (targetId: string | null, seq: number) => boolean;
+  /** 单帖已读纯查询（PostCard/停留引擎用；seq 参与「全部已读」游标判定） */
+  isPostRead: (postId: string, seq: number) => boolean;
+  /** 只订阅某个 postId 的已读翻转（不重渲染整列表） */
+  subscribePostRead: (postId: string, listener: () => void) => () => void;
   /** 通知历史行取帖子投影（undefined = 尚未取回） */
   postOf: (postId: string) => PostView | null | undefined;
   /** 请求补拉一批帖子投影（历史列表用） */
@@ -75,10 +88,32 @@ interface NotificationsValue {
 
 const NotificationsContext = createContext<NotificationsValue | null>(null);
 
+/**
+ * 单帖已读的「窄上下文」：值恒定不变，PostCard 订阅它拿 per-id 外部订阅，
+ * 不消费 NotificationsContext（否则一次停留会让所有卡片跟着 Provider 重渲染）。
+ */
+interface PostReadApi {
+  isPostRead: (postId: string, seq: number) => boolean;
+  subscribePostRead: (postId: string, listener: () => void) => () => void;
+}
+
+const PostReadContext = createContext<PostReadApi | null>(null);
+
+/** PostCard 的已读标记：只在 id 的 read 翻转时重渲染该卡（design D7）。 */
+export function usePostReadFlag(postId: string, seq: number): boolean {
+  const api = useContext(PostReadContext);
+  const subscribe = useCallback(
+    (listener: () => void) => (api ? api.subscribePostRead(postId, listener) : () => {}),
+    [api, postId],
+  );
+  const getSnapshot = useCallback(
+    () => (api ? api.isPostRead(postId, seq) : false),
+    [api, postId, seq],
+  );
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
+}
+
 const HYDRATE_CONCURRENCY = 8;
-const READ_SET_PREFIX = "report.read.v1";
-/** 读集合本地上限：只保留最近加入的 N 个，避免 localStorage 无界增长。 */
-const READ_SET_LIMIT = 500;
 /** 实时删除/游标变化后的对账延迟（合并同一批推送） */
 const RECONCILE_DEBOUNCE_MS = 400;
 /** 心跳/60s 漂移检测窗口 */
@@ -88,19 +123,12 @@ function targetIdOf(event: NotificationEventLine): string | null {
   return event.post_id ?? event.root_id ?? null;
 }
 
-function readSetStorageKey(base: string, accountId: string): string {
-  return `${READ_SET_PREFIX}:${base || "same-origin"}:${accountId}`;
-}
-
-function loadReadSet(key: string): Set<string> {
+/** localStorage 在 private mode/SSR 下可能抛错：退化为纯内存。 */
+function browserStorage(): ReadSetStorage | null {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((value): value is string => typeof value === "string" && value.length > 0));
+    return typeof localStorage === "undefined" ? null : localStorage;
   } catch {
-    return new Set();
+    return null;
   }
 }
 
@@ -178,13 +206,20 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const storageKey = accountRef.current
     ? readSetStorageKey(client?.base ?? "", accountRef.current)
     : null;
-  const storageKeyRef = useRef(storageKey);
-  storageKeyRef.current = storageKey;
-  // 读集合在首帧就同步装好（而不是等 effect）：深链直接进详情时，ThreadPage 的
-  // markPostRead 可能早于父级 effect 执行，异步加载会把它覆盖掉。
-  const [readIds, setReadIds] = useState<Set<string>>(() =>
-    storageKey && !staticMode ? loadReadSet(storageKey) : new Set(),
-  );
+  // 读集合在首帧就同步装好（而不是等 effect）：深链直接进详情时，停留引擎/
+  // 通知页的 markPostRead 可能早于父级 effect 执行，异步加载会把它覆盖掉。
+  const readStoreRef = useRef<ReadSetStore | null>(null);
+  if (readStoreRef.current === null) {
+    readStoreRef.current = new ReadSetStore({
+      storageKey: staticMode ? null : storageKey,
+      storage: staticMode ? null : browserStorage(),
+      limit: READ_SET_LIMIT,
+      debounceMs: READ_SET_PERSIST_DEBOUNCE_MS,
+      onPersist: () => noteReadSetPersist(),
+    });
+  }
+  const readStore = readStoreRef.current;
+  const [readIds, setReadIds] = useState<Set<string>>(() => readStore.snapshot());
   const [loading, setLoading] = useState(true);
   const [hydrating, setHydrating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -199,26 +234,14 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const projectionKey = `${client?.base ?? ""}|${account?.id ?? ""}`;
   const projectionKeyRef = useRef(projectionKey);
 
-  const persistReadSet = useCallback(
-    (next: Set<string>) => {
-      const key = storageKeyRef.current;
-      if (!key || staticMode) return;
-      try {
-        localStorage.setItem(key, JSON.stringify([...next].slice(-READ_SET_LIMIT)));
-      } catch {
-        // private mode / quota: 读集合退化为本端内存，不阻塞已读交互
-      }
-    },
-    [staticMode],
-  );
-
   // 账号/后端切换：读集合与实时投影都换成该账号自己的（避免串号）。
-  // 首次挂载已由 useState 懒初始化装好；这里只处理「键变了」。
+  // 首次挂载已由 ReadSetStore 懒初始化装好；这里只处理「键变了」。
   // 注意：挂载时必须**不**重置（否则会多出一次启动 peek）。
   useEffect(() => {
     if (appliedStorageKey.current !== storageKey) {
       appliedStorageKey.current = storageKey;
-      setReadIds(staticMode || !storageKey ? new Set() : loadReadSet(storageKey));
+      readStore.switchKey(staticMode ? null : storageKey, staticMode ? null : browserStorage());
+      setReadIds(readStore.snapshot());
     }
     if (projectionKeyRef.current === projectionKey) return;
     projectionKeyRef.current = projectionKey;
@@ -229,7 +252,22 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     lastHeartbeat.current = null;
     bump();
     // 新投影由下面的 refresh effect（client 变化会重建 refresh）重新取一次快照。
-  }, [storageKey, projectionKey, staticMode, bump]);
+  }, [storageKey, projectionKey, staticMode, bump, readStore]);
+
+  // pagehide / hidden / Provider 卸载时同步 flush 排队中的 250ms 持久化。
+  useEffect(() => {
+    const flush = () => readStore.flush();
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+      flush();
+    };
+  }, [readStore]);
 
   const hydratePosts = useCallback(
     async (ids: string[], force = false) => {
@@ -474,19 +512,19 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     }
   }, [client, hub, bump, scheduleReconcile]);
 
-  /** 打开详情即已读：只记录该帖（本端），不碰服务端游标——别的旧帖不受影响。 */
+  /**
+   * 按帖已读：只记录该帖（本端），不碰服务端游标——别的旧帖不受影响。
+   * 写路径只通知该 postId 的订阅者；Provider 自身重渲染让角标/通知列表同源更新。
+   * 已在集合内的重复标记只 touch LRU（幂等，不重渲染）。
+   */
   const markPostRead = useCallback(
     (postId: string) => {
       if (!postId) return;
-      setReadIds((prev) => {
-        if (prev.has(postId)) return prev;
-        const next = new Set(prev);
-        next.add(postId);
-        persistReadSet(next);
-        return next;
-      });
+      const result = readStore.mark(postId);
+      if (!result.changed) return;
+      setReadIds(readStore.snapshot());
     },
-    [persistReadSet],
+    [readStore],
   );
 
   const isRead = useCallback(
@@ -496,6 +534,16 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     },
     [readIds, projection, version],
   );
+
+  // 游标变化（ack / 服务端推送）会让「seq ≤ 游标」的帖子集体转已读：通知所有
+  // 单帖订阅者一次，让卡片首帧同步（不依赖父级重渲染）。
+  const cursor = projection.cursor;
+  const lastCursorRef = useRef(cursor);
+  useEffect(() => {
+    if (lastCursorRef.current === cursor) return;
+    lastCursorRef.current = cursor;
+    readStore.notifyAll();
+  }, [cursor, readStore]);
 
   const postOf = useCallback(
     (postId: string) => posts.get(postId),
@@ -527,6 +575,19 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const unread = projection.badge(readIds);
   const deletedCount = useMemo(() => items.filter((item) => item.deleted).length, [items]);
 
+  // 窄上下文：值恒定，卡片只经 per-id 外部订阅更新（D7）。
+  const cursorRef = useRef(projection.cursor);
+  cursorRef.current = projection.cursor;
+  const postReadApi = useMemo<PostReadApi>(
+    () => ({
+      isPostRead: (postId: string, seq: number) =>
+        readStore.has(postId) || (seq > 0 && seq <= cursorRef.current),
+      subscribePostRead: (postId: string, listener: () => void) =>
+        readStore.subscribe(postId, listener),
+    }),
+    [readStore],
+  );
+
   const value = useMemo<NotificationsValue>(
     () => ({
       items,
@@ -541,6 +602,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       ack,
       markPostRead,
       isRead,
+      isPostRead: postReadApi.isPostRead,
+      subscribePostRead: postReadApi.subscribePostRead,
       postOf,
       ensurePosts,
     }),
@@ -557,12 +620,17 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       ack,
       markPostRead,
       isRead,
+      postReadApi,
       postOf,
       ensurePosts,
     ],
   );
 
-  return <NotificationsContext.Provider value={value}>{children}</NotificationsContext.Provider>;
+  return (
+    <NotificationsContext.Provider value={value}>
+      <PostReadContext.Provider value={postReadApi}>{children}</PostReadContext.Provider>
+    </NotificationsContext.Provider>
+  );
 }
 
 export function useNotifications(): NotificationsValue {

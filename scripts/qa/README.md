@@ -85,6 +85,8 @@ All of these default to an isolated backend:
 
 ```bash
 bun scripts/qa/notifications-read.mjs     # read-state + unread/all filter
+bun scripts/qa/read-dwell.mjs             # 视窗停留已读 + 未读高亮（A1/A2/A3/A5/A6/
+                                          # A7/A8/A9/A11/A13 + P2；自动 build + 静态导出）
 bun scripts/qa/reply-composer.mjs         # immersive reply editor
 bun scripts/qa/overlay-back.mjs           # overlay back-close + shared-element morph
 bun scripts/qa/account-bookmarks.mjs      # account drawer + bookmarks + InputGroup
@@ -97,6 +99,10 @@ bun scripts/qa/event-hub-client.mjs       # EventHub client P1: two-context live
 
 Behaviour:
 
+- `read-dwell.mjs` 默认先 `bun run build`（qa-serve 托管 dist/），再用 CLI
+  `export` 生成 `file://` 静态归档做 A5；`--no-build` 复用现有 dist。
+  证据默认落 `<主仓>/.agents/reports/manager/report-read-dwell/`
+  （results.json + steps.json + PNG），可用 `--report-dir <dir>` 覆盖。
 - `REPORT_QA_BASE` set → attach to that backend. It must report an isolated
   `dataDir` via `/healthz`; `127.0.0.1:13689` and the production data path are
   refused.

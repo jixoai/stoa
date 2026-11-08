@@ -159,7 +159,8 @@ export function TimelineFeed({
     const container = containerRef.current;
     if (container) container.scrollTop = 0;
     setFlashIds(ids);
-    window.setTimeout(() => setFlashIds(new Set()), 400);
+    // 新帖入场：既有 200ms 位移 + report-read-dwell 的 900ms 未读底色脉冲。
+    window.setTimeout(() => setFlashIds(new Set()), 1000);
   }, [pending, absorbPending]);
 
   // Restore anchor first, then refresh (design §12.2 + §6)。
@@ -443,7 +444,7 @@ export function TimelineFeed({
               const ids = new Set(pending.map((post) => post.id));
               absorbPending();
               setFlashIds(ids);
-              window.setTimeout(() => setFlashIds(new Set()), 400);
+              window.setTimeout(() => setFlashIds(new Set()), 1000);
               containerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
             }}
           >
@@ -546,7 +547,10 @@ export function TimelineFeed({
           ) : (
             <div className="divide-y divide-border/60">
               {posts.map((post, index) => (
-                <div key={post.id} className={flashIds.has(post.id) ? "report-row-in" : undefined}>
+                <div
+                  key={post.id}
+                  className={flashIds.has(post.id) ? "report-row-in report-row-new" : undefined}
+                >
                   <PostCard
                     post={post}
                     selected={index === selectedIndex}

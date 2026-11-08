@@ -8,6 +8,7 @@ import { PluginsProvider } from "@/state/plugins";
 import { PostPreviewsProvider } from "@/state/post-previews";
 import { HomeFeedsProvider } from "@/state/feed";
 import { NotificationsProvider } from "@/state/notifications";
+import { ReadDwellProvider } from "@/components/ReadDwellProvider";
 import { BookmarksProvider } from "@/state/bookmarks";
 import { LandingPage } from "@/pages/LandingPage";
 import { LoginGate } from "@/pages/LoginGate";
@@ -54,7 +55,9 @@ function ReadyApp() {
     <HomeFeedsProvider>
       <BookmarksProvider>
         <NotificationsProvider>
-          <AppShell />
+          <ReadDwellProvider>
+            <AppShell />
+          </ReadDwellProvider>
         </NotificationsProvider>
       </BookmarksProvider>
     </HomeFeedsProvider>

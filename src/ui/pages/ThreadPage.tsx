@@ -21,7 +21,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PageHeader } from "@/components/PageHeader";
 import { useConnection } from "@/state/connection";
 import { useEventHub, useEventHubView } from "@/state/hub/provider";
-import { useNotifications } from "@/state/notifications";
 import { getCachedThread, getThreadSeed, rememberThread } from "@/state/cache";
 import {
   goBack,
@@ -460,14 +459,8 @@ export function ThreadPage() {
   const direction = useTransitionDirection();
   const directionRef = useRef(direction);
   directionRef.current = direction;
-  // 打开详情即已读（Owner 2026-11-07）：按帖记录到本端读集合，不管从哪条路径进来
-  // （时间线/成员页/搜索/通知）都生效；不推进服务端游标，别的旧帖不受影响。
-  const notifications = useNotifications();
-  const markPostRead = notifications.markPostRead;
-  useEffect(() => {
-    if (!postId) return;
-    markPostRead(postId);
-  }, [postId, markPostRead]);
+  // 已读不是路由事件（report-read-dwell P1-7）：删除了「进入详情即 markPostRead」
+  // 的 effect；已读只由 PostCard 的视窗停留触发（后台标签页/未看见不得标）。
 
   /** 沉浸式回复编辑器：默认收起，点回复入口 / ?reply=1 才展开。 */
   const [replyOpen, setReplyOpen] = useState(false);

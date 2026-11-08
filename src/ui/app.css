@@ -26,6 +26,20 @@
   }
 }
 
+/* ── 未读帖高亮令牌（report-read-dwell design §5.1；主题同源，不硬编码色）── */
+:root {
+  --read-tint: color-mix(in oklab, var(--primary) 5%, transparent);
+  --read-tint-strong: color-mix(in oklab, var(--primary) 8%, transparent);
+  --read-accent: color-mix(in oklab, var(--primary) 55%, transparent);
+  --read-new-tint: color-mix(in oklab, var(--primary) 10%, transparent);
+}
+.dark {
+  --read-tint: oklch(1 0 0 / 4%);
+  --read-tint-strong: oklch(1 0 0 / 6%);
+  --read-accent: oklch(1 0 0 / 55%);
+  --read-new-tint: oklch(1 0 0 / 9%);
+}
+
 /* ── View Transitions（design §7；曲线对齐 iOS）────────────────────────────
  * 主路径由 document.startViewTransition 驱动，这里只写 old/new 的关键帧与曲线。
  * iOS 语义：**进场与退场用不同曲线**——
@@ -191,5 +205,68 @@ html[data-vt="fade"]::view-transition-new(root) {
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 6;
     overflow: hidden;
+  }
+
+  /* ── 未读高亮 / 停留已读（report-read-dwell design §5）──────────────────
+   * 未读＝整卡淡底 + 左侧 3px 强调条（x=0..3，不碰线程导轨 x=38..40）。
+   * 选中态（data-selected=1）压过未读底色；高亮不改变 padding/尺寸（CLS=0）。
+   */
+  @keyframes read-fade-out {
+    from {
+      background-color: var(--read-tint);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  @keyframes read-new-pulse {
+    from {
+      background-color: var(--read-new-tint);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  article[data-read="0"]:not([data-selected="1"]) {
+    background-color: var(--read-tint);
+  }
+  article[data-read="0"]:not([data-selected="1"]):hover {
+    background-color: var(--read-tint-strong);
+  }
+  article[data-read]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background-color: var(--read-accent);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 200ms ease-out;
+  }
+  article[data-read="0"]:not([data-selected="1"])::after {
+    opacity: 1;
+  }
+  /* 达标瞬间：背景 1.2s 淡出（引擎写 data-dwell-state=read 时触发一次）。 */
+  article[data-read="1"][data-dwell-state="read"] {
+    animation: read-fade-out 1200ms var(--ios-ease-out);
+  }
+  /* 新帖入场：复用 flashIds 包裹层（900ms 背景脉冲）；仅未读卡生效。 */
+  .report-row-new > article[data-read="0"] {
+    animation: read-new-pulse 900ms var(--ios-ease-out);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    article[data-read] {
+      transition: none;
+    }
+    article[data-read]::after {
+      transition: none;
+    }
+    article[data-read="1"][data-dwell-state="read"],
+    .report-row-new > article[data-read="0"] {
+      animation: none;
+    }
   }
 }

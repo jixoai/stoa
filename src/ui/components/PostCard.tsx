@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "cn";
 import type { PostView } from "@core/types";
 
@@ -22,6 +22,8 @@ import { copyText, postLink } from "@/lib/copy";
 import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
 import { useBookmarks } from "@/state/bookmarks";
+import { usePostReadFlag } from "@/state/notifications";
+import { useReadDwell } from "@/components/ReadDwellProvider";
 import { prefetchThread } from "@/state/cache";
 import { markSharedSubject } from "@/lib/shared-element";
 import { toastReadOnly } from "@/lib/readonly";
@@ -80,7 +82,7 @@ export function PostCard({
   className,
   testId,
 }: PostCardProps) {
-  const { staticMode, client } = useConnection();
+  const { staticMode, client, account } = useConnection();
   const { isBookmarked, toggle: toggleBookmark } = useBookmarks();
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -88,6 +90,38 @@ export function PostCard({
   const longPressed = useRef(false);
   const deleted = post.deleted_at !== null;
   const author = post.author_account;
+  // 停留已读（report-read-dwell）：两个分支的根 article 共用一个 ref。
+  const articleRef = useRef<HTMLElement | null>(null);
+  const readDwell = useReadDwell();
+  const read = usePostReadFlag(post.id, post.seq);
+  const own = account !== null && post.author === account.id;
+  // 自己的帖/软删帖不显示未读高亮，也不注册观察；静态归档/无 IO 降级同理（P1-6）。
+  const trackable = !staticMode && readDwell.active && !deleted && !own;
+  const quotedMedia = post.quoted_visible ? (post.quoted?.media.length ?? 0) : 0;
+  const hasMedia = post.media.length > 0 || quotedMedia > 0;
+
+  useEffect(() => {
+    const el = articleRef.current;
+    if (!el || !trackable) return;
+    readDwell.observe(el, {
+      postId: post.id,
+      author: post.author,
+      seq: post.seq,
+      bodyMd: post.body_md,
+      hasMedia,
+      deleted,
+    });
+    return () => readDwell.unobserve(el);
+  }, [
+    readDwell,
+    trackable,
+    post.id,
+    post.author,
+    post.seq,
+    post.body_md,
+    hasMedia,
+    deleted,
+  ]);
   // 目标页（焦点帖）用静态共享名；列表/回复/上文卡片不使用静态名，
   // 由点击处理器按「被点击的主体」打标（lib/shared-element）。
   const canShare = variant === "focal";
@@ -136,10 +170,13 @@ export function PostCard({
     const source = deleted ? post.body_md : `${post.body_md}${inlineNumber}`;
     return (
       <article
+        ref={articleRef}
         data-post-id={post.id}
         data-shared-host
         data-author={post.author}
         data-testid={testId ?? "post-self-continuation"}
+        data-read={trackable ? (read ? "1" : "0") : undefined}
+        data-selected={selected ? "1" : undefined}
         className={cn("relative flex items-start px-4 py-1.5", selected && "bg-accent/50", className)}
         style={{ gap: 6 }}
         onClick={(event) => {
@@ -184,11 +221,14 @@ export function PostCard({
 
   return (
     <article
+      ref={articleRef}
       data-post-id={post.id}
       data-shared-host
       data-author={post.author}
       data-testid={testId ?? "post-card"}
       data-variant={variant}
+      data-read={trackable ? (read ? "1" : "0") : undefined}
+      data-selected={selected ? "1" : undefined}
       className={cn(
         "relative px-4 transition-colors",
         variant === "feed" ? "pb-3" : "pb-1.5",
