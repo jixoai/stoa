@@ -492,3 +492,9 @@ article[data-read="0"]:not([data-selected="1"])::after { opacity: 1; }
   连续标记 600 条后最早 100 条仍已读；localStorage <150KB/账号。
 - **D12（2026-11-08）**：未读强调条画在 x=0..3，避开线程导轨 x=38..40；几何进验收 A13，
   与 `report-thread-timeline` 的视觉复核口径一致。
+
+## 13. 实测回填（2026-11-08 上线）
+
+- 生产只读 smoke **12/12 PASS**（390/1280 两视口）：`app-CLtsH--q.js`；停留 964–1195ms 翻已读、`read-fade-out` running；详情覆盖层下邻居卡 `data-read=0`/`paused`/marks=1；快速滚过 3 屏 0 误标；通知行与角标 30→29 同步。
+- 生产零写入：posts 100→100、events 152→152、max_seq 453→453；无发帖/回帖/点赞/收藏/ack/插件切换。
+- 隔离 QA 63/63、notifications-read 16/16；单测 351 pass；性能 202 卡 × 10 屏：observers=1、targets=202/201、无 >50ms longtask、节点身份稳定。

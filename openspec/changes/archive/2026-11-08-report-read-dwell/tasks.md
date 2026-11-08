@@ -120,7 +120,7 @@
 
 ## P3. 收口
 
-- [ ] P3-1. 文档与归档：回填实测数字（observer 数/写入次数/长任务/两视口截图），
+- [x] P3-1. 文档与归档：回填实测数字（observer 数/写入次数/长任务/两视口截图），
   更新 `report-surface` / `report-social` / `report-static-mode` 增量若实现有偏差；
   `npx openspec validate report-read-dwell --strict` 通过；归档 change。
   - 判据：validate PASS（长文本 warning 可接受）；archive 就位；QA 结果随报告留存。
