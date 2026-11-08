@@ -52,28 +52,31 @@ export function ReplyComposer({ post, open, onOpenChange, onPosted }: ReplyCompo
           </DialogTitle>
         </header>
 
-        <div className="min-h-0 overflow-y-auto" data-testid="reply-composer-scroll">
-          <div className="flex gap-3 px-4 pt-3">
+        <div className="flex min-h-0 flex-col overflow-hidden" data-testid="reply-composer-body">
+          <div className="flex min-h-0 gap-3 px-4 pt-3">
             <div className="shrink-0">
               <AuthorAvatar account={post.author_account} fallbackId={post.author} size="small" />
             </div>
-            <div className="min-w-0 flex-1">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
               <AuthorLine
                 account={post.author_account}
                 fallbackId={post.author}
                 time={fullTime(post.created_at)}
               />
-              <div className="mt-1 line-clamp-6 text-sm text-foreground/90 [&_p]:my-1">
+              <div
+                className="mt-1 min-h-0 max-h-[40dvh] overflow-y-auto overscroll-contain pr-1 text-sm text-foreground/90 [&_p]:my-1"
+                data-testid="reply-context-body"
+              >
                 <Markdown source={post.body_md} />
               </div>
             </div>
           </div>
 
-          <div className="px-4 pt-3 text-sm text-muted-foreground" data-testid="reply-to-line">
+          <div className="shrink-0 px-4 pt-3 text-sm text-muted-foreground" data-testid="reply-to-line">
             回复给 <span className="text-primary">@{post.author}</span>
           </div>
 
-          <div className="px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2">
+          <div className="shrink-0 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2">
             <PostComposer
               mode="reply"
               parentId={post.id}
@@ -81,6 +84,7 @@ export function ReplyComposer({ post, open, onOpenChange, onPosted }: ReplyCompo
               autoFocus
               showTabs={false}
               tall
+              textareaClassName="max-h-[24dvh] overflow-y-auto sm:max-h-40"
               submitLabel="回复"
               submitTestId="reply-submit"
               placeholder="发布你的回复…"

@@ -95,10 +95,19 @@ bun scripts/qa/event-hub-client.mjs       # EventHub client P1: two-context live
                                           # reset (REPLAY_LIMIT=2 board), rollback (snapshot/restore
                                           # board), degraded 60s polling, instance-switch cache,
                                           # member-page single stream, degraded screenshots
+bun scripts/qa/instance-page.mjs          # 实例管理页 A1-A9（静态壳 + mock /healthz + 真实
+                                          # 隔离板连接）+ 回复原帖完整显示 A10（80 行长帖，
+                                          # 390 全屏 / 1280 Dialog）
 ```
 
 Behaviour:
 
+- `instance-page.mjs` 默认先 `bun run build`；实例管理页由脚本内 `Bun.serve` 托管的
+  **纯静态 dist/**（无 `/healthz`）驱动，历史与在线状态用 Playwright route 伪造
+  `/healthz`（online / 503 / abort），真实连接流程用 `qa-serve` 隔离板验证。
+  回复上下文用一条 80 行长帖，结束时在隔离库硬清除；截图与 `results.json` /
+  `steps.json` 落 `<主仓>/.agents/reports/manager/report-instance-page/`。
+  `--no-build` 复用现有 dist，`--report-dir <dir>` 覆盖证据目录。
 - `read-dwell.mjs` 默认先 `bun run build`（qa-serve 托管 dist/），再用 CLI
   `export` 生成 `file://` 静态归档做 A5；`--no-build` 复用现有 dist。
   证据默认落 `<主仓>/.agents/reports/manager/report-read-dwell/`

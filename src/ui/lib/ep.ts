@@ -98,6 +98,59 @@ export async function probeSameOriginEp(): Promise<EpCheck> {
   }
 }
 
+/** 用户主动连接前的健康探测结果（不打印/不回显响应体，也不回显任何凭据）。 */
+export interface EpHealth {
+  ok: boolean;
+  error?: string;
+  instanceId?: string;
+  version?: string;
+}
+
+/**
+ * 探测任意已校验 ep 的 `/healthz`：只有 report 协议（ok + instanceId）才算在线。
+ * 超时/HTTP 错误/非 JSON/网络错误都给出可读错误，供实例管理页就地 Alert。
+ */
+export async function probeEpHealth(url: string, timeoutMs = 5000): Promise<EpHealth> {
+  const checked = checkEp(url);
+  if (!checked.ok || !checked.url) {
+    return { ok: false, error: checked.error ?? "地址不合法" };
+  }
+  const seconds = Math.max(1, Math.round(timeoutMs / 1000));
+  let res: Response;
+  try {
+    res = await fetch(`${checked.url}/healthz`, {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-store",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    const name = (err as { name?: string } | null)?.name;
+    if (name === "TimeoutError" || name === "AbortError") {
+      return { ok: false, error: `连接超时（${seconds} 秒内没有响应）` };
+    }
+    return { ok: false, error: "无法访问该地址（网络错误、CORS 或证书问题）" };
+  }
+  if (!res.ok) return { ok: false, error: `目标 /healthz 返回 HTTP ${res.status}` };
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return { ok: false, error: "/healthz 返回的不是 JSON" };
+  }
+  const record = (data ?? {}) as Record<string, unknown>;
+  if (record.ok !== true || typeof record.instanceId !== "string" || !record.instanceId) {
+    return { ok: false, error: "目标不是 report 实例（/healthz 响应不符合协议）" };
+  }
+  return {
+    ok: true,
+    instanceId: record.instanceId,
+    version: typeof record.version === "string" ? record.version : undefined,
+  };
+}
+
 export function loadCurrentEp(): string | null {
   try {
     const raw = localStorage.getItem(EP_KEY);
@@ -125,18 +178,73 @@ export function clearCurrentEp(): void {
   }
 }
 
-export function loadEpHistory(): string[] {
+/** 实例历史条目；`lastUsedAt=0` 表示旧版纯字符串条目（时间未知）。 */
+export interface EpHistoryEntry {
+  url: string;
+  lastUsedAt: number;
+}
+
+const EP_HISTORY_LIMIT = 8;
+
+/** 兼容旧格式 `string[]` 与新版 `{url,lastUsedAt}[]`（可混排）。 */
+function parseEpHistory(raw: string | null): EpHistoryEntry[] {
+  if (!raw) return [];
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(EP_HISTORY_KEY) ?? "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is string => typeof item === "string" && checkEp(item).ok).slice(0, 8);
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+
+  const seen = new Set<string>();
+  const entries: EpHistoryEntry[] = [];
+  for (const item of parsed) {
+    let candidateUrl: unknown;
+    let candidateTime: unknown;
+    if (typeof item === "string") {
+      candidateUrl = item;
+    } else if (item && typeof item === "object") {
+      candidateUrl = (item as { url?: unknown }).url;
+      candidateTime = (item as { lastUsedAt?: unknown }).lastUsedAt;
+    }
+    if (typeof candidateUrl !== "string") continue;
+    const checked = checkEp(candidateUrl);
+    if (!checked.ok || !checked.url || seen.has(checked.url)) continue;
+    seen.add(checked.url);
+    entries.push({
+      url: checked.url,
+      lastUsedAt:
+        typeof candidateTime === "number" && Number.isFinite(candidateTime) && candidateTime > 0
+          ? candidateTime
+          : 0,
+    });
+    if (entries.length >= EP_HISTORY_LIMIT) break;
+  }
+  return entries;
+}
+
+export function loadEpHistoryEntries(): EpHistoryEntry[] {
+  try {
+    return parseEpHistory(localStorage.getItem(EP_HISTORY_KEY));
   } catch {
     return [];
   }
 }
 
+/** 旧调用面（只关心地址）：保留给非管理页消费者。 */
+export function loadEpHistory(): string[] {
+  return loadEpHistoryEntries().map((entry) => entry.url);
+}
+
 export function rememberEp(url: string): void {
-  const list = [url, ...loadEpHistory().filter((item) => item !== url)].slice(0, 8);
+  const checked = checkEp(url);
+  if (!checked.ok || !checked.url) return;
+  const normalized = checked.url;
+  const list = [
+    { url: normalized, lastUsedAt: Date.now() },
+    ...loadEpHistoryEntries().filter((entry) => entry.url !== normalized),
+  ].slice(0, EP_HISTORY_LIMIT);
   try {
     localStorage.setItem(EP_HISTORY_KEY, JSON.stringify(list));
   } catch {
@@ -145,9 +253,17 @@ export function rememberEp(url: string): void {
 }
 
 export function forgetEp(url: string): void {
-  const list = loadEpHistory().filter((item) => item !== url);
+  const list = loadEpHistoryEntries().filter((entry) => entry.url !== url);
   try {
     localStorage.setItem(EP_HISTORY_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
+export function clearEpHistory(): void {
+  try {
+    localStorage.removeItem(EP_HISTORY_KEY);
   } catch {
     // ignore
   }

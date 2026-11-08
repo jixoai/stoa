@@ -83,6 +83,8 @@ interface PostComposerProps {
   showTabs?: boolean;
   /** 沉浸式编辑：正文区更高，铺出编辑空间。 */
   tall?: boolean;
+  /** 追加到正文 textarea 的类（回复编辑器用于给长草稿加高度上限，footer 常驻）。 */
+  textareaClassName?: string;
   /** 提交按钮的 testid（回复编辑器用 reply-submit；发帖箱默认 composer-submit）。 */
   submitTestId?: string;
 }
@@ -150,6 +152,7 @@ export function PostComposer({
   submitLabel,
   showTabs = true,
   tall = false,
+  textareaClassName,
   submitTestId = "composer-submit",
 }: PostComposerProps) {
   const { client, accounts, staticMode } = useConnection();
@@ -525,7 +528,7 @@ export function PostComposer({
                   ? "有什么要说？@ 提及某人，# 标注标签…"
                   : "发布你的回复…（支持 markdown，@ 提及，# 标签）")
               }
-              className={cn("min-h-28 px-0 py-0", compact && "min-h-20", tall && "min-h-[32dvh] sm:min-h-32")}
+              className={cn("min-h-28 px-0 py-0", compact && "min-h-20", tall && "min-h-[32dvh] sm:min-h-32", textareaClassName)}
               data-testid="composer-input"
             />
 

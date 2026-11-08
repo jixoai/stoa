@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowRightIcon,
   BookOpenIcon,
+  ChevronDownIcon,
+  CircleAlertIcon,
+  CircleSlashIcon,
+  CopyIcon,
   HistoryIcon,
-  RadioIcon,
+  RefreshCwIcon,
   ServerIcon,
   ShieldCheckIcon,
   Trash2Icon,
+  WifiIcon,
+  WifiOffIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,44 +22,170 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
-import { checkEp, forgetEp, loadEpHistory } from "@/lib/ep";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Spinner } from "@/components/ui/spinner";
+import { toast } from "@/components/ui/toast";
+import {
+  checkEp,
+  clearEpHistory,
+  clearToken,
+  forgetEp,
+  loadEpHistoryEntries,
+  probeEpHealth,
+  type EpHistoryEntry,
+} from "@/lib/ep";
+import { copyText } from "@/lib/copy";
+import { fullTime, roleLabel, timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
 
+type ProbeState = "probing" | "online" | "offline";
+
+/** 最后使用时间的口语化文案（timeShort 的「1 分」在管理列表里太省略）。 */
+function lastUsedText(ts: number): string {
+  if (!Number.isFinite(ts) || ts <= 0) return "时间未知";
+  const diff = Date.now() - ts;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
+  return timeShort(ts);
+}
+
+function ProbeBadge({ state }: { state: ProbeState | undefined }) {
+  if (!state || state === "probing") {
+    return (
+      <Badge variant="outline" className="gap-1" data-testid="ep-probe-status">
+        <Spinner className="size-3" /> 探测中
+      </Badge>
+    );
+  }
+  if (state === "online") {
+    return (
+      <Badge variant="secondary" className="gap-1" data-testid="ep-probe-status">
+        <WifiIcon className="size-3" /> 在线
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="destructive" className="gap-1" data-testid="ep-probe-status">
+      <WifiOffIcon className="size-3" /> 离线
+    </Badge>
+  );
+}
+
 /**
- * 落地页：无 ep 时显示（输入框 + 历史 + 用法）。
- * 这里不写任何后端地址——用户自己贴；历史来自 localStorage。
+ * 实例管理页：无 ep 时显示。
+ *
+ * 信息架构（spec report-app-ui「实例管理页结构」）：
+ *   品牌 + 一句用途 → 当前连接 → 添加实例 → 我的实例 → 如何启动实例（折叠）。
+ * 历史只存本机 localStorage；在线探测走目标既有 GET /healthz；不新增后端接口。
  */
 export function LandingPage() {
-  const { connect, error: connectError } = useConnection();
+  const { connect, error: connectError, lastConnection } = useConnection();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<string[]>(() => loadEpHistory());
+  const [submitting, setSubmitting] = useState(false);
+  const [history, setHistory] = useState<EpHistoryEntry[]>(() => loadEpHistoryEntries());
+  const [probes, setProbes] = useState<Record<string, ProbeState>>({});
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const alive = useRef(true);
 
   useEffect(() => {
-    setHistory(loadEpHistory());
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
   }, []);
 
-  const submit = (event: FormEvent) => {
+  const probeOne = useCallback(async (url: string) => {
+    if (!alive.current) return;
+    setProbes((prev) => ({ ...prev, [url]: "probing" }));
+    const result = await probeEpHealth(url);
+    if (!alive.current) return;
+    setProbes((prev) => ({ ...prev, [url]: result.ok ? "online" : "offline" }));
+  }, []);
+
+  useEffect(() => {
+    for (const entry of loadEpHistoryEntries()) void probeOne(entry.url);
+  }, [probeOne]);
+
+  const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (submitting) return;
     const checked = checkEp(value);
     if (!checked.ok) {
       setError(checked.error ?? "地址不合法");
       return;
     }
     setError(null);
-    void connect(checked.url!);
+    setSubmitting(true);
+    try {
+      const health = await probeEpHealth(checked.url!);
+      if (!health.ok) {
+        setError(health.error ?? "无法连接该实例");
+        return;
+      }
+      await connect(checked.url!);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const copyAddress = async (url: string) => {
+    const ok = await copyText(url);
+    toast.add({
+      type: ok ? "success" : "error",
+      title: ok ? "地址已复制" : "复制失败",
+      description: url,
+      timeout: 2400,
+    });
+  };
+
+  const removeEntry = (url: string) => {
+    forgetEp(url);
+    // 移除历史 = 移除该实例留在本机的登录凭据（access token）。
+    clearToken(url);
+    setHistory(loadEpHistoryEntries());
+    setProbes((prev) => {
+      const next = { ...prev };
+      delete next[url];
+      return next;
+    });
+  };
+
+  const clearHistory = () => {
+    for (const entry of loadEpHistoryEntries()) clearToken(entry.url);
+    clearEpHistory();
+    setHistory([]);
+    setProbes({});
+    setConfirmClear(false);
   };
 
   const version = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.1.0";
   const shownError = error ?? connectError;
-
   const usage = useMemo(
     () => [
       "在数据目录起一个本地实例：bun src/cli/main.ts serve --data-dir <数据目录>",
-      "把 serve 打印的 REPORT_URL（或你经隧道曝光的域名）填进左边输入框",
+      "把 serve 打印的 REPORT_URL（或你经隧道曝光的域名）填进「添加实例」",
       "认证模式首访输入 FDE2E_REPORT_AUTH；之后 access token 只存本机 localStorage",
       "同一份 dist 可托管在任意静态宿主，ep 指向另一台机器上的实例也一样可用",
     ],
@@ -61,145 +193,340 @@ export function LandingPage() {
   );
 
   return (
-    <div className="flex min-h-dvh items-center justify-center p-4">
-      <div className="grid w-full max-w-5xl gap-4 lg:grid-cols-[1.15fr_1fr]">
-        <div className="flex flex-col justify-center gap-4 px-2 py-6">
-          <div className="flex items-center gap-3">
-            <span className="glass-primary flex size-12 items-center justify-center rounded-2xl text-xl font-semibold text-primary-foreground">
-              R
-            </span>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-semibold tracking-tight">report</h1>
-                <Badge variant="outline">v{version}</Badge>
-              </div>
-              <p className="text-sm text-muted-foreground">人机公示板 · 一个静态壳，连接你自己的实例</p>
+    <div
+      className="min-h-dvh max-h-dvh w-full overflow-y-auto overscroll-contain bg-background"
+      data-testid="instance-page"
+    >
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-4 pt-[calc(1.5rem+env(safe-area-inset-top))] pb-[calc(1.5rem+env(safe-area-inset-bottom))] sm:px-6 lg:gap-6 lg:pt-10">
+        <header className="flex items-center gap-3">
+          <span className="glass-primary flex size-12 shrink-0 items-center justify-center rounded-2xl text-xl font-semibold text-primary-foreground">
+            R
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-semibold tracking-tight">report</h1>
+              <Badge variant="outline">v{version}</Badge>
             </div>
+            <p className="text-sm text-muted-foreground">人机公示板 · 管理你连接的实例</p>
+          </div>
+        </header>
+
+        <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:items-start">
+          <div className="flex min-w-0 flex-col gap-5">
+            <Card data-testid="current-connection">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ServerIcon className="size-4" /> 当前连接
+                </CardTitle>
+                <CardDescription>本次会话内最近一次成功连接的实例</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {lastConnection ? (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {/* 静态归档不会进入本页（App 静态模式直达 ReadyApp）；分支保留以对齐 spec 口径。 */}
+                      <Badge variant={lastConnection.staticMode ? "outline" : "secondary"}>
+                        {lastConnection.staticMode ? "静态归档" : "已连接"}
+                      </Badge>
+                      <Badge variant="outline">
+                        {lastConnection.authMode === "auth" ? "认证模式" : "开放模式"}
+                      </Badge>
+                      {lastConnection.account ? (
+                        <Badge variant="outline">
+                          @{lastConnection.account.id}
+                          {lastConnection.account.id === lastConnection.account.role
+                            ? ""
+                            : ` · ${roleLabel(lastConnection.account.role)}`}
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <code
+                        className="min-w-0 flex-1 truncate rounded-md bg-muted px-2 py-1.5 font-mono text-xs"
+                        title={lastConnection.ep}
+                      >
+                        {lastConnection.ep}
+                      </code>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="icon"
+                        className="max-sm:size-11"
+                        aria-label="复制当前实例地址"
+                        data-testid="current-copy"
+                        onClick={() => void copyAddress(lastConnection.ep)}
+                      >
+                        <CopyIcon />
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className="flex items-start gap-3 py-1"
+                    data-testid="current-connection-empty"
+                  >
+                    <CircleSlashIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium">当前未连接</div>
+                      <div className="text-xs text-muted-foreground">
+                        从已连接的实例进入本页时，这里会显示它的地址、模式与身份。
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card data-testid="add-instance">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ShieldCheckIcon className="size-4" /> 添加实例
+                </CardTitle>
+                <CardDescription>
+                  只接受 https，或本机回环 http://localhost / 127.0.0.1
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-3">
+                <form onSubmit={submit} className="flex flex-col gap-3">
+                  <InputGroup className="max-sm:h-11">
+                    <InputGroupAddon>
+                      <ServerIcon />
+                    </InputGroupAddon>
+                    <InputGroupInput
+                      ref={inputRef}
+                      value={value}
+                      onChange={(event) => setValue(event.target.value)}
+                      placeholder="https://local-…  或  http://127.0.0.1:<端口>"
+                      aria-label="实例地址"
+                      data-testid="ep-input"
+                      className="max-sm:h-11"
+                      inputMode="url"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      enterKeyHint="go"
+                    />
+                    <InputGroupAddon align="inline-end">
+                      <InputGroupButton
+                        type="submit"
+                        variant="default"
+                        size="sm"
+                        className="max-sm:h-11"
+                        disabled={submitting}
+                        data-testid="ep-connect"
+                      >
+                        {submitting ? (
+                          <>
+                            <Spinner className="size-3.5" /> 探测中
+                          </>
+                        ) : (
+                          <>
+                            连接 <ArrowRightIcon data-icon="inline-end" />
+                          </>
+                        )}
+                      </InputGroupButton>
+                    </InputGroupAddon>
+                  </InputGroup>
+                  {shownError ? (
+                    <Alert variant="destructive" data-testid="ep-error">
+                      <CircleAlertIcon />
+                      <AlertTitle>无法连接</AlertTitle>
+                      <AlertDescription className="break-words">{shownError}</AlertDescription>
+                    </Alert>
+                  ) : null}
+                  <p className="text-xs text-muted-foreground">
+                    连接前会先探测 <code className="rounded bg-muted px-1">/healthz</code>；
+                    地址与历史只保存在本机 localStorage。
+                  </p>
+                </form>
+              </CardContent>
+            </Card>
           </div>
 
-          <p className="max-w-xl text-sm leading-relaxed text-muted-foreground">
-            时间线上有 owner、manager 与子代理；发帖、回复、互相 <code className="rounded bg-muted px-1">@</code>，
-            没有私信。页面由 report 后端托管时会自动连接本站；要连接其它实例，在下面填地址
-            （或经 <code className="rounded bg-muted px-1">?ep=</code> 覆盖）。
-          </p>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <ServerIcon className="size-4" /> 连接其它实例
-              </CardTitle>
-              <CardDescription>只接受 https，或本机回环 http://localhost / 127.0.0.1</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <form onSubmit={submit}>
-                <InputGroup>
-                  <InputGroupAddon>
-                    <ServerIcon />
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    value={value}
-                    onChange={(event) => setValue(event.target.value)}
-                    placeholder="https://local-…  或  http://127.0.0.1:<端口>"
-                    aria-label="后端地址"
-                    data-testid="ep-input"
-                    autoFocus
-                  />
-                  <InputGroupAddon align="inline-end">
-                    <InputGroupButton
-                      type="submit"
-                      variant="default"
-                      size="xs"
-                      data-testid="ep-connect"
-                    >
-                      连接 <ArrowRightIcon data-icon="inline-end" />
-                    </InputGroupButton>
-                  </InputGroupAddon>
-                </InputGroup>
-              </form>
-              {shownError ? (
-                <Alert variant="destructive">
-                  <AlertTitle>无法连接</AlertTitle>
-                  <AlertDescription>{shownError}</AlertDescription>
-                </Alert>
-              ) : null}
-              <p className="text-xs text-muted-foreground">
-                输入框不会请求任何第三方地址；连接前会先探测 <code>/healthz</code>。
-              </p>
-            </CardContent>
-          </Card>
-
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <Badge variant="secondary">
-              <ShieldCheckIcon className="size-3" /> 无 Cookie / Bearer only
-            </Badge>
-            <Badge variant="secondary">
-              <RadioIcon className="size-3" /> SSE 实时
-            </Badge>
-            <Badge variant="secondary">
-              <BookOpenIcon className="size-3" /> markdown 正文
-            </Badge>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <HistoryIcon className="size-4" /> 历史后端
-              </CardTitle>
-              <CardDescription>只保存在本机 localStorage（最近 8 个）</CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-1">
-              {history.length === 0 ? (
-                <p className="py-4 text-center text-sm text-muted-foreground">还没有连接过任何实例</p>
-              ) : (
-                history.map((url) => (
-                  <div key={url} className="flex items-center gap-1 rounded-lg hover:bg-muted/50">
+          <div className="flex min-w-0 flex-col gap-5">
+            <Card data-testid="my-instances">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <HistoryIcon className="size-4" /> 我的实例
+                </CardTitle>
+                <CardDescription>只保存在本机 localStorage（最近 8 个）</CardDescription>
+                {history.length > 0 ? (
+                  <CardAction>
                     <Button
+                      type="button"
                       variant="ghost"
                       size="sm"
-                      className="h-auto min-w-0 flex-1 justify-start px-2 py-2"
-                      onClick={() => void connect(url)}
+                      className="max-sm:min-h-11 text-muted-foreground"
+                      data-testid="ep-history-clear"
+                      onClick={() => setConfirmClear(true)}
                     >
-                      <ServerIcon data-icon="inline-start" />
-                      <span className="truncate font-mono text-xs">{url}</span>
+                      <Trash2Icon data-icon="inline-start" /> 清空历史
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label={`忘记 ${url}`}
-                      onClick={() => {
-                        forgetEp(url);
-                        setHistory(loadEpHistory());
-                      }}
-                    >
-                      <Trash2Icon />
-                    </Button>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
+                  </CardAction>
+                ) : null}
+              </CardHeader>
+              <CardContent className="flex flex-col gap-1">
+                {confirmClear && history.length > 0 ? (
+                  <Alert variant="destructive" data-testid="ep-history-clear-confirm">
+                    <CircleAlertIcon />
+                    <AlertTitle>清空历史？</AlertTitle>
+                    <AlertDescription className="flex flex-col gap-2">
+                      <span>将同时清除这些实例保存在本机的登录凭据。</span>
+                      <span className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          className="max-sm:min-h-11"
+                          data-testid="ep-history-clear-confirm-button"
+                          onClick={clearHistory}
+                        >
+                          确认清空
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="max-sm:min-h-11"
+                          onClick={() => setConfirmClear(false)}
+                        >
+                          取消
+                        </Button>
+                      </span>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+                {history.length === 0 ? (
+                  <Empty className="border-0 py-8" data-testid="ep-history-empty">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <ServerIcon />
+                      </EmptyMedia>
+                      <EmptyTitle>还没有连接过任何实例</EmptyTitle>
+                      <EmptyDescription>
+                        连接成功后会自动记录在这里，最多保留 8 个。
+                      </EmptyDescription>
+                    </EmptyHeader>
+                    <EmptyContent>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="max-sm:min-h-11"
+                        onClick={() => inputRef.current?.focus()}
+                      >
+                        添加实例
+                      </Button>
+                    </EmptyContent>
+                  </Empty>
+                ) : (
+                  history.map((entry) => {
+                    const state = probes[entry.url];
+                    return (
+                      <div
+                        key={entry.url}
+                        className="flex flex-col gap-2 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/40"
+                        data-testid="ep-history-item"
+                        data-url={entry.url}
+                        data-status={state ?? "probing"}
+                      >
+                        <div className="flex min-w-0 items-start gap-2">
+                          <ServerIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                          <div className="min-w-0 flex-1">
+                            <div className="break-all font-mono text-xs leading-relaxed">
+                              {entry.url}
+                            </div>
+                            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                              <span
+                                title={entry.lastUsedAt > 0 ? fullTime(entry.lastUsedAt) : undefined}
+                              >
+                                上次使用：{lastUsedText(entry.lastUsedAt)}
+                              </span>
+                              <ProbeBadge state={state} />
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2 pl-6">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="max-sm:min-h-11"
+                            data-testid="ep-history-connect"
+                            onClick={() => void connect(entry.url)}
+                          >
+                            连接
+                          </Button>
+                          {state === "offline" ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="max-sm:min-h-11"
+                              data-testid="ep-history-retry"
+                              onClick={() => void probeOne(entry.url)}
+                            >
+                              <RefreshCwIcon data-icon="inline-start" /> 重试
+                            </Button>
+                          ) : null}
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="max-sm:min-h-11 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            aria-label={`移除 ${entry.url}`}
+                            data-testid="ep-history-remove"
+                            onClick={() => removeEntry(entry.url)}
+                          >
+                            <Trash2Icon data-icon="inline-start" /> 移除
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </CardContent>
+            </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">用法</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2 text-sm text-muted-foreground">
-              {usage.map((line, index) => (
-                <div key={index} className="flex gap-2">
-                  <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-foreground">
-                    {index + 1}
+            <Card className="gap-0 py-0" data-testid="usage-card">
+              <Collapsible open={usageOpen} onOpenChange={setUsageOpen}>
+                <CollapsibleTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-auto w-full justify-between gap-2 rounded-none px-4 py-3 text-base font-medium hover:bg-muted/40"
+                      data-testid="usage-trigger"
+                    />
+                  }
+                >
+                  <span className="flex items-center gap-2">
+                    <BookOpenIcon className="size-4" /> 如何启动实例
                   </span>
-                  <span>{line}</span>
-                </div>
-              ))}
-              <Separator className="my-1" />
-              <p className="text-xs">
-                这是 worker 系列：静态壳与数据分离。当前阶段只私下用，线上部署等 Hive 认证服务就绪。
-              </p>
-            </CardContent>
-          </Card>
+                  <ChevronDownIcon
+                    className={usageOpen ? "rotate-180 transition-transform" : "transition-transform"}
+                  />
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="flex flex-col gap-2 border-t border-border/60 px-4 py-3 text-sm text-muted-foreground">
+                    {usage.map((line, index) => (
+                      <div key={index} className="flex gap-2">
+                        <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium text-foreground">
+                          {index + 1}
+                        </span>
+                        <span className="min-w-0 break-words">{line}</span>
+                      </div>
+                    ))}
+                    <Separator className="my-1" />
+                    <p className="text-xs">
+                      这是 worker 系列：静态壳与数据分离。当前阶段只私下用，线上部署等 Hive
+                      认证服务就绪。
+                    </p>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            </Card>
+          </div>
         </div>
       </div>
     </div>

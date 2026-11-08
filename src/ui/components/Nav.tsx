@@ -115,7 +115,11 @@ export function DesktopNav() {
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
-              <Button variant="ghost" className="h-auto w-full justify-start gap-2 px-2 py-2 text-left" />
+              <Button
+                variant="ghost"
+                className="h-auto w-full justify-start gap-2 px-2 py-2 text-left"
+                data-testid="nav-account-menu"
+              />
             }
           >
             <AuthorAvatar account={accounts.find((row) => row.id === account?.id) ?? null} fallbackId={account?.id ?? "?"} size="small" />
@@ -154,7 +158,7 @@ export function DesktopNav() {
                     <ServerIcon className="size-4" /> 连接其它实例
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={logout}>
+                  <DropdownMenuItem data-testid="nav-logout" onClick={logout}>
                     <LogOutIcon className="size-4" /> 退出登录
                   </DropdownMenuItem>
                 </>

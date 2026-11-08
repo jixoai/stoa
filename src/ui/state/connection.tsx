@@ -43,6 +43,17 @@ import {
 
 export type ConnectionPhase = "landing" | "connecting" | "login" | "ready" | "error";
 
+/**
+ * 离开 ready 后仍保留在内存里的连接摘要，供实例管理页的「当前连接」卡展示。
+ * 只在本次会话有效（刷新即无），不落盘、不新增后端接口。
+ */
+export interface ConnectionSummary {
+  ep: string;
+  staticMode: boolean;
+  authMode: "open" | "auth" | null;
+  account: { id: string; role: "owner" | "manager" | "agent" } | null;
+}
+
 export interface ConnectionValue {
   phase: ConnectionPhase;
   ep: string | null;
@@ -52,6 +63,8 @@ export interface ConnectionValue {
   account: { id: string; role: "owner" | "manager" | "agent" } | null;
   accounts: AccountRow[];
   who: WhoRow[];
+  /** 上一次成功连接（切换/退出后仍保留，刷新即无）。 */
+  lastConnection: ConnectionSummary | null;
   /** 当前 ep 与页面同源（页面由后端自身托管） */
   sameOrigin: boolean;
   /** 静态归档模式：数据来自内联快照，写入口全部只读（spec report-static-mode）。 */
@@ -106,6 +119,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<ConnectionValue["account"]>(boot?.info.account ?? null);
   const [accounts, setAccounts] = useState<AccountRow[]>(boot?.info.accounts ?? []);
   const [who, setWho] = useState<WhoRow[]>(boot?.info.who ?? []);
+  const [lastConnection, setLastConnection] = useState<ConnectionSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [staticMode, setStaticMode] = useState(boot !== null);
@@ -161,6 +175,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           // will be retried by the poll
         });
       setStaticMode(current.mode === "static");
+      setLastConnection({
+        ep: current.base,
+        staticMode: current.mode === "static",
+        authMode: authStatus.mode,
+        account: status.account,
+      });
       if (current.mode !== "static") {
         // 换实例（base 变化）必须在进入 ready 之前清掉实体缓存：feed/线程/身份
         // 的旧实例快照会作为首帧种子渲染，构成私域数据串台。
@@ -381,6 +401,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       who,
       sameOrigin,
       staticMode,
+      lastConnection,
       capabilities,
       snapshot: boot?.snapshot ?? null,
       error,
@@ -403,6 +424,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       who,
       sameOrigin,
       staticMode,
+      lastConnection,
       capabilities,
       boot,
       error,
