@@ -13,6 +13,10 @@ import type { Store } from "./store.ts";
 import type { IdleLease } from "./lease.ts";
 import { Hub } from "./hub.ts";
 import { runExport } from "./export.ts";
+import type { PreviewService } from "./preview/service.ts";
+import { builtinPlugin, LINK_PREVIEW } from "../core/plugins/builtin.ts";
+import type { PluginDependencyView, PluginView } from "../core/plugins/types.ts";
+import { previewPluginVersion, previewRulesVersion, PREVIEW_LIMITS } from "./preview/link-preview/provider.ts";
 import { join, resolve } from "node:path";
 
 export interface AppDeps {
@@ -30,6 +34,8 @@ export interface AppDeps {
   lease?: IdleLease | null;
   /** shared event hub; created on demand when the caller does not inject one */
   hub?: Hub;
+  /** preview plugin service (worker/scan); absent in unit-test apps */
+  previews?: PreviewService | null;
 }
 
 /**
@@ -40,7 +46,7 @@ export function corsHeaders(origin: string | undefined): Record<string, string> 
   if (!origin || !isAllowedOrigin(origin)) return {};
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "authorization, content-type, x-report-account",
     "Access-Control-Max-Age": "600",
     Vary: "Origin",
@@ -159,6 +165,32 @@ function publicAccount(account: Account): Record<string, unknown> {
   };
 }
 
+/** unit-test apps without a PreviewService 也返回同一 PluginView 形状。 */
+function fallbackPluginView(store: Store): PluginView {
+  const requires: PluginDependencyView[] = (LINK_PREVIEW.requires ?? []).map((dep) => {
+    const builtin = builtinPlugin(dep.id);
+    return {
+      ...dep,
+      status: builtin ? (store.pluginEnabled(dep.id) ? "enabled" : "disabled") : "missing",
+    };
+  });
+  const viewerBase = process.env.FDE2E_FILEVIEWER_BASE?.trim();
+  return {
+    id: LINK_PREVIEW.id,
+    name: LINK_PREVIEW.name,
+    description: LINK_PREVIEW.description,
+    version: previewPluginVersion(),
+    rules_version: previewRulesVersion(),
+    kind: LINK_PREVIEW.kind,
+    capabilities: LINK_PREVIEW.capabilities,
+    enabled: store.pluginEnabled(LINK_PREVIEW.id),
+    default_enabled: LINK_PREVIEW.defaultEnabled,
+    requires,
+    viewer_base: viewerBase && viewerBase ? viewerBase : null,
+    limits: { ...PREVIEW_LIMITS },
+  };
+}
+
 export function createApp(deps: AppDeps): Hono {
   const app = new Hono();
   const hub =
@@ -211,6 +243,7 @@ export function createApp(deps: AppDeps): Hono {
       version: capabilities().version,
       lease: deps.lease?.snapshot() ?? null,
       hub: hub.snapshot(),
+      ...(deps.previews ? { preview_policy: deps.previews.policySnapshot() } : {}),
     }),
   );
 
@@ -839,6 +872,41 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({ ok: true, account: account.id, cursor: deps.store.getCursor(account.id) });
   });
 
+  // ── plugins（report-link-preview P1-12：仅内置 link-preview）─────────────────
+  app.get("/api/plugins", (c) => {
+    identity(c, deps);
+    const plugins = deps.previews ? [deps.previews.pluginView()] : [fallbackPluginView(deps.store)];
+    return c.json({ ok: true, plugins });
+  });
+
+  app.patch("/api/plugins/:id", async (c) => {
+    const me = identity(c, deps);
+    requireGlobal(me);
+    const id = c.req.param("id");
+    if (id !== LINK_PREVIEW.id || !builtinPlugin(id)) {
+      fail("NOT_FOUND", `plugin "${id}" not found`);
+    }
+    const body = await readJson(c);
+    if (typeof body.enabled !== "boolean") {
+      fail("BAD_REQUEST", "enabled must be a boolean");
+    }
+    const enabled = body.enabled;
+    let plugin: PluginView;
+    if (deps.previews) {
+      plugin = deps.previews.setEnabled(enabled, me.id);
+    } else {
+      deps.store.setPluginEnabled(id, enabled, me.id);
+      plugin = fallbackPluginView(deps.store);
+    }
+    // 控制帧（无 DB 事件）：其他标签页立即隐藏/恢复卡片（design §8.2）。
+    hub.broadcastControl("plugin.updated", {
+      plugin_id: id,
+      enabled: plugin.enabled,
+      version: plugin.version,
+    });
+    return c.json({ ok: true, plugin });
+  });
+
   // ── status / export ─────────────────────────────────────────────────────────
   app.get("/api/status", (c) => {
     const account = identity(c, deps);
@@ -864,6 +932,7 @@ export function createApp(deps: AppDeps): Hono {
       drafts,
       pending_export: deps.store.pendingExport(),
       hub: hub.snapshot(),
+      preview_worker: deps.previews?.stats() ?? null,
     });
   });
 

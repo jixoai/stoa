@@ -22,6 +22,7 @@ import type {
 } from "../core/types.ts";
 import { openDatabase } from "./db.ts";
 import { Store, type Viewer } from "./store.ts";
+import { LINK_PREVIEW } from "../core/plugins/builtin.ts";
 
 export interface ExportOptions {
   dataDir: string;
@@ -88,6 +89,8 @@ export interface Snapshot {
   posts: SnapshotPost[];
   participants: Record<string, string[]>;
   media: SnapshotMedia[];
+  /** 导出时的 link-preview 开关；静态 UI 据此决定是否渲染预览区。 */
+  preview_enabled: boolean;
 }
 
 function safeJson(value: unknown): string {
@@ -191,6 +194,8 @@ export function buildSnapshot(store: Store, viewerId = "owner"): Snapshot {
     media: [...mediaByKey.values()].sort(
       (a, b) => a.hash.localeCompare(b.hash) || a.ext.localeCompare(b.ext),
     ),
+    // 只读导出：不启动 worker/不入队/不抓取。旧 v4 库没有预览表 → false。
+    preview_enabled: store.hasPreviewTable() && store.pluginEnabled(LINK_PREVIEW.id),
   };
 }
 

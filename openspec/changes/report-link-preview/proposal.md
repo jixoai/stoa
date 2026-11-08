@@ -22,7 +22,7 @@
 
 **口径落地**：
 
-1. `PostView.previews: PreviewLink[]` 是**持久化字段**（0..3，主卡第一条），静态导出原样包含；
+1. `PostView.previews: PreviewLink[]` 是**持久化字段**（0..3，按正文出现顺序；首条为初始页，无主卡），静态导出原样包含；
    导出/静态壳零运行时抓取。
 2. 写入路径只抽 URL + 建 `pending` 行 + 持久化 `preview_jobs`；帖子立即返回。异步 worker
    最新优先处理，多阶段写字段（title/description → cover；图片 P2 再加 4:3 裁剪/图片标题）。

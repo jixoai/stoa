@@ -1,4 +1,5 @@
 /** Domain types (runtime-agnostic). Mirrors design.md §5. */
+import type { PreviewLink } from "./plugins/types.ts";
 
 export type Role = "owner" | "manager" | "agent";
 
@@ -68,8 +69,9 @@ export interface Mention {
 /**
  * Event kinds stored in the `events` table. `post.deleted` is a system event:
  * it is pushed by the event hub but never delivered as a notification.
+ * `post.updated` 是预览字段的多阶段更新事件（不进通知/未读/CLI）。
  */
-export type EventType = "post.created" | "post.deleted" | "thread.invited";
+export type EventType = "post.created" | "post.deleted" | "thread.invited" | "post.updated";
 
 /**
  * 进入通知列表的事件类型（单一信源）：REST peek、CLI wait-notifications、
@@ -170,6 +172,8 @@ export interface PostView extends Post {
   reply_count: number;
   quoted: QuotedView | null;
   quoted_visible: boolean;
+  /** 持久化预览字段（0..3，第一条为主卡）；无链接帖为 []。 */
+  previews: PreviewLink[];
 }
 
 export interface ThreadNode extends PostView {

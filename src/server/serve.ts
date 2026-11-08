@@ -26,6 +26,10 @@ import { isLoopbackHost, listenInRange } from "./ports.ts";
 import { cleanupStaleExports, runExport } from "./export.ts";
 import { DEFAULT_IDLE_TIMEOUT_SEC, IdleLease } from "./lease.ts";
 import { VERSION } from "../core/protocol.ts";
+import { HttpPreviewTransport } from "./preview/fetch.ts";
+import { LINK_PREVIEW_PROVIDER } from "./preview/link-preview/provider.ts";
+import { PreviewService } from "./preview/service.ts";
+import { parseTestAllowOrigins } from "./preview/ssrf.ts";
 
 /** Default idle lease: 30 minutes (design §1). */
 export const DEFAULT_IDLE_TIMEOUT_MS = DEFAULT_IDLE_TIMEOUT_SEC * 1000;
@@ -116,6 +120,23 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
 
   const presence = new Presence();
   const hub = new Hub({ store, presence, instanceId });
+  // 预览 worker/抓取器：曝光或非回环时测试白名单强制失效（design §7.5）。
+  const env = opts.processEnv ?? process.env;
+  const previewTestOrigins = exposed
+    ? []
+    : parseTestAllowOrigins(env.FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS);
+  const previewTransport = new HttpPreviewTransport({
+    testAllowOrigins: previewTestOrigins,
+    allowedPorts: [8080, 8443],
+  });
+  const previews = new PreviewService({
+    store,
+    provider: LINK_PREVIEW_PROVIDER,
+    transport: previewTransport,
+    instanceId,
+    workerEnabled: env.FDE2E_REPORT_PREVIEW_WORKER !== "0",
+    policy: { test_allowlist_enabled: previewTestOrigins.length > 0, exposed },
+  });
   const deps = {
     store,
     auth,
@@ -129,6 +150,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     // Assigned once the lease exists; createApp reads it lazily per request.
     lease: null as IdleLease | null,
     hub,
+    previews,
   };
   const app = createApp(deps);
 
@@ -161,6 +183,9 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   };
   writeServerInfo(dataDir, info);
 
+  // serve ready 之后才启动预览 worker（导出/静态路径永不启动，design §12）。
+  previews.start();
+
   const authStatus = auth.status(exposed && mode === "open");
   const banner = [
     `fde2e-report-worker ${VERSION}`,
@@ -185,6 +210,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     if (closed) return;
     closed = true;
     lease?.stop();
+    await previews.stop();
     // Give live SSE clients a `bye{shutdown}` before the socket is torn down.
     try {
       await Promise.race([

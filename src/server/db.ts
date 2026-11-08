@@ -46,7 +46,7 @@ export function run(
   return { changes: Number(res.changes), lastInsertRowid: Number(res.lastInsertRowid) };
 }
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 function hasColumn(db: Database, table: string, column: string): boolean {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -191,6 +191,49 @@ export function migrate(db: Database): void {
       PRIMARY KEY (follower_id, followee_id)
     );
     CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows(followee_id);
+
+    -- v5: 帖子持久化预览字段（report-link-preview design §3.1，schema 逐字）。
+    CREATE TABLE IF NOT EXISTS post_previews (
+      post_id      TEXT NOT NULL,
+      position     INTEGER NOT NULL,
+      url          TEXT NOT NULL,
+      url_hash     TEXT NOT NULL,
+      label        TEXT,
+      cache_key    TEXT NOT NULL,
+      kind         TEXT NOT NULL DEFAULT 'unknown',
+      mime         TEXT,
+      title        TEXT,
+      description  TEXT,
+      site_name    TEXT,
+      final_url    TEXT,
+      cover_url    TEXT,
+      cover_w      INTEGER,
+      cover_h      INTEGER,
+      cover_kind   TEXT,
+      status       TEXT NOT NULL DEFAULT 'pending',
+      phase        TEXT NOT NULL DEFAULT 'queued',
+      fields_ready TEXT NOT NULL DEFAULT '[]',
+      attempts     INTEGER NOT NULL DEFAULT 0,
+      error_code   TEXT,
+      updated_at   INTEGER NOT NULL,
+      PRIMARY KEY (post_id, position)
+    );
+
+    -- v5: 持久化预览任务队列（design §3.2）。
+    CREATE TABLE IF NOT EXISTS preview_jobs (
+      post_id         TEXT NOT NULL,
+      url_hash        TEXT NOT NULL,
+      cache_key       TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'queued',
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      next_run_at     INTEGER NOT NULL,
+      enqueued_at     INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL,
+      phase           TEXT,
+      post_created_at INTEGER NOT NULL,
+      last_error      TEXT,
+      PRIMARY KEY (post_id, url_hash)
+    );
   `);
 
   // ── additive migrations for databases created before schema v2 ──────────────
@@ -219,6 +262,62 @@ export function migrate(db: Database): void {
   // v3：媒体固有尺寸（前端占位预留）。老库补列；历史行在读取时按需解析并回填。
   if (!hasColumn(db, "media", "w")) db.exec("ALTER TABLE media ADD COLUMN w INTEGER");
   if (!hasColumn(db, "media", "h")) db.exec("ALTER TABLE media ADD COLUMN h INTEGER");
+
+  // v5 早期草稿（表已建但列不全）兼容：CREATE TABLE IF NOT EXISTS 不会补列，
+  // 这里按 design §3.1/§3.2 逐列补齐，保证重复 migrate 幂等。
+  const previewColumns: Array<[string, string]> = [
+    ["url", "TEXT NOT NULL DEFAULT ''"],
+    ["url_hash", "TEXT NOT NULL DEFAULT ''"],
+    ["label", "TEXT"],
+    ["cache_key", "TEXT NOT NULL DEFAULT ''"],
+    ["kind", "TEXT NOT NULL DEFAULT 'unknown'"],
+    ["mime", "TEXT"],
+    ["title", "TEXT"],
+    ["description", "TEXT"],
+    ["site_name", "TEXT"],
+    ["final_url", "TEXT"],
+    ["cover_url", "TEXT"],
+    ["cover_w", "INTEGER"],
+    ["cover_h", "INTEGER"],
+    ["cover_kind", "TEXT"],
+    ["status", "TEXT NOT NULL DEFAULT 'pending'"],
+    ["phase", "TEXT NOT NULL DEFAULT 'queued'"],
+    ["fields_ready", "TEXT NOT NULL DEFAULT '[]'"],
+    ["attempts", "INTEGER NOT NULL DEFAULT 0"],
+    ["error_code", "TEXT"],
+    ["updated_at", "INTEGER NOT NULL DEFAULT 0"],
+  ];
+  for (const [column, ddl] of previewColumns) {
+    if (!hasColumn(db, "post_previews", column)) {
+      db.exec(`ALTER TABLE post_previews ADD COLUMN ${column} ${ddl}`);
+    }
+  }
+  const jobColumns: Array<[string, string]> = [
+    ["cache_key", "TEXT NOT NULL DEFAULT ''"],
+    ["status", "TEXT NOT NULL DEFAULT 'queued'"],
+    ["attempts", "INTEGER NOT NULL DEFAULT 0"],
+    ["next_run_at", "INTEGER NOT NULL DEFAULT 0"],
+    ["enqueued_at", "INTEGER NOT NULL DEFAULT 0"],
+    ["updated_at", "INTEGER NOT NULL DEFAULT 0"],
+    ["phase", "TEXT"],
+    ["post_created_at", "INTEGER NOT NULL DEFAULT 0"],
+    ["last_error", "TEXT"],
+  ];
+  for (const [column, ddl] of jobColumns) {
+    if (!hasColumn(db, "preview_jobs", column)) {
+      db.exec(`ALTER TABLE preview_jobs ADD COLUMN ${column} ${ddl}`);
+    }
+  }
+
+  // B3：索引必须在补列之后创建（早期 v5 草稿表可能缺 cache_key/status/
+  // next_run_at/post_created_at；先建索引会让 migrate 在启动时抛 no such column）。
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_post_previews_cache ON post_previews(cache_key);
+    CREATE INDEX IF NOT EXISTS idx_post_previews_status ON post_previews(status, updated_at);
+    CREATE INDEX IF NOT EXISTS idx_preview_jobs_ready
+      ON preview_jobs(status, next_run_at, post_created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_preview_jobs_post ON preview_jobs(post_id);
+  `);
 
   db.exec(`
     INSERT INTO meta(key, value) VALUES ('schema_version', '${SCHEMA_VERSION}')

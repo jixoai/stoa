@@ -20,12 +20,18 @@ async function waitFor(check: () => boolean, timeoutMs = 8000): Promise<void> {
   throw new Error("condition not met in time");
 }
 
-async function fetchFails(url: string): Promise<boolean> {
+/**
+ * 只判断「该 dataDir 的 report 实例是否仍在应答」：端口被其它进程（如 IPv6
+ * 通配的 python 服务）复用不算失败，消除环境抖动。
+ */
+async function servesDataDir(url: string, dataDir: string): Promise<boolean> {
   try {
-    await fetch(url, { signal: AbortSignal.timeout(1000) });
-    return false;
+    const res = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(800) });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { ok?: boolean; dataDir?: string };
+    return body.ok === true && body.dataDir === dataDir;
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -48,7 +54,7 @@ describe("idle lease (design §1)", () => {
       await waitFor(() => server.stderr().includes("[report] idle timeout, shutting down"));
       expect(existsSync(join(ws.dataDir, "server.json"))).toBe(false);
       expect(existsSync(join(ws.dataDir, "serve.lock"))).toBe(false);
-      expect(await fetchFails(`${url}/healthz`)).toBe(true);
+      expect(await servesDataDir(url, ws.dataDir)).toBe(false);
     } finally {
       await server.stop();
       ws.cleanup();

@@ -38,6 +38,26 @@ export function parseInline(input: string): InlineToken[] {
   const tokens: InlineToken[] = [];
   let i = 0;
   let buffer = "";
+  // N8：`[` 洪水下避免每个字符都 indexOf 到行尾（O(n²)）。缓存下一次 " ](" /
+  // ")" 的位置；一旦确认后面不再出现就短路，保证线性扫描。
+  let nextLinkClose = -1;
+  let linkScanExhausted = false;
+  const findLinkClose = (from: number): number => {
+    if (linkScanExhausted) return -1;
+    if (nextLinkClose !== -1 && nextLinkClose < from) nextLinkClose = -1;
+    if (nextLinkClose === -1) {
+      nextLinkClose = input.indexOf("](", from);
+      if (nextLinkClose < 0) linkScanExhausted = true;
+    }
+    return nextLinkClose;
+  };
+  let noParenFrom = Number.POSITIVE_INFINITY;
+  const findClosingParen = (from: number): number => {
+    if (from >= noParenFrom) return -1;
+    const idx = input.indexOf(")", from);
+    if (idx < 0) noParenFrom = from;
+    return idx;
+  };
   const flush = () => {
     if (buffer) {
       tokens.push({ type: "text", text: buffer });
@@ -56,9 +76,9 @@ export function parseInline(input: string): InlineToken[] {
       }
     }
     if (ch === "!" && input[i + 1] === "[") {
-      const close = input.indexOf("](", i + 2);
+      const close = findLinkClose(i + 2);
       if (close > 0) {
-        const endParen = input.indexOf(")", close + 2);
+        const endParen = findClosingParen(close + 2);
         if (endParen > 0) {
           flush();
           const alt = input.slice(i + 2, close);
@@ -71,9 +91,9 @@ export function parseInline(input: string): InlineToken[] {
       }
     }
     if (ch === "[") {
-      const close = input.indexOf("](", i + 1);
+      const close = findLinkClose(i + 1);
       if (close > 0) {
-        const endParen = input.indexOf(")", close + 2);
+        const endParen = findClosingParen(close + 2);
         if (endParen > 0) {
           flush();
           const label = input.slice(i + 1, close);

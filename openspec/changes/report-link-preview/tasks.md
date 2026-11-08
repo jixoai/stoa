@@ -6,59 +6,59 @@
 
 ## P1. 持久化模型与写入路径
 
-- [ ] P1-1. `src/core/plugins/types.ts` + `builtin.ts`：`PluginManifest`（id/version/
+- [x] P1-1. `src/core/plugins/types.ts` + `builtin.ts`：`PluginManifest`（id/version/
   rulesVersion/kind/capabilities/requires/defaultEnabled）、`PreviewLink`、`PreviewPhase`、
   `PhaseResult`、`PreviewProvider`（extractUrls/buildCacheKey/phases/resolvePhase）；
   `BUILTIN_PLUGINS=[LINK_PREVIEW]`；显式 import，禁止 `readdir`/`import(url)`。
   - 判据：`rg "import\\(|readdir|fetch\\(" src/core/plugins` 0 命中；manifest 单测字段完整；
     `link-preview.requires` 含 `{id:"file-viewer",optional:true}`；phases 对 page/image/
     video/document 的返回值固定。
-- [ ] P1-2. `src/server/db.ts`：`SCHEMA_VERSION=5`；新增 `post_previews`、`preview_jobs`
+- [x] P1-2. `src/server/db.ts`：`SCHEMA_VERSION=5`；新增 `post_previews`、`preview_jobs`
   两表与索引（design §3.1/3.2 逐字）；meta worker 锁/扫描键；不 ALTER 旧表。
   - 判据：旧 dataDir 启动自动建表；重复 migrate 幂等；`test/social.test.ts` 的
     `schema_version` 断言同步 4→5；`PRAGMA table_info` 与 design 一致。
-- [ ] P1-3. `src/core/link-extract.ts`：导出 `EXTRACT_VERSION`；基于 `parseMarkdown` 抽
+- [x] P1-3. `src/core/link-extract.ts`：导出 `EXTRACT_VERSION`；基于 `parseMarkdown` 抽
   `http/https` URL（跳过代码块/行内 code/图片；接受 markdown link + 裸 URL）；规范化
   （scheme/host 小写、去 fragment/默认端口/utm_* 等、保留 query 原序）；去重、每帖上限 3、
   URL>2048 丢弃、label≤200。
   - 判据：`test/link-extract.test.ts` 覆盖规则表；代码块/图片 0 命中；同 URL utm/fragment
     只留一条；第 4 条丢弃；抽取 <5ms（200k 正文基准）；规则变更必须 bump `EXTRACT_VERSION`。
-- [ ] P1-4. `src/server/store.ts` `commitOps`：插件启用时抽 URL、算 `bodyHash` 与
+- [x] P1-4. `src/server/store.ts` `commitOps`：插件启用时抽 URL、算 `bodyHash` 与
   `cache_key`，同事务 upsert `post_previews(status=pending,phase=queued,fields_ready=[])`
   与 `preview_jobs(status=queued,next_run_at=now,post_created_at)`；帖子立即返回；抽取失败
   只记日志不阻断；`hydratePosts` 批量读 `post_previews` 产出 `PostView.previews`；`softDelete`
   同事务删 `post_previews`/`preview_jobs`。
   - 判据：发帖响应 <200ms（无网络）；首帧 `previews[0].status=pending`；无链接帖 `previews=[]`；
     抽取病理输入仍提交；删除后两表 0 行；20 帖 hydrate 批量 SQL 计数断言。
-- [ ] P1-5. `src/server/preview/queue.ts`：`enqueue(postId, urlHash, cacheKey, postCreatedAt)`/
+- [x] P1-5. `src/server/preview/queue.ts`：`enqueue(postId, urlHash, cacheKey, postCreatedAt)`/
   `claimNext(limit)`/`complete`/`fail`；按 `(post_id,url_hash)` 去重；cacheKey 变化原地重置
   job 并清 attempts/next_run_at；claim 按 `post_created_at DESC, enqueued_at ASC`。
   - 判据：同帖同 URL 重复 enqueue 只 1 行；新帖先被 claim；cacheKey 变化重置；claim 原子
     （事务/条件更新）；并发 claim 不重复。
-- [ ] P1-6. `src/server/preview/worker.ts`：单实例锁（meta `preview.worker.lock`，心跳/
+- [x] P1-6. `src/server/preview/worker.ts`：单实例锁（meta `preview.worker.lock`，心跳/
   陈旧接管/退出清除）；全局并发 3、每域名 1；多阶段推进（每阶段事务写字段+插
   `post.updated` 事件）；状态 pending→partial→ready/failed；重启把 `running` 重置 queued；
   失败 5m→15m→1h→6h→24h 退避；禁用/退出 abort。
   - 判据：`test/link-preview-worker.test.ts` 覆盖阶段顺序、每阶段一条事件、重启续跑、
     单实例、最新优先、失败退避、重处理失败保留旧值、cacheKey 变化中断重排。
-- [ ] P1-7. `post.updated` 事件：`EventType` 增加（`types.ts:72`），`NOTIFICATION_TYPES`
+- [x] P1-7. `post.updated` 事件：`EventType` 增加（`types.ts:72`），`NOTIFICATION_TYPES`
   保持 `post.created/thread.invited`（`:79`）；worker 写字段同事务
   `insertEvent("post.updated", post.author, post_id, root_id, payload={post_id,previews,...})`；
   `eventLines` 自然推送；通知/history/unread/CLI 过滤不含。
   - 判据：`test/event-hub.test.ts`/`test/notifications.test.ts` 断言 `post.updated` 可见于
     hub、不可见于 peek/history/未读/CLI；payload 含最新 previews；通知类型集合未变。
-- [ ] P1-8. `src/server/preview/ssrf.ts`：design §7 的 URL/地址分类/DNS pin/端口策略。
+- [x] P1-8. `src/server/preview/ssrf.ts`：design §7 的 URL/地址分类/DNS pin/端口策略。
   - 判据：`test/link-preview-ssrf.test.ts` 地址矩阵全拒绝（含 IPv4-mapped/NAT64/6to4、
     十进制 IP、userinfo、端口、混合答案、重定向私网、DNS pin 一次解析）。
-- [ ] P1-9. `src/server/preview/fetch.ts`：HEAD→GET/Range/逐跳重定向/超时/体积/UA/无敏感头/
+- [x] P1-9. `src/server/preview/fetch.ts`：HEAD→GET/Range/逐跳重定向/超时/体积/UA/无敏感头/
     identity 编码/忽略代理。
   - 判据：`test/link-preview-fetch.test.ts` 覆盖 HEAD 405→GET、302 链、302 私网拒绝、6 跳、
     超时、超大体、慢流中止；请求头断言。
-- [ ] P1-10. `src/server/preview/html.ts`：OG→Twitter→title/meta→首段→favicon；charset；
+- [x] P1-10. `src/server/preview/html.ts`：OG→Twitter→title/meta→首段→favicon；charset；
     文本上限；SVG 封面拒绝；`og:image:width/height`。
   - 判据：`test/link-preview-html.test.ts` 覆盖 OG 完整/缺封面/Twitter/仅 title/GBK/无 CT/
     首段/SVG 拒绝/超长截断；512KiB <20ms。
-- [ ] P1-11. `src/server/preview/service.ts`：cacheKey 扫描（plugin/rules 变化、启动、启用）；
+- [x] P1-11. `src/server/preview/service.ts`：cacheKey 扫描（plugin/rules 变化、启动、启用）；
   对 `post_previews` 重算当前 key，不匹配或缺行 → 倒序 enqueue；旧字段不动；`abortAll`；
   worker stats。
   - 判据：`test/link-preview-invalidate.test.ts` 覆盖版本升级倒序入队、旧值保持、同版本
@@ -66,13 +66,13 @@
 
 ## P1. 抓取、API 与导出
 
-- [ ] P1-12. HTTP：`GET /api/plugins`（所有登录账号，含 version/rulesVersion/worker）、
+- [x] P1-12. HTTP：`GET /api/plugins`（所有登录账号，含 version/rulesVersion/worker）、
   `PATCH /api/plugins/:id`（owner/manager，广播 `plugin.updated` 控制帧）、
   `/api/status.preview_worker`；`API_ROUTES` 增路由；CORS `Allow-Methods` 补 `PATCH`；
   `capabilities.features` 增 `preview_fields/preview_events`。
   - 判据：`scripts/check.mjs` 路由 lint；`test/link-preview-http.test.ts` 覆盖 401/403/404/
     幂等 PATCH/agent 只读/跨域 PATCH/worker 摘要；无任意 URL 预览端点。
-- [ ] P1-13. `src/server/export.ts` + `static-api.ts`：快照原样包含 `previews`（含
+- [x] P1-13. `src/server/export.ts` + `static-api.ts`：快照原样包含 `previews`（含
   pending/partial/ready/failed）与顶层 `preview_enabled`；导出只读、不启动 worker/不入队/
   不抓取；静态客户端透传 previews/enabled，旧归档缺字段默认 `[]`/true。
   - 判据：`test/export-static.test.ts` 断言快照 previews 完整、`preview_enabled` 正确、
@@ -95,17 +95,21 @@
 
 ## P1. UI 与设置
 
-- [ ] P1-17. `LinkPreviewCard.tsx`/`LinkPreviews.tsx`：官方 `Card`；0..3 张、第一条主卡；
-  `pending` 固定 4:3 占位（域名+Skeleton，预留高度）、`partial` 已有字段+封面占位、`ready`
-  完整卡淡入、`failed` 紧凑链接；封面 `aspect-[4/3] object-cover`，`cover` 缺失时文字卡；
-  `data-testid`/`data-preview-status`/`data-preview-phase`；本地 `/api/media/<hash>` 封面走
-  `useMediaUrl` blob、静态走 `staticMediaUrl`，外链 `no-referrer`+lazy，onError 回退图标；
-  点击新窗口 `noopener noreferrer`；`prefers-reduced-motion` 无动画。
-  - 判据：Playwright 断言状态/封面/标题/域名；pending→ready 高度差 ≤2px；点击新页
-    `window.opener=null`；failed 仍可点；390/1280 无溢出；CLS<0.02。
+- [ ] P1-17. 官方 `carousel` + `Card` 收编（base-nova registry；`embla-carousel-react` 为
+  registry 声明依赖）：`LinkPreviews.tsx` 用官方 `Carousel/CarouselContent/CarouselItem/
+  CarouselPrevious/CarouselNext` 承载 0..3 张 `LinkPreviewCard`（**一页一张、平权、无主卡**，
+  顺序＝正文出现顺序）；`pending` 固定 4:3 占位（域名+Skeleton，预留高度）、`partial` 已有
+  字段+封面占位、`ready` 完整卡淡入、`failed` 紧凑链接；封面 `aspect-[4/3] object-cover`，
+  `cover` 缺失时文字卡；`data-testid`/`data-preview-status`/`data-preview-phase`；本地
+  `/api/media/<hash>` 封面走 `useMediaUrl` blob、静态走 `staticMediaUrl`，外链 `no-referrer`+
+  lazy，onError 回退图标；点击新窗口 `noopener noreferrer`；`prefers-reduced-motion` 无动画；
+  单条退化单卡（无箭头/无指示点）；`post.updated` 按 canonicalUrl 保持当前页不重置。
+  - 判据：Playwright 断言 3 链接 = 3 页；拖拽/箭头/指示点/←→ 键盘切换；阶段更新不跳页；
+    pending→ready 高度差 ≤2px；点击新页 `window.opener=null`；failed 仍可点；390/1280
+    无溢出；CLS<0.02；reduced-motion 瞬切。
 - [ ] P1-18. `PostCard.tsx` 两个分支在 `QuoteCard` 后、`TagChips` 前插 `<LinkPreviews>`；
-  仅插件启用（且非静态失败态）渲染；事件更新不重排列表。
-  - 判据：feed/线程/搜索/收藏/成员页五处出现；多阶段事件只改对应卡片；滚动位置不变。
+  仅插件启用（且非静态失败态）渲染；事件更新不重排列表、不重置轮播页。
+  - 判据：feed/线程/搜索/收藏/成员页五处出现；多阶段事件只改对应 slide；滚动位置不变。
 - [ ] P1-19. 官方 `switch` 收编（base-nova registry）＋ `SettingsSheet`：插件开关、版本/
   rulesVersion、worker 状态、隐私 Alert、依赖提示、agent 只读、静态只读、错误重试；
   `SettingsSheetProvider` 在 AppShell 单实例；Nav/AccountSheet 入口。
@@ -117,7 +121,7 @@
 
 ## P1. 验收
 
-- [ ] P1-21. 单测/集成：`bun test`、`bun run check`、`bun run typecheck:ui`；新增
+- [x] P1-21. 单测/集成：`bun test`、`bun run check`、`bun run typecheck:ui`；新增
   `test/link-preview-{extract,ssrf,fetch,html,queue,worker,event,http,export}.test.ts` 全绿。
   - 判据：strict 无 `any`；无 console error；`post.updated` 不影响通知/CLI/未读。
 - [ ] P1-22. 夹具/E2E `scripts/qa/link-preview-fixture.mjs` + `scripts/qa/link-preview.mjs`
@@ -147,6 +151,12 @@
 - [ ] P2-5. 封面策略：仅 https（本地 http 例外）/拒绝 SVG；可选受限代理缓存（复用 SSRF/
   体积/配额）；robots 策略评估（P3）。
   - 判据：https 壳不加载 http 封面；代理不能访问私网；配额满不阻断卡片。
+
+- [ ] P2-6. **claim-time 预算（防滥用 follow-up，本轮不阻塞）**：延迟任务被 claim 时再扣
+  一次当前窗口预算；不足则继续顺延到下一窗口（把「下一窗口批量放行」改为逐窗限流）。
+  与 R3 的「入队即写行+job」并存，不改数据模型；覆盖延迟任务连续跨窗口不足的回归。
+  - 判据：60 个名额用尽后 claim 返回 0 且任务保留；下窗口按预算逐步放行；无永久饥饿。
+
 
 ## P3. 站点规则与收口
 

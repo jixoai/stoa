@@ -19,7 +19,7 @@
 
 | # | 决策 | 理由 | 被否方案 |
 |---|------|------|----------|
-| D1 | `PostView.previews: PreviewLink[]` 为**持久化字段**（0..3，第一条为主卡） | 静态导出/静态壳零运行时抓取；刷新/重启后仍在 | 读时从 URL 临时派生 |
+| D1 | `PostView.previews: PreviewLink[]` 为**持久化字段**（0..3，按正文顺序；首条为初始页，不设主卡） | 静态导出/静态壳零运行时抓取；刷新/重启后仍在 | 读时从 URL 临时派生 |
 | D2 | 存储用 **`post_previews` 表**（不是 `posts.previews_json`） | 每链接独立多阶段更新、按帖批量查询、按 `cache_key` 扫描、导出直接 join | 整块 JSON 重写/并发覆盖 |
 | D3 | 写入路径只抽 URL + 建 **pending 行 + 持久化任务**，帖子立即返回 | 发帖不被抓取阻塞；任务可重启续跑 | 同步抓取后返回/发帖后丢内存队列 |
 | D4 | 异步 worker **最新优先**（post created_at desc）+ SQLite 持久化 | 新帖先 ready；旧帖后台慢慢补；进程重启不丢任务 | FIFO/内存队列 |
@@ -125,8 +125,9 @@ src/ui/state/
   post-previews.tsx        # PostPreviewsProvider（post.updated 合并）
 src/ui/components/
   SettingsSheet.tsx
-  LinkPreviews.tsx
+  LinkPreviews.tsx           # 官方 Carousel 承载 0..3 张卡（一页一张）
   LinkPreviewCard.tsx
+  ui/carousel.tsx            # 官方 base-nova 收编件（embla-carousel-react）
 ```
 
 **禁止**：`import(url)`、目录扫描、远程 registry、运行时下载代码、插件 `eval`。
@@ -216,7 +217,7 @@ export interface PreviewProvider {
 ```sql
 CREATE TABLE IF NOT EXISTS post_previews (
   post_id      TEXT NOT NULL,
-  position     INTEGER NOT NULL,          -- 0..2；0=主卡
+  position     INTEGER NOT NULL,          -- 0..2；0=正文中第一个链接（无主卡语义）
   url          TEXT NOT NULL,             -- canonical
   url_hash     TEXT NOT NULL,
   label        TEXT,                       -- markdown 链接文字（裸 URL 为 NULL）
@@ -276,7 +277,8 @@ CREATE INDEX IF NOT EXISTS idx_preview_jobs_post ON preview_jobs(post_id);
 - `cache_key` 变化时原地更新 job（重置 `status=queued/attempts=0/next_run_at=now`）；
   running 中的旧任务在每阶段前重读 job，发现 key 变化即停止，让新任务跑。
 - 完成即删除 job；可重试失败置 `status='queued'` + 退避 `next_run_at`；达到最大次数
-  （5 次）置 `status='failed'` 保留，等待下一次版本扫描/手动回填再复活。
+  （6 次，覆盖 5m→15m→1h→6h→24h 五档）置 `status='failed'` 保留，等待下一次版本
+  扫描/手动回填再复活。
 
 ### 3.3 `PreviewLink` 契约
 
@@ -309,12 +311,12 @@ export interface PreviewLink {
 
 export interface PostView extends Post {
   // …既有字段…
-  /** 持久化字段，0..3；第一条为主卡。无链接帖为 []。 */
+  /** 持久化字段，0..3；按正文出现顺序（首条为初始页，无主卡）。无链接帖为 []。 */
   previews: PreviewLink[];
 }
 ```
 
-- 数组顺序即主卡顺序（`position` 0 为第一条）；UI 最多渲染 3 张。
+- 数组顺序即正文出现顺序（`position` 0 为第一个链接）；UI 最多渲染 3 张。
 - `status` 语义：`pending`=无字段；`partial`=已有阶段字段但未完成；`ready`=provider
   声明的全部阶段完成；`failed`=首次处理失败且无可用字段。**重处理失败不把旧字段改 failed**
   （§13.3）。
@@ -419,8 +421,8 @@ if all phases done: DELETE preview_jobs row
   旧字段仍可展示，job 继续退避重试。
 - provider 抛错按该阶段失败处理：新帖无可用字段 → `post_previews.status=failed`；重处理
   → 保留旧 `status/fields`，只记 `error_code`/attempts 并退避。
-- 失败退避：5m→15m→1h→6h→24h（`attempts` 对应）；可重试失败回 `queued`，第 5 次后
-  `job.status=failed`；429/503 域名冷却 60s。
+- 失败退避：5m→15m→1h→6h→24h（`attempts` 对应）；可重试失败回 `queued`，第 6 次后
+  `job.status=failed`（确保 24h 档实际使用）；429/503 域名冷却 60s。
 - 图片 4:3 裁剪（P2）：`probe` 阶段先写 kind/mime/尺寸；`crop` 阶段下载有界图片、重心裁剪
   4:3、存入 `media`（内容寻址），写
   `cover={url:"/api/media/<hash>",w,h,kind:"crop"}`；`title` 阶段可再补图片标题。
@@ -431,6 +433,8 @@ if all phases done: DELETE preview_jobs row
 
 - 任务在表中，重启后继续；`status='running'` 的残留任务在启动时重置为 `queued`
   （attempts 保留，`next_run_at=now+小抖动`）。
+- 优雅停机（SIGTERM）：abort 在飞抓取并回 `queued`；本次尝试不计入 attempts（R6 取舍，
+  避免部署/重启惩罚站点），随后等待回队（1.5s 上限）再关库。
 - 阶段写入与事件同事务；崩溃只会重做该阶段，`post_previews` 不出现半事件/半字段。
 - 事件可能重复（同一阶段重做）——客户端按 `seq` 与 `updated_at` 幂等覆盖，重复事件无副作用。
 
@@ -488,8 +492,19 @@ http_error/unsupported/network/parse_error`；失败首轮 → `failed`，UI 普
 
 ### 6.6 并发/限流
 
-全局 3、每域名 1；每域名令牌桶 1 req/s（突发 2）；429/503 冷却 60s；每账号每小时最多入队
-60 次、全局 500 次（入队时计）；单飞：同 `(post_id,url_hash)` 一个 job。
+全局 3、每域名 1；每域名令牌桶 1 req/s（突发 2）；429/503 冷却 60s；单飞：同
+`(post_id,url_hash)` 一个 job。
+- **预算口径（R3）**：每账号每窗口最多 **60 个立即执行名额**、全局 **500 个**；超出部分
+  **不丢弃**——`post_previews` 行 + `preview_jobs` 照常持久化，`next_run_at` 顺延到后续
+  预算窗口。写入（commitOps）、扫描/回填与 claim 共用同一窗口计数约束。
+- **已知取舍**：下一窗口会**批量放行**此前顺延的任务（它们已占用过当窗口名额）；防滥用
+  仍由每域名令牌桶 1 req/s、全局并发 3、每域名并发 1、页面/媒体体积与超时上限兜底。
+  P2 follow-up「claim-time 预算」可在 claim 时再扣一次窗口预算、不足则继续顺延（本轮不做，
+  见 tasks P2-6）。
+- 预算计数持久化在 meta 窗口，按**单实例假设**实现（写入进程由 discovery lock 唯一，
+  不做跨进程 CAS）；多进程同时写同一 DB 不在支持范围（R5 取舍）。
+- 优雅停机/abort（R6）：在飞任务 abort 后回 `queued`，本次尝试不计入 attempts（release
+  回退本次 claim 计数）；重启不会因部署惩罚站点。
 
 ---
 
@@ -635,7 +650,8 @@ App
                 MediaGrid
                 QuoteCard
                 LinkPreviews        // usePostPreviews(post)
-                  LinkPreviewCard
+                  Carousel          // 官方 base-nova 收编件（embla）
+                    LinkPreviewCard // 一页一张
                 TagChips
 ```
 
@@ -644,12 +660,22 @@ App
   在线模式插件关闭时不渲染卡片；`failed` 始终纯链接。
 - `post.updated` 只更新该帖卡片；feed/thread 列表节点、滚动位置、排序均不变。
 
-### 10.2 卡片形态（官方 Card）
+### 10.2 卡片形态（官方 Card + 官方 Carousel）
 
-- 容器：官方 `Card size="sm"`，最多 3 张，第一条主卡。
-- 封面：卡片 SHALL 始终有 **4:3 媒体区**（宽跟随卡片）；`cover` 存在时 `object-cover` 展示
-  （P2 图片为插件裁剪件，P1 页面可为外链）；无 cover 时用类型图标底纹占位；`pending` 在
-  同一区域显示 Skeleton。这样 pending→partial→ready 高度一致、无 CLS。
+> **Owner 2026-11-08 增补（比 X 更自由）**：一帖可有多个预览卡，用**轮播**承载，
+> 滑动切换。主卡概念取消——每张卡平权，第一条只是初始页；顺序＝正文出现顺序。
+
+- 容器：官方 shadcn `Carousel`（base-nova registry 收编件，`embla-carousel-react`）承载
+  0..3 张官方 `Card size="sm"`；**一页一张卡**；单条时退化为单卡（无箭头/无指示点）。
+- 交互：移动端触摸拖拽；桌面端拖拽 + hover 显示左右 `CarouselPrevious/Next`；底部指示点
+  （点击切页）；键盘 ←/→ 切页、Tab 聚焦、Enter 打开当前卡；`prefers-reduced-motion`
+  瞬切无动画。
+- 身份保持：`post.updated` 只更新对应 slide 内容，**不重置当前页**；按 canonicalUrl
+  匹配 slide（数组增减时保持当前 URL 所在页；URL 消失则钳到最近页）。
+- 封面：每张卡 SHALL 始终有 **4:3 媒体区**（宽跟随卡片）；`cover` 存在时 `object-cover`
+  展示（P2 图片为插件裁剪件，P1 页面可为外链）；无 cover 时用类型图标底纹占位；`pending`
+  在同一区域显示 Skeleton。轮播容器高度固定（4:3 封面 + 文本区预留），
+  pending/partial/ready 高度差 ≤2px、无 CLS。
 - 封面加载：外链 `https` 直接 `<img referrerPolicy="no-referrer" loading="lazy">`；本地
   `/api/media/<hash>` SHALL 走现有 `useMediaUrl` blob 通道（认证模式 `<img>` 不能带
   Authorization），静态壳按 hash 走 `staticMediaUrl` 的相对路径；加载失败回退类型图标底纹。
@@ -661,13 +687,14 @@ App
   - `pending`：4:3 Skeleton（域名 + 占位），预留高度防 CLS；`aria-busy`；
   - `partial`：4:3 已有封面或图标底纹 + 已有字段；后续事件淡入；
   - `ready`：4:3 封面/图标底纹 + 完整字段；
-  - `failed`：紧凑链接行（域名 + 「预览不可用」），可点；
-  - 插件关闭：不渲染。
+  - `failed`：紧凑链接行（域名 + 「预览不可用」），可点（静态归档同样退化为可点链接卡）；
+  - 插件关闭：整个轮播不渲染，正文 URL 仍可点。
 - 点击主区：`<a target="_blank" rel="noopener noreferrer">`；命中 viewer 适配器则
   `preventDefault` + `adapter.open()`；否则原生新窗口；`window.open` 被拦截给 toast。
-- 无嵌套 `<a>`；「原文」与主区是兄弟。
+- 无嵌套 `<a>`；「原文」与主区是兄弟；轮播控制按钮不得抢卡片 tab 顺序。
 - 淡入 160ms；`prefers-reduced-motion` 关闭；目标 CLS < 0.02。
 - 移动/桌面：宽度跟随帖子列；4:3 封面自然适配；390×844 与 1280×900 无横向溢出。
+
 
 ### 10.3 裸 URL 兜底
 
@@ -742,7 +769,12 @@ cache_key = sha256(
 ) // hex
 ```
 
-- 写入时算定；存 `post_previews.cache_key` 与 `preview_jobs.cache_key`。
+- 写入时算定；存 `post_previews.cache_key` 与 `preview_jobs.cache_key`。实际传入的
+  `rules_version = manifest.rulesVersion × 1000 + EXTRACT_VERSION`：抽取规则变化（如
+  N3 裸 URL 的 CJK 边界，`EXTRACT_VERSION=2`）同样使 cacheKey 失效，旧帖按新版本倒序重处理。
+- URL 抽取**不做正文截断**（B4）：任意位置、跨 markdown 边界的链接都完整抽取，不产生
+  正文里不存在的假 URL；病态输入由 `parseInline` 的 `](`/`)` 位置缓存线性化
+  （200k 最坏约 20ms）。
 - 插件 id/version、rulesVersion、canonical URL、正文任一变化 → key 变；任务去重键仍是
   `(post_id,url_hash)`，key 变则原地重置 job；worker claim 时先把新 key 写到
   `post_previews.cache_key`（不动旧字段/旧 status），避免扫描重复入队。
@@ -809,7 +841,7 @@ cache_key = sha256(
 | # | 场景 | 断言 |
 |---|------|------|
 | A1 | 发含链接帖 | HTTP 返回 <200ms；帖子/正文立即可见；首帧 `pending` 占位（4:3 预留，无 CLS） |
-| A2 | 阶段推进 | 无刷新：pending→partial→ready；记录每阶段时间/事件数；标题先于封面；卡片原地更新、feed 不重排 |
+| A2 | 阶段推进 | 无刷新：pending→partial→ready；记录每阶段时间/事件数；标题先于封面；卡片原地更新、feed 不重排；轮播当前页不因事件重置 |
 | A3 | 静态导出 | 快照含 `previews`；`file://` 打开显示同样 ready/partial 卡片；0 网络请求；pending/failed 为纯链接 |
 | A4 | 插件升版本 | 旧帖+新帖都入队，按 created_at desc（新帖先处理）；旧卡片在新阶段覆盖前保持旧值 |
 | A5 | 关闭/重开 | 关闭：新旧帖卡片隐藏、夹具计数不增；同版本重开：恢复、无新抓取；异版本：入队 |
@@ -822,8 +854,9 @@ cache_key = sha256(
 | A12 | 通知/CLI 隔离 | `post.updated` 不进通知/未读/CLI；feed 不因事件刷新 |
 | A13 | 重启续跑 | kill worker/进程后重启，未完成任务继续；不重复卡片/不丢任务 |
 | A14 | 旧帖首次查看 | 插件开启后旧帖入队并出现卡片；正文未改写 |
-| A15 | 事件风暴 | 3 链接 × 多阶段事件只更新对应卡片；无整页请求、无滚动跳动 |
-| A16 | 390×844/1280×900 | 无横向溢出；pending/ready 高度差 ≤2px；CLS < 0.02 |
+| A15 | 事件风暴 | 3 链接 × 多阶段事件只更新对应 slide；无整页请求、无滚动跳动、不跳页 |
+| A16 | 390×844/1280×900 | 无横向溢出；pending/ready 高度差 ≤2px；CLS < 0.02；轮播手势/箭头无溢出 |
+| A17 | 轮播 | 一帖 3 链接 = 3 页；触摸拖拽/箭头/指示点/←→ 键盘切换；阶段更新按 canonicalUrl 保持当前 index；单条无箭头/指示点；静态归档可离线滑动；reduced-motion 瞬切 |
 
 证据：每步截图 + 网络（夹具计数、`post.updated` 帧）+ 时间戳/事件数；生产板 0 写入。
 
@@ -838,7 +871,7 @@ cache_key = sha256(
 
 | 阶段 | 范围 | 验收 | 可延后 |
 |------|------|------|--------|
-| **P1** | `post_previews`/`preview_jobs` schema v5；写入建 pending+job；异步 worker（最新优先/多阶段/重启/锁）；`post.updated` 事件 + client topic + 原地更新；SSRF/抓取/MIME/OG；插件开关/扫描/cacheKey；导出包含 previews；卡片 pending/partial/ready/failed + 4:3 占位；设置页；裸 URL 兜底 | A1-A5、A7-A16（图片裁剪除外） | 图片 4:3 裁剪、cover 本地缓存、P2 手动 backfill |
+| **P1** | `post_previews`/`preview_jobs` schema v5；写入建 pending+job；异步 worker（最新优先/多阶段/重启/锁）；`post.updated` 事件 + client topic + 原地更新；SSRF/抓取/MIME/OG；插件开关/扫描/cacheKey；导出包含 previews；卡片 pending/partial/ready/failed + 4:3 占位；设置页；裸 URL 兜底 | A1-A5、A7-A17（图片裁剪除外） | 图片 4:3 裁剪、cover 本地缓存、P2 手动 backfill |
 | **P2** | 图片 `crop`/`title` 阶段：有界下载、重心 4:3 裁剪切图存 media；封面 media/导出/GC；`POST /api/previews/backfill` + 设置进度；file-viewer 适配器；封面代理评估 | A6、A11；裁剪件 4:3；静态导出含媒体；手动回填不并发 | 站点专属 provider、oEmbed |
 | **P3** | YouTube/Vimeo/Bilibili/GitHub/oEmbed provider；HTML 解析器替换（接口不变）；robots 策略；封面代理；诊断页 | 站点规则逐站；解析器契约不变；robots 可配置 | AI 摘要/搜索索引 |
 

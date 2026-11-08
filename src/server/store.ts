@@ -25,6 +25,17 @@ import {
 import { assembleThread } from "../core/thread.ts";
 import { isGlobalRole, visibleRootsClause } from "../core/visibility.ts";
 import { NOTIFICATION_TYPES } from "../core/types.ts";
+import { builtinPlugin, LINK_PREVIEW } from "../core/plugins/builtin.ts";
+import type { PhaseFields, PreviewLink, PreviewPhase, PreviewStatus, PreviewErrorCode } from "../core/plugins/types.ts";
+import { indexPostPreviewLinks } from "./preview/indexer.ts";
+import {
+  adoptJobCacheKey,
+  parseFieldsReady,
+  previewRow,
+  previewRowsForPost,
+  previewRowToLink,
+  type PreviewRow,
+} from "./preview/queue.ts";
 import {
   assertCanAppend,
   parseDraftItems,
@@ -212,6 +223,13 @@ export class Store {
   readonly dataDir: string;
   private readonly clock: () => number;
   private readonly listeners = new Set<() => void>();
+  /** sqlite_master 探测缓存：只读导出的旧 v4 库没有预览表。 */
+  private previewTableCache: boolean | null = null;
+  /** 单次 commitOps 内预算限流计数（R4：按批次聚合日志）。 */
+  private previewBudgetLimited: { account_budget: number; global_budget: number } = {
+    account_budget: 0,
+    global_budget: 0,
+  };
 
   constructor(opts: { dataDir: string; db: Database; clock?: () => number }) {
     this.dataDir = opts.dataDir;
@@ -692,6 +710,7 @@ export class Store {
     draftId?: string;
   }): CommitResult {
     this.requireActiveAccount(opts.author);
+    this.previewBudgetLimited = { account_budget: 0, global_budget: 0 };
     const now = this.clock();
     const tx = this.db.transaction((): CommitResult => {
       const existing = get<BatchRow>(
@@ -793,6 +812,7 @@ export class Store {
           post.seq = seq;
           created.push(post);
 
+          this.indexPreviewLinks(post, now);
           this.addParticipant(post.root_id, opts.author, "author", now);
           this.processMentions(post, opts.author, now);
           if (quoted) this.mergeQuotedParticipants(post, quoted, opts.author, now);
@@ -845,6 +865,7 @@ export class Store {
           run(this.db, "UPDATE posts SET seq = ? WHERE id = ?", seq, post.id);
           post.seq = seq;
           created.push(post);
+          this.indexPreviewLinks(post, now);
           this.addParticipant(post.root_id, opts.author, "reply", now);
           this.processMentions(post, opts.author, now);
           batchOrder.push(post.id);
@@ -879,6 +900,13 @@ export class Store {
     });
 
     const result = tx();
+    const limited = this.previewBudgetLimited;
+    if (limited.account_budget + limited.global_budget > 0) {
+      console.warn(
+        `[report] preview enqueue limited for batch ${opts.batchId}: ` +
+          `account_budget=${limited.account_budget} global_budget=${limited.global_budget}`,
+      );
+    }
     if (!result.idempotent) this.notifyChange();
     return result;
   }
@@ -1132,6 +1160,29 @@ export class Store {
       }
     }
 
+    // 持久化预览字段：一次批量读（每页 ≤20 帖 × 3）。旧 v4 只读库没有表 → []。
+    const previewsByPost = new Map<string, PreviewLink[]>();
+    if (this.previewTablesAvailable()) {
+      try {
+        for (const group of chunks(postIds)) {
+          const rows = all<PreviewRow>(
+            this.db,
+            `SELECT * FROM post_previews WHERE post_id IN (${placeholders(group.length)})
+             ORDER BY post_id ASC, position ASC`,
+            ...group,
+          );
+          for (const row of rows) {
+            const list = previewsByPost.get(row.post_id) ?? [];
+            list.push(previewRowToLink(row));
+            previewsByPost.set(row.post_id, list);
+          }
+        }
+      } catch {
+        // 只读导出遇到未迁移旧库：视为无预览字段，不阻断整页读取。
+        previewsByPost.clear();
+      }
+    }
+
     return posts.map((row) => {
       const post = toPost(row);
       const deleted = post.deleted_at !== null;
@@ -1165,6 +1216,7 @@ export class Store {
         reply_count: replyCounts.get(post.id) ?? 0,
         quoted: deleted ? null : quoted,
         quoted_visible: deleted ? false : quotedIsVisible,
+        previews: deleted ? [] : previewsByPost.get(post.id) ?? [],
       };
     });
   }
@@ -1174,6 +1226,168 @@ export class Store {
     if (!row) return null;
     if (!this.canViewRoot(viewer.id, row.root_id)) return null;
     return this.hydratePosts([row], viewer)[0] ?? null;
+  }
+
+  // ── 预览插件 / 持久化预览字段（report-link-preview）─────────────────────────
+  private previewTablesAvailable(): boolean {
+    if (this.previewTableCache !== null) return this.previewTableCache;
+    const row = get<{ name: string }>(
+      this.db,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'post_previews'",
+    );
+    this.previewTableCache = row !== null;
+    return this.previewTableCache;
+  }
+
+  /** 只读导出兼容：旧 v4 库没有预览表时按 `previews=[]`/`preview_enabled=false`。 */
+  hasPreviewTable(): boolean {
+    return this.previewTablesAvailable();
+  }
+
+  /** meta 键 `plugins.<id>.enabled`；缺省取 manifest.defaultEnabled。 */
+  pluginEnabled(pluginId: string): boolean {
+    const manifest = builtinPlugin(pluginId);
+    if (!manifest) return false;
+    const raw = getMeta(this.db, `plugins.${pluginId}.enabled`);
+    if (raw === null) return manifest.defaultEnabled;
+    return raw === "1";
+  }
+
+  setPluginEnabled(pluginId: string, enabled: boolean, actor: string): void {
+    const manifest = builtinPlugin(pluginId);
+    if (!manifest) fail("NOT_FOUND", `plugin "${pluginId}" not found`);
+    const now = this.clock();
+    setMeta(this.db, `plugins.${pluginId}.enabled`, enabled ? "1" : "0");
+    setMeta(this.db, `plugins.${pluginId}.updated_at`, String(now));
+    setMeta(this.db, `plugins.${pluginId}.updated_by`, actor);
+    this.notifyChange();
+  }
+
+  /** 写入事务内：抽 URL + pending 行 + job（无网络）。失败不阻断帖子提交。 */
+  private indexPreviewLinks(post: PostRow, now: number): void {
+    if (!this.pluginEnabled(LINK_PREVIEW.id)) return;
+    if (!this.previewTablesAvailable()) return;
+    try {
+      indexPostPreviewLinks(this.db, {
+        post,
+        now,
+        onBudgetLimited: (reason) => {
+          if (reason === "account_budget") this.previewBudgetLimited.account_budget += 1;
+          else if (reason === "global_budget") this.previewBudgetLimited.global_budget += 1;
+        },
+      });
+    } catch (err) {
+      // 预览不能成为发帖失败原因：只记日志（不含正文/URL）。
+      console.error(`[report] preview index failed for post ${post.id}: ${(err as Error).message}`);
+    }
+  }
+
+  /** 该帖最新持久化预览数组（worker 写事件前回读用）。 */
+  previewsForPost(postId: string): PreviewLink[] {
+    if (!this.previewTablesAvailable()) return [];
+    return previewRowsForPost(this.db, postId).map(previewRowToLink);
+  }
+
+  /** worker 需要的帖子最小投影（不存在/已删除时由调用方删除 job）。 */
+  previewPost(postId: string): Post | null {
+    const row = this.postRow(postId);
+    return row ? toPost(row) : null;
+  }
+
+  /** claim job 时先把新 cacheKey 写到字段行（不动旧字段/旧 status）。 */
+  adoptPreviewCacheKey(postId: string, urlHash: string, cacheKey: string): number {
+    if (!this.previewTablesAvailable()) return 0;
+    return adoptJobCacheKey(this.db, postId, urlHash, cacheKey, this.clock());
+  }
+
+  /**
+   * 多阶段唯一写入口：单事务更新 `post_previews` + 插 `post.updated` 事件。
+   * 只覆盖本次提供的字段；`fields_ready` 取并集；返回该帖最新数组。
+   */
+  applyPreviewPhase(input: {
+    postId: string;
+    urlHash: string;
+    cacheKey: string;
+    phase: PreviewPhase;
+    fields: PhaseFields;
+    fieldsReady?: readonly string[];
+    status: PreviewStatus;
+    errorCode?: PreviewErrorCode | null;
+    attempts?: number;
+  }): PreviewLink[] | null {
+    const post = this.postRow(input.postId);
+    if (!post || post.deleted_at !== null) return null;
+    if (!this.previewTablesAvailable()) return null;
+    let result: PreviewLink[] | null = null;
+    const tx = this.db.transaction(() => {
+      const row = previewRow(this.db, input.postId, input.urlHash);
+      if (!row) return;
+      // 只在 job 的 cacheKey 仍是当前值（未被扫描重排）时写入。
+      if (row.cache_key !== input.cacheKey) return;
+      const now = this.clock();
+      const ready = new Set(parseFieldsReady(row.fields_ready));
+      for (const field of input.fieldsReady ?? []) ready.add(field);
+      const fields = input.fields;
+      if (fields.kind !== undefined) ready.add("kind");
+      if (fields.mime !== undefined) ready.add("mime");
+      if (fields.title !== undefined) ready.add("title");
+      if (fields.description !== undefined) ready.add("description");
+      if (fields.site_name !== undefined) ready.add("site_name");
+      if (fields.cover !== undefined) ready.add("cover");
+
+      const assignments: string[] = [];
+      const params: Bindings = [];
+      const set = (column: string, value: string | number | null): void => {
+        assignments.push(`${column} = ?`);
+        params.push(value);
+      };
+      set("phase", input.phase);
+      set("status", input.status);
+      set("fields_ready", JSON.stringify([...ready]));
+      set("updated_at", now);
+      set("error_code", input.errorCode ?? null);
+      if (input.attempts !== undefined) set("attempts", input.attempts);
+      if (fields.kind !== undefined) set("kind", fields.kind);
+      if (fields.mime !== undefined) set("mime", fields.mime ?? null);
+      if (fields.final_url !== undefined) set("final_url", fields.final_url ?? null);
+      if (fields.title !== undefined) set("title", fields.title ?? null);
+      if (fields.description !== undefined) set("description", fields.description ?? null);
+      if (fields.site_name !== undefined) set("site_name", fields.site_name ?? null);
+      if (fields.cover !== undefined) {
+        set("cover_url", fields.cover?.url ?? null);
+        set("cover_w", fields.cover?.w ?? null);
+        set("cover_h", fields.cover?.h ?? null);
+        set("cover_kind", fields.cover?.kind ?? null);
+      }
+      run(
+        this.db,
+        `UPDATE post_previews SET ${assignments.join(", ")}
+         WHERE post_id = ? AND url_hash = ?`,
+        ...params,
+        input.postId,
+        input.urlHash,
+      );
+      const previews = previewRowsForPost(this.db, input.postId).map(previewRowToLink);
+      result = previews;
+      this.insertEvent(
+        "post.updated",
+        post.author,
+        post.id,
+        post.root_id,
+        post.batch_id,
+        now,
+        {
+          post_id: post.id,
+          root_id: post.root_id,
+          phase: input.phase,
+          status: input.status,
+          previews,
+        },
+      );
+    });
+    tx();
+    if (result !== null) this.notifyChange();
+    return result;
   }
 
   // ── queries ─────────────────────────────────────────────────────────────────
@@ -1589,6 +1803,10 @@ export class Store {
     // currently render, never by actor/tags.
     const tx = this.db.transaction(() => {
       run(this.db, "UPDATE posts SET deleted_at = ? WHERE id = ?", now, postId);
+      if (this.previewTablesAvailable()) {
+        run(this.db, "DELETE FROM post_previews WHERE post_id = ?", postId);
+        run(this.db, "DELETE FROM preview_jobs WHERE post_id = ?", postId);
+      }
       this.insertEvent("post.deleted", viewer.id, post.id, post.root_id, post.batch_id, now, {
         post_id: post.id,
         root_id: post.root_id,

@@ -68,6 +68,8 @@ export const API_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/notifications/ack" },
   { method: "GET", path: "/api/cursor" },
   { method: "GET", path: "/api/status" },
+  { method: "GET", path: "/api/plugins" },
+  { method: "PATCH", path: "/api/plugins/:id" },
   { method: "POST", path: "/api/export" },
   { method: "POST", path: "/api/media" },
   { method: "GET", path: "/api/media/:hash" },
@@ -94,6 +96,10 @@ export interface Capabilities {
     feed: boolean;
     profile: boolean;
     discover: boolean;
+    /** 帖子持久化预览字段（PostView.previews） */
+    preview_fields: boolean;
+    /** 预览多阶段更新推送（post.updated 事件） */
+    preview_events: boolean;
   };
   limits: {
     body_chars: number;
@@ -126,6 +132,8 @@ export function capabilities(): Capabilities {
       feed: true,
       profile: true,
       discover: true,
+      preview_fields: true,
+      preview_events: true,
     },
     limits: {
       body_chars: 200_000,

@@ -4,7 +4,7 @@
 
 ### Requirement: 持久化预览字段
 
-帖子视图 SHALL 携带持久化字段 `previews: PreviewLink[]`（0..3，第一条为主卡），每条 SHALL
+帖子视图 SHALL 携带持久化字段 `previews: PreviewLink[]`（0..3，按正文出现顺序；首条为初始页，不设主卡），每条 SHALL
 至少包含 `url/final_url/label/kind/mime/title/description/site_name/cover{url,w,h,kind}/
 status/phase/fields_ready/cache_key/attempts/updated_at/error_code`。`status` SHALL 为
 `pending|partial|ready|failed` 之一。该字段 SHALL 从 `post_previews` 表读取，SHALL NOT 在
@@ -14,7 +14,7 @@ status/phase/fields_ready/cache_key/attempts/updated_at/error_code`。`status` S
 #### Scenario: 刷新后字段仍在
 
 - **WHEN** 一个已 ready 的帖子被刷新/重启服务后再次读取
-- **THEN** `previews` 仍返回相同字段与主卡顺序，不触发抓取
+- **THEN** `previews` 仍返回相同字段与正文顺序，不触发抓取
 
 #### Scenario: 字段可多次更新
 
@@ -278,8 +278,10 @@ SHALL NOT 跟随 meta refresh；SHALL NOT 执行 JS/CSS/页面子资源。
 ### Requirement: 资源与滥用限制
 
 系统 SHALL 限制：全局并发 3、每域名并发 1、每域名令牌桶 1 req/s（突发 2）、429/503 冷却
-60s、每账号每小时最多 60 次入队、全局 500 次；页面 512KiB/声明 2MiB 上限；媒体嗅探
-64KiB；日志只记 host+错误码，不记完整 URL；只存元数据/裁剪封面，不存 HTML/响应头/Cookie。
+60s、每账号每窗口最多 **60 个立即执行名额**、全局 **500 个立即执行名额**；超出部分仍
+持久化入队，但顺延到后续预算窗口执行；写入、扫描/回填与 claim 都受同一窗口计数约束。
+另：页面 512KiB/声明 2MiB 上限；媒体嗅探 64KiB；日志只记 host+错误码，不记完整 URL；
+只存元数据/裁剪封面，不存 HTML/响应头/Cookie。
 
 #### Scenario: 超大体
 
@@ -291,24 +293,47 @@ SHALL NOT 跟随 meta refresh；SHALL NOT 执行 JS/CSS/页面子资源。
 - **WHEN** 抓取失败 URL 含 `?token=secret`
 - **THEN** 日志只有 host 与错误码
 
-### Requirement: 预览卡与实时更新
+### Requirement: 预览轮播
 
-预览区 SHALL 在帖子正文/媒体/引用之后、标签之前渲染，最多 3 张，第一条主卡。卡片 SHALL
-始终有 4:3 媒体区：`pending` 为 Skeleton 占位、无 cover 时用类型图标底纹、有 cover 时
-`object-cover`；`partial` SHALL 显示已有字段；`ready` SHALL 淡入完整卡；`failed` SHALL 为
-紧凑可点链接。卡片 SHALL 使用官方 shadcn `Card`/单色 lucide 图标；点击主区 SHALL 新窗口
-打开 `final_url ?? url` 并带 `noopener noreferrer`；「原文」链接兜底。`post.updated` 到达
-时 SHALL 原地更新，不整页刷新/不重排 feed；`prefers-reduced-motion` 无动画。
+预览区 SHALL 在帖子正文/媒体/引用之后、标签之前渲染，最多 3 张；多条预览 SHALL 由官方
+shadcn `Carousel`（base-nova 收编件）承载，**一页一张、每张平权**（不设主卡），顺序＝正文
+出现顺序；单条 SHALL 退化为单卡（无箭头/无指示点）。移动端 SHALL 支持触摸拖拽，桌面端 SHALL
+支持拖拽 + 左右按钮，底部指示点 SHALL 可点击切页，键盘 ←/→ SHALL 切换、Tab/Enter SHALL
+可聚焦并打开。
 
-#### Scenario: pending→ready
+#### Scenario: 多链接轮播
 
-- **WHEN** 发帖后 worker 先写 title 再写 cover
-- **THEN** 卡片从占位到标题到完整卡平滑过渡，高度差 ≤2px，无滚动跳动
+- **WHEN** 帖子含 3 个链接
+- **THEN** 轮播 3 页；拖拽/箭头/指示点/键盘都能切换
+
+### Requirement: 预览卡状态与点击
+
+每张卡片 SHALL 始终有 4:3 媒体区：`pending` 为 Skeleton 占位、无 cover 时用类型图标底纹、
+有 cover 时 `object-cover`；`partial` SHALL 显示已有字段；`ready` SHALL 淡入完整卡；
+`failed` SHALL 为紧凑可点链接（静态归档同样退化为可点链接卡）。卡片 SHALL 使用官方
+shadcn `Card`/单色 lucide 图标；点击主区 SHALL 新窗口打开 `final_url ?? url` 并带
+`noopener noreferrer`；「原文」链接兜底；`prefers-reduced-motion` 无动画（瞬切）。
 
 #### Scenario: failed 可点
 
 - **WHEN** 预览失败
 - **THEN** 显示域名+「预览不可用」，点击仍打开原链接
+
+### Requirement: 预览实时更新
+
+`post.updated` 到达时 SHALL 原地更新对应 slide 的内容，按 canonicalUrl 保持当前页；
+SHALL NOT 整页刷新、不重排 feed、不重置轮播页。同一帖多阶段事件 SHALL 幂等合并
+（以 `updated_at` 较新者为准）。
+
+#### Scenario: pending→ready
+
+- **WHEN** 发帖后 worker 先写 title 再写 cover
+- **THEN** 卡片从占位到标题到完整卡平滑过渡，高度差 ≤2px，无滚动跳动、轮播页不变
+
+#### Scenario: 事件到达不跳页
+
+- **WHEN** 用户停留在第 2 页时第 1 页收到 post.updated
+- **THEN** 第 1 页内容更新，当前页仍为第 2 页
 
 ### Requirement: fileviewer 适配器与降级
 

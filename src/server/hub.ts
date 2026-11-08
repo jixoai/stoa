@@ -190,6 +190,17 @@ export class Hub {
     }
   }
 
+  /**
+   * 控制帧广播（无 DB 事件）：`plugin.updated` 等开关变化让所有标签页立即生效。
+   * 漏帧由重连/设置页重新 `GET /api/plugins` 兜底。
+   */
+  broadcastControl(event: string, data: Record<string, unknown>): void {
+    for (const conn of this.connections.values()) {
+      if (conn.closed || conn.stream.aborted) continue;
+      void this.writeControl(conn, event, data);
+    }
+  }
+
   /** Close every stream with `bye{shutdown}` (graceful server close). */
   async shutdown(): Promise<void> {
     if (this.stopped) return;
