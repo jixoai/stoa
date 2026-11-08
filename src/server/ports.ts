@@ -22,9 +22,18 @@ export function isLoopbackHost(host: string): boolean {
   return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
 }
 
+/**
+ * 随机池排除本部署的正式端口：正式实例始终以显式 `--port 13689` 启动，
+ * 未指定端口的开发/测试实例不得抢占它（2026-11-08 实证：测试实例短暂"偷走"
+ * 13689 的连接，订阅端读到陌生 dataDir）。
+ */
+export const RANDOM_EXCLUDED_PORTS: ReadonlySet<number> = new Set([13689]);
+
 export function shuffledPorts(): number[] {
   const ports: number[] = [];
-  for (let p = PORT_MIN; p <= PORT_MAX; p++) ports.push(p);
+  for (let p = PORT_MIN; p <= PORT_MAX; p++) {
+    if (!RANDOM_EXCLUDED_PORTS.has(p)) ports.push(p);
+  }
   for (let i = ports.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [ports[i], ports[j]] = [ports[j]!, ports[i]!];
