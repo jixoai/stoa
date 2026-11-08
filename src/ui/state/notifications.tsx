@@ -460,33 +460,39 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
    */
   const reconcileServerReads = useCallback(async () => {
     if (staticMode || !client) return;
+    const baseAtStart = client.base;
+    const accountAtStart = accountRef.current;
+    const stillSame = () => client.base === baseAtStart && accountRef.current === accountAtStart;
     // P1-13 升级过渡：旧本地 read-set 一次性上传（≤2000，100/片）。失败不写标记，
-    // 本轮也不再执行「服务端为准」的丢弃（避免服务端尚不知道的本地已读被抹掉）。
+    // 本轮也不再执行「服务端为准」的丢弃（避免服务端尚不知道的本地已读被抹掉），
+    // 但队列补写照常进行。
     const upload = await uploadLegacyReadSet({
       ids: readStore.values(),
       client: { markReads: (postIds) => client.markReads(postIds) },
       storage: browserStorage(),
-      markerKey: accountRef.current
-        ? readUploadMarkerKey(client.base, accountRef.current)
-        : null,
+      markerKey: accountAtStart ? readUploadMarkerKey(baseAtStart, accountAtStart) : null,
     });
-    if (upload.attempted && !upload.ok) return;
+    if (!stillSame()) return;
+    const uploadFailed = upload.attempted && !upload.ok;
     const queue = readSync;
     await queue.flush();
+    if (!stillSame()) return;
     const localIds = readStore.values();
-    const queued = new Set(queue.pending());
-    const ids = [...new Set([...localIds, ...queued])].slice(-READ_SET_LIMIT);
-    if (ids.length === 0) return;
+    if (localIds.length === 0) return;
+    // 只核对本地集合（≤2000，符合服务端 200/次分片）；队列中尚未落库的 id 不参与孤儿判定。
     const serverIds = new Set<string>();
-    for (const chunk of chunkIds(ids, READ_QUERY_LIMIT)) {
+    for (const chunk of chunkIds(localIds, READ_QUERY_LIMIT)) {
       let rows;
       try {
         rows = await client.readStates(chunk);
       } catch {
         return;
       }
+      if (!stillSame()) return;
       for (const row of rows) serverIds.add(row.post_id);
     }
+    if (uploadFailed) return;
+    const queued = new Set(queue.pending());
     const plan = planReadReconciliation({ localIds, queuedIds: queued, serverIds });
     if (plan.adopt.length > 0) adoptServerReads(plan.adopt);
     if (plan.orphans.length > 0) {

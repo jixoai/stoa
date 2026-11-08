@@ -418,6 +418,60 @@ try {
   );
   const a2FeedShot = await shot(pageB, "a2-390-privacy-feed.png");
 
+  // ══ A2b：全新上下文直落 feed（从未打开通知页）══════════════════════════════
+  // 隔离验证：PostView.read 首帧即已读必须由 /api/feed 的水合字段驱动，
+  // 不能依赖通知页预载写入的本地缓存。
+  const ctxC = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const pageC = await ctxC.newPage();
+  const errorsC = [];
+  pageC.on("pageerror", (e) => errorsC.push(String(e).slice(0, 160)));
+  const feedReadFlags = new Map();
+  pageC.on("response", (response) => {
+    if (!response.url().includes("/api/feed")) return;
+    response
+      .json()
+      .then((body) => {
+        for (const post of body?.posts ?? []) {
+          if (a1Ids.includes(post.id)) feedReadFlags.set(post.id, post.read);
+        }
+      })
+      .catch(() => {});
+  });
+  await login(pageC);
+  // 登录按钮点击后指针会停在卡片上（真实 hover 底色），采样前移开。
+  await pageC.mouse.move(1, 1);
+  await sleep(pageC, 150);
+  const direct = await pageC.evaluate((ids) => {
+    const keys = Object.keys(localStorage).filter((key) => key.startsWith("report.read"));
+    return {
+      keys,
+      cards: ids.map((id) => {
+        const el = document.querySelector(
+          `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(id)}"]`,
+        );
+        return el
+          ? {
+              read: el.getAttribute("data-read"),
+              bg: getComputedStyle(el).backgroundColor,
+            }
+          : null;
+      }),
+    };
+  }, a1Ids);
+  check(
+    "A2b 全新上下文直落 feed：3 帖首帧 data-read=1、无本地 read 缓存依赖",
+    direct.cards.every((card) => card && card.read === "1" && card.bg === "rgba(0, 0, 0, 0)") &&
+      direct.keys.length === 0,
+    JSON.stringify(direct),
+  );
+  check(
+    "A2b /api/feed 水合 read=true（服务端事实直达首帧，与本地存储无关）",
+    a1Ids.every((id) => feedReadFlags.get(id) === true),
+    JSON.stringify([...feedReadFlags]),
+  );
+  const a2bFeedShot = await shot(pageC, "a2b-1280-fresh-direct-feed.png");
+  await ctxC.close();
+
   // ══ A3：离线停留 3 帖 → 恢复后一批补写 ══════════════════════════════════
   const offIds = [];
   for (let i = 0; i < 3; i += 1) offIds.push(await seedRoot(`${SEED_TAG} OFF-${i + 1}\n${LONG_BODY("离线")}`));
@@ -476,12 +530,19 @@ try {
     `reads=${offRows.map((row) => row.post_id).join(",") || "none"}`,
   );
   const batchAfterOnline = batchRequests.filter((row) => row.at >= onlineAt);
+  const offIdSet = new Set(offIds);
+  const offBatches = batchAfterOnline.filter((row) => row.postIds.some((id) => offIdSet.has(id)));
   check(
-    "A3 恢复后只发 1 个 POST /api/reads/batch（≤100/片）",
-    batchAfterOnline.length === 1 &&
-      batchAfterOnline[0].postIds.length <= 100 &&
-      offIds.every((id) => batchAfterOnline[0].postIds.includes(id)),
-    JSON.stringify(batchAfterOnline.map((row) => ({ size: row.postIds.length }))),
+    "A3 恢复后离线 3 帖合并为 1 个 POST /api/reads/batch（≤100/片）",
+    offBatches.length === 1 &&
+      offBatches[0].postIds.length <= 100 &&
+      offIds.every((id) => offBatches[0].postIds.includes(id)),
+    JSON.stringify(
+      batchAfterOnline.map((row) => ({
+        size: row.postIds.length,
+        off: row.postIds.filter((id) => offIdSet.has(id)).length,
+      })),
+    ),
   );
   const a3RecoveredShot = await shot(pageA, "a3-1280-recovered.png");
 

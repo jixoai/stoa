@@ -586,9 +586,13 @@ export class ReportClient {
     if (ids.length === 0) return [];
     const params = new URLSearchParams({ ids: ids.join(",") });
     const data = (await this.request(`/api/reads?${params.toString()}`)) as {
-      reads?: ReadRow[];
+      reads?: unknown;
     };
-    return Array.isArray(data.reads) ? data.reads : [];
+    if (!Array.isArray(data.reads)) {
+      // 200 但协议异常（反代回落 HTML/旧后端）≠ 服务端全空；调用方按失败处理，不删本地。
+      throw new ApiError("GET /api/reads returned an invalid payload", 200, "PROTOCOL");
+    }
+    return data.reads as ReadRow[];
   }
 
   // ── media ──────────────────────────────────────────────────────────────────

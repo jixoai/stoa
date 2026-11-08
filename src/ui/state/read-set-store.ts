@@ -162,7 +162,8 @@ export class ReadSetStore {
   }
 
   /** 只通知该 postId 的订阅者（一次停留不惊动整列表）。 */
-  subscribe(postId: string, listener: () => void): () => void {    let group = this.listeners.get(postId);
+  subscribe(postId: string, listener: () => void): () => void {
+    let group = this.listeners.get(postId);
     if (!group) {
       group = new Set();
       this.listeners.set(postId, group);

@@ -126,7 +126,9 @@ export interface LegacyUploadResult {
   /** 全部分片成功（marker 已写入）或无需上传。 */
   ok: boolean;
   batches: number;
-}/**
+}
+
+/**
  * P1-13：旧本地 read-set 一次性上传（≤2000，分片 100）。
  * 成功后写 `<markerKey>`；失败不写标记、下次 ready 重试；只上传传入的当前账号 ids。
  */
@@ -398,6 +400,7 @@ export class ServerReadQueue {
     const generation = this.generation;
     this.inflight = this.runFlush(generation).finally(() => {
       this.inflight = null;
+      this.syncDiagnostics();
     });
     return this.inflight;
   }
