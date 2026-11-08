@@ -280,7 +280,8 @@ export class ReadDwellEngine {
     const existing = this.holds.get(reason);
     if (existing) {
       existing.refs += 1;
-      if (scope && !existing.scope) existing.scope = scope;
+      // 同 reason 再次 hold 时总是更新到最新 scope（避免旧 detached 覆盖层继续生效）。
+      if (scope) existing.scope = scope;
     } else {
       this.holds.set(reason, { scope: scope ?? null, refs: 1 });
     }

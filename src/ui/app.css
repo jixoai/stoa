@@ -254,8 +254,9 @@ html[data-vt="fade"]::view-transition-new(root) {
   article[data-read="1"][data-dwell-state="read"]:not([data-selected="1"]) {
     animation: read-fade-out 1200ms var(--ios-ease-out);
   }
-  /* 新帖入场：复用 flashIds 包裹层（900ms 背景脉冲）；仅未读卡生效。 */
-  .report-row-new > article[data-read="0"] {
+  /* 新帖入场：复用 flashIds 包裹层（900ms 背景脉冲）；仅未读且未选中的卡生效
+     （与 read-fade-out 同族的选中态排除）。 */
+  .report-row-new > article[data-read="0"]:not([data-selected="1"]) {
     animation: read-new-pulse 900ms var(--ios-ease-out);
   }
   @media (prefers-reduced-motion: reduce) {
@@ -266,7 +267,7 @@ html[data-vt="fade"]::view-transition-new(root) {
       transition: none;
     }
     article[data-read="1"][data-dwell-state="read"]:not([data-selected="1"]),
-    .report-row-new > article[data-read="0"] {
+    .report-row-new > article[data-read="0"]:not([data-selected="1"]) {
       animation: none;
     }
   }

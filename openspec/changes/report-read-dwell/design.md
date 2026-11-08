@@ -130,7 +130,7 @@ useEffect(() => {
 
 - **账号/后端切换**：`NotificationsProvider` 已按 `base+account` 换 read-set
   （`notifications.tsx:218-232`）。`ReadDwellProvider` 监听 `account.id`，
-  变化时 `engine.reset()`：`disconnect()`、清 entries/timers/written、通知所有已读订阅者。
+  变化时 `engine.reset()`：`disconnect()`、清 entries/timers、通知所有已读订阅者。
 - **SSE 重连/reset**：与停留无关，引擎不重建；已读是本地属性，不依赖事件流。
 - **Provider 卸载**：`disconnect()` + 清全部 timer + 移除 visibility 监听。
 
@@ -170,7 +170,7 @@ paused  ──coverage ≥ 0.5 & docVisible & !held─▶ dwell
 
 - `idle`：不在视口；`visible`：在视口但可见面积不足 50%（看见但不够）；`dwell`：达标并
   正在累计；`paused`：曾达标、当前不可见但保留 `accMs`；`read`：终态。
-- 字段：`{ accMs, dwellSince | null, timer, lastCoverage, state, written }`。
+- 字段：`{ accMs, dwellSince | null, timer, lastCoverage, state }`。
 
 ### 3.2 覆盖率定义
 
@@ -201,9 +201,9 @@ const threshold = clamp(codePoints(bodyMd) / 80 * 1000 + (hasMedia ? 300 : 0), 4
 - 进入 `dwell`：`dwellSince = performance.now()`，`setTimeout(threshold - accMs)`。
 - 离开 `dwell`：`accMs += performance.now() - dwellSince`；`dwellSince = null`；清 timer。
 - timer 到点（§3.4）通过 → `markPostRead(postId)`，`el.dataset.read = "1"`，
-  `el.dataset.dwellState = "read"`，`written = true`，清 timer。
+  `el.dataset.dwellState = "read"`，清 timer。
 - 同帖重复（同页出现两次）以 `postId` 为 key：第一个到点即写；另一个到点前发现
-  `written`/read-set 已命中 → 转 `read`（幂等）。
+  `isRead` 已命中 → 只转 `read`，不重复写（幂等）。
 
 ### 3.4 到点复核（防「滚出后仍被标」）
 
@@ -247,7 +247,7 @@ const ok = document.visibilityState === "visible" &&
 - `markPostRead` 对**已在集合内**的帖子不改变已读标记（返回原 Set，不通知订阅者），但 SHALL
   把它移到 LRU 的最近使用端；LRU 顺序用独立 ref（不进 React state），避免 touch 触发整页
   重渲染。
-- 引擎 `written` 集合再挡一层：同一 `postId` 在一次页面生命周期内最多调用一次。
+- 引擎以 `isRead` 为唯一幂等权威（不再维护永久 `written` 集合）；同页多实例由先到点者写入，后到点者 `isRead` 命中即转 `read`。
 - **上限 2000/账号（Owner 2026-11-08 拍板）**，按最近读取时间 LRU 淘汰：超出时从最久未读端
   移除。被淘汰的帖子可能重新显示未读，再次停留会再次写入（不视为重复写 bug）。
 - 判据：连续标记 600 条后，最早 100 条 SHALL 仍保持已读（不得复现未读）；localStorage
