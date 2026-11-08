@@ -9,6 +9,11 @@
  *   2. then, for each spine node in order, its branch subtrees (DFS, time order).
  * The spec scenario "自接链置顶" outranks design §5.1 step 4's per-node interleaving;
  * this function deliberately keeps the whole chain before branch content.
+ *
+ * Depth cap (change report-thread-depth): `maxDepth` folds **unrelated branches**
+ * only. The focal's ancestor chain (root → … → focal) and the focal's whole
+ * subtree are always emitted in full and never counted as collapsed; otherwise a
+ * deep focal would lose its parent and its own replies.
  */
 
 export interface ThreadPostInput {
@@ -57,7 +62,7 @@ export function assembleThread<T extends ThreadPostInput>(
   posts: T[],
   opts: AssembleOptions = {},
 ): AssembledThread<T> {
-  const maxDepth = opts.maxDepth ?? 6;
+  const maxDepth = opts.maxDepth ?? 24;
   const focalId = opts.focalId ?? null;
   const byId = new Map<string, T>();
   const children = new Map<string, T[]>();
@@ -120,6 +125,32 @@ export function assembleThread<T extends ThreadPostInput>(
   spine.forEach((p, idx) => spineIndex.set(p.id, idx));
   const spineIds = spine.map((p) => p.id);
 
+  // Nodes that must be emitted regardless of maxDepth: the focal's ancestor
+  // chain (walking parent_id up to the root) plus the focal's whole subtree
+  // (including focal itself). When focalId is not part of this post set
+  // (legacy/deep-gap callers), the set stays empty and behaviour is unchanged.
+  const mustEmitIds = new Set<string>();
+  const focal = focalId ? byId.get(focalId) : undefined;
+  if (focal) {
+    let cursor: T | undefined = focal;
+    const pathSeen = new Set<string>();
+    while (cursor && !pathSeen.has(cursor.id)) {
+      pathSeen.add(cursor.id);
+      mustEmitIds.add(cursor.id);
+      cursor = cursor.parent_id ? byId.get(cursor.parent_id) : undefined;
+    }
+    const subtreeSeen = new Set<string>();
+    const pending: T[] = [focal];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if (subtreeSeen.has(node.id)) continue;
+      subtreeSeen.add(node.id);
+      mustEmitIds.add(node.id);
+      for (const child of children.get(node.id) ?? []) pending.push(child);
+    }
+  }
+  const mustEmit = (id: string): boolean => mustEmitIds.has(id);
+
   const nodes: Array<T & ThreadNodeMeta> = [];
   const collapsed: CollapsedGroup[] = [];
   const collapsedIndex = new Map<string, CollapsedGroup>();
@@ -162,27 +193,30 @@ export function assembleThread<T extends ThreadPostInput>(
     return total;
   };
 
-  // 1) spine chain (whole chain before branches: "自接链置顶")
-  let spineTruncated = false;
+  // 1) spine chain (whole chain before branches: "自接链置顶"). Focal-path
+  // nodes are emitted even past maxDepth; only the part of the chain that
+  // cannot lead to focal is capped and counted as collapsed.
+  const emittedSpine: T[] = [];
+  let spineCappedAt: number | null = null;
   for (let idx = 0; idx < spine.length; idx++) {
     const post = spine[idx]!;
-    if (idx > maxDepth) {
-      spineTruncated = true;
+    if (idx > maxDepth && !mustEmit(post.id)) {
+      spineCappedAt = idx;
       break;
     }
     emitNode(post, idx, true);
+    emittedSpine.push(post);
   }
-
-  const deepestEmittedSpine = spine[Math.min(spine.length - 1, maxDepth)];
-  if (spineTruncated && deepestEmittedSpine) {
-    // count the remainder of the chain itself
-    const remaining = spine.length - (maxDepth + 1);
-    addCollapsed(deepestEmittedSpine.id, maxDepth, remaining);
+  if (spineCappedAt !== null && spineCappedAt > 0) {
+    const anchor = spine[spineCappedAt - 1]!;
+    // count the remainder of the chain itself (its branches are not counted,
+    // same as the pre-change behaviour)
+    addCollapsed(anchor.id, spineCappedAt - 1, spine.length - spineCappedAt);
   }
 
   const emitBranch = (post: T, depth: number) => {
-    if (depth > maxDepth) {
-      addCollapsed(post.parent_id ?? root.id, maxDepth, 1 + countDescendants(post.id));
+    if (depth > maxDepth && !mustEmit(post.id)) {
+      addCollapsed(post.parent_id ?? root.id, depth - 1, 1 + countDescendants(post.id));
       return;
     }
     emitNode(post, depth, false);
@@ -193,7 +227,6 @@ export function assembleThread<T extends ThreadPostInput>(
   };
 
   // 2) branches, grouped after their spine anchor (spine nodes already emitted)
-  const emittedSpine = spine.slice(0, Math.min(spine.length, maxDepth + 1));
   for (let idx = 0; idx < emittedSpine.length; idx++) {
     const anchor = emittedSpine[idx]!;
     for (const child of children.get(anchor.id) ?? []) {

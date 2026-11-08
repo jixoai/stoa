@@ -28,6 +28,12 @@
  *   A8 刷新（reload）后 R1 页顺序与刷新前一致（深链/刷新稳定）
  *   A9 无横向溢出（390）+ 0 console error / pageerror
  *
+ * Deep-chain API assertions (report-thread-depth, one isolated fixture):
+ *   D1 12 层交替作者链：GET /api/thread/<focal> 的 posts 含 root→focal 全链 + focal + 新回复
+ *   D2 focal.depth=11（不再依赖前端合成 focal）
+ *   D3 无关 30 层分支仍按默认 maxDepth=24 折叠（u1..u24 在、u25..u30 不在，count=6）
+ *   D4 collapsed 不含 focal 路径/子树
+ *
  * Screenshots + report.json + steps.json: --shot-dir（默认仓内
  * src/ui/.qa/thread-nesting；交付报告用 --shot-dir .agents/reports/manager/report-thread-nesting）
  *
@@ -104,6 +110,66 @@ async function createNestingFixture(label) {
   const r3 = await createReply(managerToken, r2, `${tag}-R3 R2 的子回复（应紧邻 R2）。`);
   const s1 = await createReply(managerToken, root, `${tag}-S1 兄弟分支：R1 页不应出现。`);
   return { tag, root, r1, r2, m1, r3, s1 };
+}
+
+/**
+ * report-thread-depth：深链 focal 的 API 夹具（只跑一次，无浏览器）。
+ * 12 层交替作者链 + 对 focal 的直接回复 + 一条无关 30 层分支；默认
+ * maxDepth=24 只能折叠无关分支，focal 路径/子树必须完整。
+ */
+async function runDeepChainApi() {
+  const tag = `DEEP-${Date.now()}`;
+  const root = await createPost(ownerToken, `${tag} 深链根帖（report-thread-depth）。`);
+  const chain = [root];
+  let parent = root;
+  for (let i = 1; i <= 11; i++) {
+    parent = await createReply(i % 2 === 1 ? managerToken : ownerToken, parent, `${tag}-L${i}`);
+    chain.push(parent);
+  }
+  const focal = parent;
+  const newReply = await createReply(ownerToken, focal, `${tag}-NEW 对 focal 的直接回复。`);
+  const unrelated = [];
+  let up = root;
+  for (let i = 1; i <= 30; i++) {
+    up = await createReply(i % 2 === 1 ? managerToken : ownerToken, up, `${tag}-U${i}`);
+    unrelated.push(up);
+  }
+
+  const thread = await threadOf(focal);
+  const ids = thread.posts.map((post) => post.id);
+  const focalPost = thread.posts.find((post) => post.id === focal);
+  const pathIds = new Set([...chain, newReply]);
+  check(
+    "api-deep",
+    "D1 12 层深链：posts 含 root→focal 全链、focal 与新回复",
+    [...pathIds].every((id) => ids.includes(id)),
+    `posts=${ids.length} missing=${[...pathIds].filter((id) => !ids.includes(id)).length}`,
+  );
+  check(
+    "api-deep",
+    "D2 focal depth=11（服务端返回，不再依赖前端合成 focal）",
+    focalPost?.depth === 11,
+    `focalDepth=${focalPost?.depth ?? "absent"}`,
+  );
+  const collapsed = thread.collapsed ?? [];
+  check(
+    "api-deep",
+    "D3 无关 30 层分支仍按 maxDepth=24 折叠（U24 在、U25 不在、count=6）",
+    ids.includes(unrelated[23]) &&
+      !ids.includes(unrelated[24]) &&
+      collapsed.length === 1 &&
+      collapsed[0].parent_id === unrelated[23] &&
+      collapsed[0].depth === 24 &&
+      collapsed[0].count === 6,
+    `collapsed=${JSON.stringify(collapsed.map((g) => ({ p: g.parent_id?.slice(-4), d: g.depth, c: g.count })))}`,
+  );
+  check(
+    "api-deep",
+    "D4 collapsed 不含 focal 路径/子树",
+    collapsed.every((group) => !pathIds.has(group.parent_id)),
+    `parents=${collapsed.map((g) => g.parent_id?.slice(-4)).join(",")}`,
+  );
+  return { tag, root, focal, newReply, chain, unrelated, posts: ids.length, collapsed };
 }
 
 // ── 浏览器辅助 ────────────────────────────────────────────────────────────────
@@ -436,6 +502,7 @@ const evidence = {
 };
 try {
   mkdirSync(SHOT_DIR, { recursive: true });
+  evidence.deepChain = await runDeepChainApi();
   browser = await chromium.launch({ channel: "chrome" });
   for (const spec of [
     { label: "mobile", viewport: { width: 390, height: 844 }, mobile: true },
@@ -452,6 +519,14 @@ const failed = results.filter((result) => !result.ok);
 const viewportSteps = Object.entries(evidence.viewports).flatMap(([label, value]) =>
   value.steps.map((item) => ({ ...item, scope: label })),
 );
+const deepSteps = results
+  .filter((result) => result.scope === "api-deep")
+  .map((result) => ({
+    intent: result.name,
+    expect: result.ok ? "通过（隔离后端 API）" : "失败",
+    assertion: result.detail,
+    ok: result.ok,
+  }));
 const stepsFile = {
   title: "report-thread-nesting — 回复的回复紧邻其父（先序 timeline）E2E 验收",
   brand: "FDE2E™ · report.worker（人机公示板）· report-thread-nesting 交付报告",
@@ -471,8 +546,9 @@ const stepsFile = {
   ],
   sections: [
     { title: "1 · 实测断言（A1–A9，两视口）", steps: viewportSteps },
+    { title: "2 · 深链 API 用例（report-thread-depth）", steps: deepSteps },
     {
-      title: "2 · 改动文件覆盖表（UNCOVERED=0）",
+      title: "3 · 改动文件覆盖表（UNCOVERED=0）",
       steps: [
         {
           intent: "改动文件覆盖表（UNCOVERED=0）",
