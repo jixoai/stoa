@@ -34,53 +34,19 @@ import {
 } from "@/lib/router";
 import { fullTime } from "@/lib/format";
 import { loadThreadScrollMemory, saveThreadScrollMemory } from "@/lib/scroll-memory";
+import {
+  buildTimelinePlan,
+  countAddedInScope,
+  planForThreadView,
+  type PlanRow,
+  type TimelinePlan,
+} from "@/lib/thread-plan";
 
-// ── 平铺 timeline planner（design report-thread-timeline §2）────────────────────
+// ── 平铺 timeline（design report-thread-timeline §2 / report-thread-scope）─────
 //
-// 一个平面、一条 trunk、一个时间序：祖先链（root → parent）→ focal → 其余节点按
-// `(created_at, seq, id)` 升序平铺。没有任何缩进/深度上限/层级控件；关系由
-// 「回复给 @x」+ 导轨 + 时间顺序表达。
-
-type PostRole = "ancestor" | "focal" | "reply";
-
-interface PostRow {
-  kind: "post";
-  key: string;
-  node: ThreadNode;
-  role: PostRole;
-  /** 连续同作者父子：24px 头像居中于 42px 列、无重复作者行/操作栏。 */
-  compact: boolean;
-  /** 连续自接链首条仍显示作者/时间。 */
-  compactHeader: boolean;
-  /** 父帖不是上一 post 行时的「回复给 @x」（focal 永不为真）。 */
-  replyingTo: string | null;
-}
-
-interface SubthreadRow {
-  kind: "subthread";
-  key: string;
-  nodeId: string;
-  count: number;
-}
-
-type PlanRow = PostRow | SubthreadRow;
-
-interface TimelinePlan {
-  rows: PlanRow[];
-  replyNodes: ThreadNode[];
-  /** 顶部缺口行要跳转的（上一批）帖子 id；null = 不渲染缺口行。 */
-  gapParentId: string | null;
-  /** 是否有缺口行（深链 focal 的父帖不可解析 / 祖先超过 20 条 UI 阈值）。 */
-  gapVisible: boolean;
-}
-
-function compareNodes(a: ThreadNode, b: ThreadNode): number {
-  if (a.created_at !== b.created_at) return a.created_at - b.created_at;
-  if (a.seq !== b.seq) return a.seq - b.seq;
-  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
-
-const ANCESTOR_RENDER_LIMIT = 20;
+// planner（含 focal 子树作用域）在 `@/lib/thread-plan`：一个平面、一条 trunk、一个时间序——
+// 可见祖先链（root → parent）→ focal → focal 的后代按 `(created_at, seq, id)` 升序平铺。
+// 同根兄弟分支不进入本页（兄弟分支经祖先详情/子线程入口进入）。
 
 // 线程 timeline 行几何（design §3；2026-11-08 视觉复核：头像 46 / 正文列 68 / 导轨 x=38）
 const THREAD_AVATAR = 46;
@@ -89,127 +55,6 @@ const THREAD_PAD_TOP = 12;        // 普通行 pt-3
 const FOCAL_PAD_TOP = 22;         // focal 多 10px：首字到吸顶栏 20→28–30
 const COMPACT_PAD_TOP = 6;        // 紧凑行 py-1.5
 const COMPACT_AVATAR = 24;
-
-function buildTimelinePlan(args: {
-  focal: ThreadNode;
-  ancestors: ThreadNode[];
-  nodes: ThreadNode[];
-  nodeMap: Map<string, ThreadNode>;
-  collapsedCounts: Map<string, number>;
-  /** thread.posts 不含 focal（深链超 maxDepth）：focal 是单帖合成。 */
-  deepGap: boolean;
-  /** focal.parent_id 解析不到（posts 里没有）：整页只能显示缺口 + focal。 */
-  unresolvedGap: boolean;
-  /** 完整线程是否已从网络回来；未回来时不得生成「查看该子线程」入口。 */
-  loaded: boolean;
-}): TimelinePlan {
-  const { focal, ancestors, nodes, nodeMap, collapsedCounts, deepGap, unresolvedGap, loaded } = args;
-  const ancestorSet = new Set(ancestors.map((node) => node.id));
-
-  // 祖先：root → … → parent；>20 条只渲染最近 20 条，顶部补缺口行（§5.1）。
-  // 缺口行跳到「被丢弃的最后一条祖先」（= 最近可见祖先的上一帖），不是它的 parent。
-  const ordered = ancestors.slice().reverse();
-  let visible = ordered;
-  let gapVisible = false;
-  let gapParentId: string | null = null;
-  if (ordered.length > ANCESTOR_RENDER_LIMIT) {
-    const dropped = ordered.slice(0, ordered.length - ANCESTOR_RENDER_LIMIT);
-    visible = ordered.slice(-ANCESTOR_RENDER_LIMIT);
-    gapVisible = true;
-    gapParentId = dropped[dropped.length - 1]?.id ?? null;
-  }
-  if (unresolvedGap) {
-    // focal 的父帖都没随本页返回：让缺口行指向父帖详情（点进去继续上级上下文）。
-    gapVisible = true;
-    gapParentId = focal.parent_id;
-  }
-
-  const loadedDirect = new Map<string, number>();
-  for (const node of nodes) {
-    if (!node.parent_id) continue;
-    loadedDirect.set(node.parent_id, (loadedDirect.get(node.parent_id) ?? 0) + 1);
-  }
-
-  // 子线程入口数量：后端折叠优先，否则是「已知子节点里没随本页返回的部分」。
-  const unloadedCount = (node: ThreadNode): number => {
-    const collapsed = collapsedCounts.get(node.id) ?? 0;
-    if (collapsed > 0) return collapsed;
-    const loadedChildren = loadedDirect.get(node.id) ?? 0;
-    return Math.max(0, node.child_count - loadedChildren);
-  };
-
-  const rows: PlanRow[] = [];
-  const pushNode = (row: PostRow) => {
-    rows.push(row);
-    // 种子/骨架阶段 child_count 还不可信（seed 把它当 reply_count），不生成入口。
-    if (!loaded) return;
-    // 深链缺口模式下 focal 就是当前页，入口会指向自己 → 不渲染。
-    if (row.role === "focal" && deepGap) return;
-    const count = unloadedCount(row.node);
-    if (count > 0) {
-      rows.push({ kind: "subthread", key: `sub-${row.node.id}`, nodeId: row.node.id, count });
-    }
-  };
-
-  for (const ancestor of visible) {
-    pushNode({
-      kind: "post",
-      key: `a-${ancestor.id}`,
-      node: ancestor,
-      role: "ancestor",
-      compact: false,
-      compactHeader: false,
-      // 祖先链内部父帖就是上一行（首条可能因为裁剪/缺口没有上文，不标）。
-      replyingTo: null,
-    });
-  }
-
-  pushNode({
-    kind: "post",
-    key: `f-${focal.id}`,
-    node: focal,
-    role: "focal",
-    compact: false,
-    compactHeader: false,
-    replyingTo: null,
-  });
-
-  // 平铺回复：排除 focal 与整条祖先链，按 (created_at, seq, id) 升序。
-  //
-  // 缺口模式（focal.parent_id 解析不到）下 posts 里全是「不可定位的上文」：
-  // 它们既不是 focal 的祖先也不是 focal 的回复，平铺到 focal 下方会把拓扑反过来
-  // （祖先显示成回复）。只保留缺口行说明，不再渲染这些行。
-  const rest = unresolvedGap
-    ? []
-    : nodes.filter((node) => node.id !== focal.id && !ancestorSet.has(node.id));
-  rest.sort(compareNodes);
-
-  const replyNodes: ThreadNode[] = [];
-  let prevPost: ThreadNode | null = focal;
-  for (const node of rest) {
-    const parentId = node.parent_id;
-    const adjacent = parentId !== null && prevPost?.id === parentId;
-    const compact = node.is_self_continuation && adjacent;
-    const compactHeader = compact && !prevPost?.is_self_continuation;
-    const replyingTo =
-      parentId !== null && !adjacent
-        ? (node.reply_to_account_id ?? nodeMap.get(parentId)?.author ?? parentId)
-        : null;
-    pushNode({
-      kind: "post",
-      key: `p-${node.id}`,
-      node,
-      role: "reply",
-      compact,
-      compactHeader,
-      replyingTo,
-    });
-    replyNodes.push(node);
-    prevPost = node;
-  }
-
-  return { rows, replyNodes, gapParentId, gapVisible };
-}
 
 // ── timeline 行 + 主轨（design §3.2）─────────────────────────────────────────
 //
@@ -542,35 +387,64 @@ export function ThreadPage() {
   );
   /** 完整线程是否已从网络回来（回复骨架 → 真实回复的开关）。 */
   const [loaded, setLoaded] = useState(() => Boolean(postId && getCachedThread(postId)));
+  const [error, setError] = useState<string | null>(null);
+  const [pendingThread, setPendingThread] = useState<ThreadView | null>(null);
+  const [newReplyCount, setNewReplyCount] = useState(0);
+  /**
+   * 本页的完整线程基线是否「新鲜」：路由切换置 false；只有非静默/初次完整线程
+   * **真正提交**（含转场 flush）后置 true。陈旧缓存与种子上的静默结果按初次加载
+   * 直接提交，不参与「新回复」差集（防幻影胶囊）。
+   */
+  const freshRef = useRef(false);
+  /** 当前路由页 id：load 迟到结果与 held 结果的页面身份校验。 */
+  const pageIdRef = useRef(postId);
+  pageIdRef.current = postId;
   /**
    * 转场进行中到达的网络结果先挂起：转场快照必须与落位后的页面一致，
    * 否则「快照撤掉那一刻」会看到页面跳变（第二次导航抖动的直接原因）。
    */
   const heldThread = useRef<ThreadView | null>(null);
   const heldLoaded = useRef(false);
+  /** held 结果所属页；跨页迟到结果直接丢弃。 */
+  const heldPageId = useRef<string | null>(null);
   const transitionEpoch = useTransitionEpoch();
+  const threadRef = useRef<ThreadView | null>(null);
+  threadRef.current = thread;
   const commitThread = useCallback((next: ThreadView, done: boolean) => {
     if (isViewTransitionRunning()) {
       heldThread.current = next;
       heldLoaded.current = done;
+      heldPageId.current = pageIdRef.current;
       return;
     }
     setThread(next);
-    if (done) setLoaded(true);
+    // setThread → render 之间还有一帧静默窗口：同步更新 latest ref，差集不会拿旧线程当基线。
+    threadRef.current = next;
+    if (done) {
+      setLoaded(true);
+      freshRef.current = true;
+    }
   }, []);
   useEffect(() => {
     if (isViewTransitionRunning()) return;
-    if (!heldThread.current) return;
     const next = heldThread.current;
     const done = heldLoaded.current;
+    const page = heldPageId.current;
     heldThread.current = null;
     heldLoaded.current = false;
+    heldPageId.current = null;
+    // 跨页迟到结果（旧页面的 load 在转场中被挂起）：丢弃，不提交进当前页。
+    if (!next || page !== pageIdRef.current) return;
     setThread(next);
-    if (done) setLoaded(true);
+    threadRef.current = next;
+    if (done) {
+      setLoaded(true);
+      freshRef.current = true;
+    }
+    // 完整线程已经落地：旧的「新回复」待合并项已过时（防幻影胶囊）。
+    setPendingThread(null);
+    setNewReplyCount(0);
   }, [transitionEpoch]);
-  const [error, setError] = useState<string | null>(null);
-  const [pendingThread, setPendingThread] = useState<ThreadView | null>(null);
-  const [newReplyCount, setNewReplyCount] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   /** focal 被服务端截断（深链超 maxDepth）时用单帖接口补出来的焦点帖。 */
   const [syntheticFocal, setSyntheticFocal] = useState<PostView | null>(null);
@@ -599,8 +473,8 @@ export function ThreadPage() {
   const [replyOpen, setReplyOpen] = useState(false);
   const autoReplyOpened = useRef(false);
   const refreshTimer = useRef<number | null>(null);
-  const threadRef = useRef<ThreadView | null>(null);
-  threadRef.current = thread;
+  /** 当前渲染的 focal（深链超 maxDepth 时为合成焦点帖）；差集的 focal 回退。 */
+  const focalRef = useRef<ThreadNode | null>(null);
 
   const load = useCallback(
     async (silent = false) => {
@@ -608,15 +482,32 @@ export function ThreadPage() {
       if (!silent) setError(null);
       try {
         const next = await client.thread(postId, postId);
+        // 页面已切换：迟到的旧页面结果丢弃，避免提交进新页或参与跨页差集。
+        if (pageIdRef.current !== postId) return;
         rememberThread(postId, next);
         if (silent) {
           const current = threadRef.current;
-          if (current) {
-            const known = new Set(current.posts.map((post) => post.id));
-            const added = next.posts.filter((post) => !known.has(post.id)).length;
-            if (added > 0) {
-              setPendingThread(next);
-              setNewReplyCount(added);
+          // 只有「同一页 + 基线已新鲜壮态」才谈新回复；陈旧缓存 / 种子 / 跨页竞态
+          // 的静默结果属于初次完整线程，直接提交（点击提示必须行集有变化）。
+          const samePage = Boolean(
+            current &&
+              freshRef.current &&
+              current.focal_id === next.focal_id &&
+              current.root_id === next.root_id,
+          );
+          if (current && samePage) {
+            // 新回复胶囊只统计「本页作用域内」的新增（focal 子树 + 其折叠子树）；
+            // 兄弟分支的新回复不再给可点击却无行可显示的胶囊。
+            const prevPlan = planForThreadView(current, postId, focalRef.current);
+            const nextPlan = planForThreadView(next, postId, focalRef.current);
+            if (!prevPlan || !nextPlan) {
+              commitThread(next, true);
+            } else {
+              const added = countAddedInScope(prevPlan, nextPlan);
+              if (added > 0) {
+                setPendingThread(next);
+                setNewReplyCount(added);
+              }
             }
           } else {
             commitThread(next, true);
@@ -635,7 +526,14 @@ export function ThreadPage() {
   );
 
   useEffect(() => {
-    setThread(postId ? getThreadSeed(postId) : null);
+    // 路由切换：本页基线失效，直到当前 postId 的完整线程真正提交；跨页 held 结果丢弃。
+    freshRef.current = false;
+    heldThread.current = null;
+    heldLoaded.current = false;
+    heldPageId.current = null;
+    const seed = postId ? getThreadSeed(postId) : null;
+    threadRef.current = seed;
+    setThread(seed);
     setLoaded(Boolean(postId && getCachedThread(postId)));
     setPendingThread(null);
     setNewReplyCount(0);
@@ -748,6 +646,7 @@ export function ThreadPage() {
       child_count: syntheticFocal.reply_count,
     };
   }, [focalFromPosts, syntheticFocal]);
+  focalRef.current = focal;
 
   const ancestorChain = useMemo(() => {
     if (!focal) return [];
