@@ -1,13 +1,16 @@
 /**
- * 平铺 timeline planner（design report-thread-timeline §2 / report-thread-scope §1-§4）。
+ * 平铺 timeline planner（design report-thread-timeline §2 / report-thread-scope §1-§4 /
+ * report-thread-nesting §2）。
  *
- * 一个平面、一条 trunk、一个时间序：可见祖先链（root → parent）→ focal → focal 的后代，
- * 按 `(created_at, seq, id)` 升序平铺。没有任何缩进/深度上限/层级控件；关系由
- * 「回复给 @x」+ 导轨 + 时间顺序表达。
+ * 一个平面、一条 trunk、一个**先序**：可见祖先链（root → parent）→ focal → focal 的后代，
+ * 按父子相邻的先序（pre-order DFS）平铺——每个节点的子节点按 `(created_at, seq, id)` 升序，
+ * 每条先输出自身、紧接着递归输出它自己的子树，子树结束后再继续同级的下一条。没有任何缩进/
+ * 深度上限/层级控件；关系由「紧邻 + 导轨 + 回复给 @x」表达。
  *
  * 作用域（report-thread-scope）：只有 focal 的后代（沿 parent_id 从 focal 可达）才是本页的
  * 「回复」。同根兄弟分支（既不是 focal 的祖先、也不是 focal 的后代）不进入本页；focal 是 root
- * 时后代集自然等于其余全部节点，行为与「整棵会话」一致。
+ * 时后代集自然等于其余全部节点，行为与「整棵会话」一致（父帖缺失的 orphan 占位追加在可达
+ * 先序结果之后）。
  */
 import type { ThreadNode, ThreadView } from "@core/types";
 
@@ -67,14 +70,20 @@ export interface BuildTimelinePlanArgs {
 }
 
 /**
- * focal 的后代集（不含 focal，也不含祖先链）：从 nodes 建 parent→children，
- * 再沿 parent_id 从 focal 收集。focal 是 root 时即其余全部节点。
- * `seen` 防脏数据成环；`ancestorSet` 排除保证「祖先/后代」永不重叠。
+ * focal 的后代集（不含 focal，也不含祖先链），按**先序（pre-order DFS）**展开：
+ * 从 nodes 建 parent→children（子节点按 `(created_at, seq, id)` 升序），沿 parent_id
+ * 从 focal 出发，每个节点先输出自身、再紧接着输出它的子树，子树结束后继续同级。
+ *
+ * - focal 是 root 时即其余全部节点；父帖缺失的 orphan 占位不在可达树里，作为独立子树按
+ *   时间序追加在可达先序结果之后（report-thread-scope：root 页仍渲染其余全部节点）。
+ * - `seen` 防脏数据成环；`ancestorSet` 排除保证「祖先/后代」永不重叠（环回到祖先时只跳过
+ *   祖先自身，其子节点仍展开）。
  */
 function collectFocalDescendants(
   focal: ThreadNode,
   nodes: ThreadNode[],
   ancestorSet: Set<string>,
+  includeUnreachable: boolean,
 ): ThreadNode[] {
   const childrenByParent = new Map<string, ThreadNode[]>();
   for (const node of nodes) {
@@ -83,16 +92,42 @@ function collectFocalDescendants(
     if (list) list.push(node);
     else childrenByParent.set(node.parent_id, [node]);
   }
+  for (const list of childrenByParent.values()) list.sort(compareNodes);
+
   const descendants: ThreadNode[] = [];
   const seen = new Set<string>([focal.id]);
-  const queue = [...(childrenByParent.get(focal.id) ?? [])];
-  for (let index = 0; index < queue.length; index += 1) {
-    const node = queue[index]!;
-    if (seen.has(node.id)) continue;
-    seen.add(node.id);
-    // 祖先链节点理论上不可达（树无环）；成环脏数据下仍展开其子节点，只不重复成行。
-    if (!ancestorSet.has(node.id)) descendants.push(node);
-    queue.push(...(childrenByParent.get(node.id) ?? []));
+  const stack: ThreadNode[] = [];
+  // 逆序入栈 ⇒ 弹出的第一个是时间最早的孩子；孩子的子树在栈顶，先于兄弟被处理。
+  const pushChildren = (parentId: string) => {
+    const kids = childrenByParent.get(parentId);
+    if (!kids) return;
+    for (let index = kids.length - 1; index >= 0; index -= 1) stack.push(kids[index]!);
+  };
+  const drain = () => {
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      if (!ancestorSet.has(node.id)) descendants.push(node);
+      pushChildren(node.id);
+    }
+  };
+
+  pushChildren(focal.id);
+  drain();
+
+  if (includeUnreachable) {
+    // root 页的 orphan 占位（parent_id 不在 posts 里）不可从 focal 达：作为独立子树追加。
+    const leftovers = nodes
+      .filter(
+        (node) => node.id !== focal.id && !ancestorSet.has(node.id) && !seen.has(node.id),
+      )
+      .sort(compareNodes);
+    for (const node of leftovers) {
+      if (seen.has(node.id)) continue;
+      stack.push(node);
+      drain();
+    }
   }
   return descendants;
 }
@@ -169,21 +204,20 @@ export function buildTimelinePlan(args: BuildTimelinePlanArgs): TimelinePlan {
     replyingTo: null,
   });
 
-  // 平铺回复＝focal 的后代（report-thread-scope）：排除 focal 与整条祖先链，按
-  // `(created_at, seq, id)` 升序。同根兄弟分支不是 focal 的后代，不进入本页。
+  // 平铺回复＝focal 的后代（report-thread-scope），按父子相邻的先序展开
+  // （report-thread-nesting）：子节点升序、先自身再子树、子树结束后继续同级。
+  // 同根兄弟分支不是 focal 的后代，不进入本页。
   //
-  // focal 是 root（parent_id === null）时取「其余全部节点」：整棵会话与修复前逐节点一致，
-  // 并保留 assembleThread 特意补渲染的 orphan 占位（parent_id 不在 posts 里但同属该 root）。
+  // focal 是 root（parent_id === null）时取「其余全部节点」：整棵会话仍全部渲染，
+  // 并保留 assembleThread 特意补渲染的 orphan 占位（parent_id 不在 posts 里但同属该 root，
+  // 它们不可达，追加在可达先序结果之后）。
   //
   // 缺口模式（focal.parent_id 解析不到）下 posts 里全是「不可定位的上文」：
   // 它们既不是 focal 的祖先也不是 focal 的后代，平铺到 focal 下方会把拓扑反过来
   // （祖先显示成回复）。只保留缺口行说明，不再渲染这些行。
   const rest = unresolvedGap
     ? []
-    : focal.parent_id === null
-      ? nodes.filter((node) => node.id !== focal.id && !ancestorSet.has(node.id))
-      : collectFocalDescendants(focal, nodes, ancestorSet);
-  rest.sort(compareNodes);
+    : collectFocalDescendants(focal, nodes, ancestorSet, focal.parent_id === null);
 
   const replyNodes: ThreadNode[] = [];
   let prevPost: ThreadNode | null = focal;

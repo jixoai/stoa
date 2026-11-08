@@ -41,11 +41,13 @@ import {
   type TimelinePlan,
 } from "@/lib/thread-plan";
 
-// ── 平铺 timeline（design report-thread-timeline §2 / report-thread-scope）─────
+// ── 平铺 timeline（design report-thread-timeline §2 / report-thread-scope /
+//    report-thread-nesting）────────────────────────────────────────────────────
 //
-// planner（含 focal 子树作用域）在 `@/lib/thread-plan`：一个平面、一条 trunk、一个时间序——
-// 可见祖先链（root → parent）→ focal → focal 的后代按 `(created_at, seq, id)` 升序平铺。
-// 同根兄弟分支不进入本页（兄弟分支经祖先详情/子线程入口进入）。
+// planner（含 focal 子树作用域与先序展开）在 `@/lib/thread-plan`：一个平面、一条 trunk、
+// 一个先序——可见祖先链（root → parent）→ focal → focal 的后代按父子相邻的先序（pre-order
+// DFS）平铺：每个节点的子节点按 `(created_at, seq, id)` 升序，先输出自身再输出它的子树，
+// 子树结束后继续同级。同根兄弟分支不进入本页（兄弟分支经祖先详情/子线程入口进入）。
 
 // 线程 timeline 行几何（design §3；2026-11-08 视觉复核：头像 46 / 正文列 68 / 导轨 x=38）
 const THREAD_AVATAR = 46;

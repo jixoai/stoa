@@ -18,7 +18,7 @@
  *           └── R2
  *
  * Assertions (390×844 and 1280×900):
- *   D1 深链页 DOM 的 post id 集合 = 祖先链 + focal + focal 子树（精确）
+ *   D1 深链页 DOM 的 post id 顺序 = 祖先链 + focal + focal 子树（先序，精确）
  *   D2 兄弟分支 A/C 文本 0 命中、post id 0 命中、无指向它们的子线程入口
  *   D3 深链页 focal 贴顶（±2px）且 scrollTop>0（有祖先）
  *   D4 深链页导轨同轨（left=38/w=2）且相邻段 1px 内相接
@@ -92,7 +92,8 @@ F.r1 = await createReply(ownerToken, F.focal, "SCOPE-R1 focal 自己的回复一
 F.r2 = await createReply(managerToken, F.focal, "SCOPE-R2 focal 自己的回复二。");
 F.r3 = await createReply(ownerToken, F.r1, "SCOPE-R3 focal 子树第二层分支。");
 
-const DEEP_EXPECTED = [F.root, F.b1, F.focal, F.r1, F.r2, F.r3];
+// report-thread-nesting：渲染序是父子相邻的先序（R3 是 R1 的子节点，紧跟 R1；R2 在其后）。
+const DEEP_EXPECTED = [F.root, F.b1, F.focal, F.r1, F.r3, F.r2];
 const ROOT_EXPECTED = [F.root, F.a1, F.c1, F.b1, F.focal, F.r1, F.r2, F.r3];
 const SIBLINGS = [
   { id: F.a1, text: "SCOPE-A" },

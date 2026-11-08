@@ -21,7 +21,7 @@
  *   7  头像列：普通行 46px、中心 x=39±1（正文列恒 68）
  *   8  无层级控件（collapse-depth / expand-branch / 继续 N 层回复）
  *   9  子线程入口存在且可导航
- *  10  平铺时间序 = (created_at, seq, id) 升序
+ *  10  平铺先序 = 父子相邻（同级按 (created_at, seq, id) 升序；report-thread-nesting）
  *  11  「回复给 @x」只在父帖非上一行时出现
  *  12  紧凑行：24px 头像与普通行同轴（中心 39±1，gutter 17）+ 同一 trunk
  *  13  相邻行导轨 1px 内相接（left=38 / width=2）
@@ -99,7 +99,7 @@ F.r3 = await createReply(managerToken, F.focal, "TL1-R3 焦点帖回复三。");
 F.branchRoot = await createPost(ownerToken, "TL2 根帖：交错分支时间序验收。");
 F.B = await createReply(managerToken, F.branchRoot, "TL2-B t1");
 F.C = await createReply(managerToken, F.branchRoot, "TL2-C t2");
-F.D = await createReply(managerToken, F.B, "TL2-D t3 父帖不是上一行");
+F.D = await createReply(managerToken, F.B, "TL2-D t3 紧邻父帖 B（父帖就是上一行）");
 F.E = await createReply(managerToken, F.C, "TL2-E t4");
 
 // F3：深层多人对话（>3 层，验证无 3 级封顶）
@@ -829,31 +829,62 @@ async function runViewport(browser, spec) {
     `scrollTop ${lockedGeometry.container.scrollTop.toFixed(0)}→${keysGeometry.container.scrollTop.toFixed(0)} selected=${keysSelected?.postId ?? "none"} visible=${Boolean(keysVisible)}`,
   );
 
-  // ── ⑩⑪ F2：平铺时间序 + 回复给 @x ────────────────────────────────────────────
+  // ── ⑩⑪ F2：平铺先序 + 回复给 @x ──────────────────────────────────────────────
+  // report-thread-nesting 起，渲染序是父子相邻的先序（pre-order DFS）：同级按
+  // (created_at, seq, id) 升序，但子节点紧跟父节点、子树结束后才继续同级。
   await gotoHash(page, `#/p/${F.branchRoot}`, 1600);
   await waitForThread(page, { replies: 4 });
   const branchGeometry = await page.evaluate(READ_GEOMETRY);
   const branchThread = await threadOf(F.branchRoot);
-  const expectedOrder = branchThread.posts
-    .filter((post) => post.id !== branchThread.focal_id)
-    .sort((a, b) => a.created_at - b.created_at || a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .map((post) => post.id);
+  const comparePosts = (a, b) =>
+    a.created_at - b.created_at || a.seq - b.seq || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const childrenOf = new Map();
+  for (const post of branchThread.posts) {
+    if (!post.parent_id) continue;
+    const list = childrenOf.get(post.parent_id) ?? [];
+    list.push(post);
+    childrenOf.set(post.parent_id, list);
+  }
+  for (const list of childrenOf.values()) list.sort(comparePosts);
+  const expectedOrder = [];
+  {
+    const seen = new Set([branchThread.focal_id]);
+    const stack = [];
+    const pushChildren = (parentId) => {
+      const kids = childrenOf.get(parentId) ?? [];
+      for (let index = kids.length - 1; index >= 0; index -= 1) stack.push(kids[index]);
+    };
+    pushChildren(branchThread.focal_id);
+    while (stack.length > 0) {
+      const post = stack.pop();
+      if (seen.has(post.id)) continue;
+      seen.add(post.id);
+      expectedOrder.push(post.id);
+      pushChildren(post.id);
+    }
+  }
   const domOrder = branchGeometry.rows.filter((row) => row.kind === "reply").map((row) => row.postId);
   check(
     label,
-    "10 平铺回复 DOM 顺序 = (created_at, seq, id) 升序",
+    "10 平铺回复 DOM 顺序 = 先序（同级 created_at → seq → id 升序）",
     JSON.stringify(domOrder) === JSON.stringify(expectedOrder),
     `dom=${domOrder.join(",")} expected=${expectedOrder.join(",")}`,
   );
   const rowOf = (postId) => branchGeometry.rows.find((row) => row.postId === postId);
   const bRow = rowOf(F.B);
+  const cRow = rowOf(F.C);
   const dRow = rowOf(F.D);
-  check(label, "11 首条回复（父帖是上一行）不显示「回复给」", Boolean(bRow) && !/回复给/.test(bRow.text), bRow?.text.slice(0, 60));
+  check(
+    label,
+    "11 首条回复与紧邻父帖的回复不显示「回复给」",
+    Boolean(bRow) && !/回复给/.test(bRow.text) && Boolean(dRow) && !/回复给/.test(dRow.text),
+    `b=${bRow?.text.slice(0, 40)} d=${dRow?.text.slice(0, 40)}`,
+  );
   check(
     label,
     "11 父帖不是上一行的回复显示「回复给 @x」",
-    Boolean(dRow) && /回复给\s*@\w+/.test(dRow.text),
-    dRow?.text.slice(0, 80),
+    Boolean(cRow) && /回复给\s*@\w+/.test(cRow.text),
+    cRow?.text.slice(0, 80),
   );
   shots.flat = await shot(page, 3, "flat-replies-same-column");
 

@@ -1,9 +1,10 @@
 /**
- * 线程 planner 单测（openspec change report-thread-scope / report-thread-timeline）。
+ * 线程 planner 单测（openspec change report-thread-scope / report-thread-timeline /
+ * report-thread-nesting）。
  *
- * 重点：作用域＝祖先链 + focal + focal 的后代；focal 是 root 时等于整棵会话；
- * 同根兄弟分支不得进入 `replyNodes`。同时锁住既有语义：unresolvedGap、祖先 >20 裁剪、
- * (created_at, seq, id) 排序、compact / replyingTo、子线程入口。
+ * 重点：作用域＝祖先链 + focal + focal 的后代（按父子相邻的先序展开，report-thread-nesting）；
+ * focal 是 root 时等于整棵会话；同根兄弟分支不得进入 `replyNodes`。同时锁住既有语义：
+ * unresolvedGap、祖先 >20 裁剪、子线程入口、compact / replyingTo。
  */
 import { describe, expect, test } from "bun:test";
 import type { CollapsedGroup, ThreadNode, ThreadView } from "../src/core/types.ts";
@@ -153,19 +154,20 @@ function branchFixture() {
 }
 
 describe("buildTimelinePlan 作用域（focal 子树）", () => {
-  test("深链到分支 B：只渲染祖先链 + focal + focal 子树，兄弟分支 A/C 排除", () => {
+  test("深链到分支 B：只渲染祖先链 + focal + focal 子树（先序），兄弟分支 A/C 排除", () => {
     const nodes = branchFixture();
     const focal = nodes.find((item) => item.id === "focal")!;
     const plan = planFor(focal, nodes);
 
-    expect(plan.replyNodes.map((item) => item.id)).toEqual(["r1", "r2", "r3"]);
-    expect(postIds(plan)).toEqual(["root", "b1", "focal", "r1", "r2", "r3"]);
+    // 先序：r1 → r3（r1 的子节点）→ r2（r1 子树结束后继续同级）。
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["r1", "r3", "r2"]);
+    expect(postIds(plan)).toEqual(["root", "b1", "focal", "r1", "r3", "r2"]);
     expect(plan.replyNodes.map((item) => item.id)).not.toContain("a1");
     expect(plan.replyNodes.map((item) => item.id)).not.toContain("c1");
     expect(plan.gapVisible).toBe(false);
   });
 
-  test("focal 是 root：后代集等于其余全部节点（整棵会话，行为不变）", () => {
+  test("focal 是 root：后代集等于其余全部节点（整棵会话，先序）", () => {
     const nodes = branchFixture();
     const focal = nodes.find((item) => item.id === "root")!;
     const plan = planFor(focal, nodes);
@@ -176,8 +178,8 @@ describe("buildTimelinePlan 作用域（focal 子树）", () => {
       "b1",
       "focal",
       "r1",
-      "r2",
       "r3",
+      "r2",
     ]);
     expect(postIds(plan)).toHaveLength(nodes.length);
   });
@@ -192,7 +194,7 @@ describe("buildTimelinePlan 作用域（focal 子树）", () => {
     ]);
     const root = nodes.find((item) => item.id === "root")!;
     const rootPlan = planFor(root, nodes);
-    expect(rootPlan.replyNodes.map((item) => item.id)).toContain("orphan");
+    expect(rootPlan.replyNodes.map((item) => item.id)).toEqual(["a1", "focal", "orphan"]);
 
     const deepFocal = nodes.find((item) => item.id === "focal")!;
     const deepPlan = planFor(deepFocal, nodes);
@@ -200,7 +202,7 @@ describe("buildTimelinePlan 作用域（focal 子树）", () => {
     expect(postIds(deepPlan)).toEqual(["root", "a1", "focal"]);
   });
 
-  test("focal 子树多分支：直接回复与更深后代全部保留", () => {
+  test("focal 子树多分支：直接回复后紧跟它自己的子树（先序）", () => {
     const nodes = withChildCounts([
       node("root", null, { createdAt: 100 }),
       node("focal", "root", { createdAt: 110 }),
@@ -212,8 +214,8 @@ describe("buildTimelinePlan 作用域（focal 子树）", () => {
     const focal = nodes.find((item) => item.id === "focal")!;
     const plan = planFor(focal, nodes);
 
-    expect(plan.replyNodes.map((item) => item.id)).toEqual(["r1", "r2", "r1a", "r1b"]);
-    expect(postIds(plan)).toEqual(["root", "focal", "r1", "r2", "r1a", "r1b"]);
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["r1", "r1a", "r1b", "r2"]);
+    expect(postIds(plan)).toEqual(["root", "focal", "r1", "r1a", "r1b", "r2"]);
   });
 
   test("脏数据成环：seen 防重复，不重复成行、不死循环", () => {
@@ -232,6 +234,188 @@ describe("buildTimelinePlan 作用域（focal 子树）", () => {
     expect(postIds(plan).filter((id) => id === "child")).toHaveLength(1);
     // 环不会让 BFS 死循环：调用本身能返回即证明有界。
     expect(plan).toBeTruthy();
+  });
+});
+
+describe("buildTimelinePlan 先序展开（report-thread-nesting A1–A9）", () => {
+  /** A1/A2：直接子节点紧邻 focal，孙节点紧跟其父。 */
+  test("A1/A2 子节点紧邻父、孙节点紧跟子（A→B→C）", () => {
+    const nodes = withChildCounts([
+      node("root", null, { createdAt: 100 }),
+      node("focal", "root", { createdAt: 110 }),
+      node("r2", "focal", { createdAt: 120 }),
+      node("r3", "r2", { createdAt: 130 }),
+    ]);
+    const focal = nodes.find((item) => item.id === "focal")!;
+    const plan = planFor(focal, nodes);
+
+    expect(postIds(plan)).toEqual(["root", "focal", "r2", "r3"]);
+    const r3Row = plan.rows.find((row) => row.kind === "post" && row.node.id === "r3");
+    expect(r3Row?.kind === "post" ? r3Row.compact : null).toBe(false);
+    expect(r3Row?.kind === "post" ? r3Row.replyingTo : null).toBeNull();
+  });
+
+  /** A3：兄弟回复在各自子树结束后按时间继续。 */
+  test("A3 兄弟在子树后：A→B、A→C、B→D ⇒ B,D,C", () => {
+    const nodes = withChildCounts([
+      node("focal", null, { createdAt: 100 }),
+      node("b", "focal", { createdAt: 110 }),
+      node("c", "focal", { createdAt: 120 }),
+      node("d", "b", { createdAt: 130 }),
+    ]);
+    const focal = nodes.find((item) => item.id === "focal")!;
+    const plan = planFor(focal, nodes);
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["b", "d", "c"]);
+  });
+
+  /** A4：多分支混合先序（含 E2E 同构夹具：R2→R3 与 R2 之后的 M1）。 */
+  test("A4 多分支混合先序：R1→R2→R3、R1→M1（M1 时间早于 R3）⇒ R2,R3,M1", () => {
+    const nodes = withChildCounts([
+      node("root", null, { createdAt: 100 }),
+      node("r1", "root", { createdAt: 110 }),
+      node("r2", "r1", { createdAt: 120 }),
+      node("m1", "r1", { createdAt: 130 }),
+      node("r3", "r2", { createdAt: 140 }),
+    ]);
+    const focal = nodes.find((item) => item.id === "r1")!;
+    const plan = planFor(focal, nodes);
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["r2", "r3", "m1"]);
+
+    // 同级 M1 的父帖是 r1、上一 post 行是 r3 ⇒ 显示「回复给」。
+    const m1Row = plan.rows.find((row) => row.kind === "post" && row.node.id === "m1");
+    expect(m1Row?.kind === "post" ? m1Row.replyingTo : null).toBe("owner");
+  });
+
+  /** A5：无子节点只输出自身。 */
+  test("A5 无子节点回复只输出自身", () => {
+    const nodes = withChildCounts([
+      node("focal", null, { createdAt: 100 }),
+      node("leaf1", "focal", { createdAt: 110 }),
+      node("leaf2", "focal", { author: "manager", createdAt: 120 }),
+    ]);
+    const focal = nodes.find((item) => item.id === "focal")!;
+    const plan = planFor(focal, nodes);
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["leaf1", "leaf2"]);
+    expect(plan.rows.filter((row) => row.kind === "post" && row.role === "reply")).toHaveLength(2);
+  });
+
+  /** A6：自接链在 DFS 下自然相邻，compact/compactHeader 保持（即使有更早的兄弟回复）。 */
+  test("A6 自接 compact 保持：兄弟回复不再打断同作者续接链", () => {
+    const nodes = withChildCounts([
+      node("focal", null, { author: "owner", createdAt: 100 }),
+      node("s1", "focal", { author: "owner", selfContinuation: true, createdAt: 110 }),
+      node("x", "focal", { author: "manager", createdAt: 115 }),
+      node("s2", "s1", { author: "owner", selfContinuation: true, createdAt: 120 }),
+    ]);
+    const focal = nodes.find((item) => item.id === "focal")!;
+    const plan = planFor(focal, nodes);
+
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["s1", "s2", "x"]);
+    const posts = plan.rows.filter((row) => row.kind === "post" && row.role === "reply");
+    const [s1, s2, x] = posts;
+    expect(s1?.kind === "post" ? [s1.compact, s1.compactHeader] : null).toEqual([true, true]);
+    expect(s2?.kind === "post" ? [s2.compact, s2.compactHeader] : null).toEqual([true, false]);
+    expect(x?.kind === "post" ? [x.compact, x.replyingTo] : null).toEqual([false, "owner"]);
+  });
+
+  /** A7：同级排序稳定（created_at → seq → id），重复构建/输入顺序无关。 */
+  test("A7 排序稳定：同级 created_at→seq→id，重复构建结果一致", () => {
+    const base = withChildCounts([
+      node("focal", null, { createdAt: 100 }),
+      node("p", "focal", { createdAt: 200 }),
+      node("q", "focal", { createdAt: 200 }),
+      node("early-seq", "focal", { createdAt: 200 }),
+    ]);
+    // 同 created_at：q 的 seq 比 p 小；early-seq 的 seq 最大。
+    const patched = base.map((item) => {
+      if (item.id === "p") return { ...item, seq: 20 };
+      if (item.id === "q") return { ...item, seq: 10 };
+      if (item.id === "early-seq") return { ...item, seq: 30 };
+      return item;
+    });
+    const focal = patched.find((item) => item.id === "focal")!;
+    const plan = planFor(focal, patched);
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["q", "p", "early-seq"]);
+
+    // 输入数组顺序不影响输出（先序由 (created_at, seq, id) 决定）。
+    const reversed = planFor(focal, patched.slice().reverse());
+    expect(reversed.replyNodes.map((item) => item.id)).toEqual(["q", "p", "early-seq"]);
+
+    // 完全同 created_at/seq 时按 id 升序：id 小的先输出。
+    const tie = withChildCounts([
+      node("focal", null, { createdAt: 100 }),
+      node("b", "focal", { createdAt: 200 }),
+      node("a", "focal", { createdAt: 200 }),
+    ]).map((item) =>
+      item.id === "a" || item.id === "b" ? { ...item, seq: 7 } : item,
+    );
+    const tieFocal = tie.find((item) => item.id === "focal")!;
+    expect(planFor(tieFocal, tie).replyNodes.map((item) => item.id)).toEqual(["a", "b"]);
+  });
+
+  /** A8：深链 focal 页只含其子树（兄弟分支 0 命中），子树内部仍是先序。 */
+  test("A8 深链 focal 只含其子树且子树先序", () => {
+    const nodes = withChildCounts([
+      node("root", null, { createdAt: 100 }),
+      node("sibling", "root", { createdAt: 110 }),
+      node("focal", "root", { createdAt: 120 }),
+      node("r1", "focal", { createdAt: 130 }),
+      node("r2", "focal", { createdAt: 140 }),
+      node("r1a", "r1", { createdAt: 150 }),
+    ]);
+    const focal = nodes.find((item) => item.id === "focal")!;
+    const plan = planFor(focal, nodes);
+
+    expect(plan.replyNodes.map((item) => item.id)).toEqual(["r1", "r1a", "r2"]);
+    expect(postIds(plan)).toEqual(["root", "focal", "r1", "r1a", "r2"]);
+    expect(postIds(plan)).not.toContain("sibling");
+  });
+
+  /** A9：root 页全量先序（orphan 占位追加在可达先序之后）。 */
+  test("A9 root 全量先序：分支子树连续，orphan 追加在末尾", () => {
+    const nodes = withChildCounts([
+      node("root", null, { createdAt: 100 }),
+      node("a", "root", { createdAt: 110 }),
+      node("b", "root", { createdAt: 120 }),
+      node("a1", "a", { createdAt: 130 }),
+      node("b1", "b", { createdAt: 140 }),
+      node("orphan", "missing-parent", { createdAt: 125 }),
+    ]);
+    const root = nodes.find((item) => item.id === "root")!;
+    const plan = planFor(root, nodes);
+    expect(plan.replyNodes.map((item) => item.id)).toEqual([
+      "a",
+      "a1",
+      "b",
+      "b1",
+      "orphan",
+    ]);
+    expect(postIds(plan)).toHaveLength(nodes.length);
+  });
+
+  /** A9b：orphan 占位带后代 / 多个 orphan 根 → 各自作为独立子树先序追加。 */
+  test("A9b orphan 带后代与多个 orphan 根：独立子树先序追加", () => {
+    const nodes = withChildCounts([
+      node("root", null, { createdAt: 100 }),
+      node("a", "root", { createdAt: 110 }),
+      node("orphan-1", "missing-1", { createdAt: 120 }),
+      node("orphan-1-child", "orphan-1", { createdAt: 130 }),
+      node("orphan-1-grandchild", "orphan-1-child", { createdAt: 140 }),
+      node("orphan-2", "missing-2", { createdAt: 125 }),
+      node("orphan-2-child", "orphan-2", { createdAt: 150 }),
+    ]);
+    const root = nodes.find((item) => item.id === "root")!;
+    const plan = planFor(root, nodes);
+
+    expect(plan.replyNodes.map((item) => item.id)).toEqual([
+      "a",
+      "orphan-1",
+      "orphan-1-child",
+      "orphan-1-grandchild",
+      "orphan-2",
+      "orphan-2-child",
+    ]);
+    expect(postIds(plan)).toHaveLength(nodes.length);
   });
 });
 
@@ -283,7 +467,7 @@ describe("buildTimelinePlan 缺口与既有语义", () => {
     expect(plan.gapParentId).toBe("n4");
   });
 
-  test("排序：created_at → seq → id，兄弟分支不干扰 focal 子树时间序", () => {
+  test("同级排序：created_at → seq → id，兄弟分支不干扰 focal 子树", () => {
     const nodes = withChildCounts([
       node("root", null, { createdAt: 100 }),
       node("sibling", "root", { createdAt: 105 }),
