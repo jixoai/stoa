@@ -227,11 +227,15 @@ export function prefetchProfile(client: ReportClient | null, accountId: string):
   );
 }
 
-/** 测试/调试用：清空全部缓存。 */
+/**
+ * 清空全部实体缓存（切换后端/登出必须调用）：不同实例的私域帖子、
+ * 线程、成员身份与 feed 快照不得跨实例泄漏到首帧。
+ */
 export function clearEntityCache(): void {
   postIndex.clear();
   threadIndex.clear();
   profileIndex.clear();
+  identityIndex.clear();
   feedIndex.clear();
   prefetchedAt.clear();
   inflight.clear();

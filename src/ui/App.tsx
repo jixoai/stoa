@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Toaster } from "@/components/ui/toast";
 import { ConnectionProvider, useConnection } from "@/state/connection";
+import { EventHubProvider } from "@/state/hub/provider";
 import { HomeFeedsProvider } from "@/state/feed";
 import { NotificationsProvider } from "@/state/notifications";
 import { BookmarksProvider } from "@/state/bookmarks";
@@ -67,11 +68,29 @@ function PhaseView() {
   return <ReadyApp />;
 }
 
+/**
+ * EventHub 边界：实时层只在「已验证连接且非静态归档」时建立；登录/落地/错误页
+ * 不建流（静态归档 0 条 EventSource，design §4.9）。
+ */
+function EventHubBoundary() {
+  const { phase, client, auth, account, staticMode } = useConnection();
+  return (
+    <EventHubProvider
+      client={phase === "ready" ? client : null}
+      authMode={auth?.mode ?? "open"}
+      accountId={account?.id ?? null}
+      staticMode={staticMode}
+    >
+      <PhaseView />
+    </EventHubProvider>
+  );
+}
+
 export function App() {
   return (
     <Toaster>
       <ConnectionProvider>
-        <PhaseView />
+        <EventHubBoundary />
       </ConnectionProvider>
     </Toaster>
   );

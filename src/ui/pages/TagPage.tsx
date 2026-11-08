@@ -1,6 +1,10 @@
 /**
  * 标签过滤页（design §5.0）：`#/tag/<tag>`，数据源＝`/api/read?tag=`。
  * 点击任意帖子的 tag chip 进入；保留时间线的 pending / 胶囊机制。
+ *
+ * 实时（report-event-hub P1 过渡）：`post.created` 载荷当前**不含 tags**
+ * （服务端事件未带 tags，design §2.2 的「新增 tags」尚未落地），因此 P1 用
+ * 「任意根帖 → 轻量补拉」过渡；P2 在服务端补 tags 后改精确 `tags.includes(tag)`。
  */
 import { useMemo } from "react";
 import { TimelineFeed } from "@/components/TimelineFeed";
@@ -28,11 +32,12 @@ export function TagPage() {
             limit: 100,
           });
           // `read` has no before cursor; the tag page is a latest-100 view.
+          // 用本页最大 seq 当视图 seed 下界（服务端 read 不返回 as_of_seq）。
           return {
             posts: page.posts,
             has_more: false,
             next_cursor: null,
-            as_of_seq: 0,
+            as_of_seq: page.posts.reduce((max, post) => Math.max(max, post.seq), 0),
           };
         }
       : null,
@@ -40,6 +45,10 @@ export function TagPage() {
       resetKey: tag,
       initialPosts: seedPosts,
       cacheKey: tag ? `tag:${tag}` : undefined,
+      live: {
+        // P1 过渡：任何根帖都轻量补拉（服务端按 tag 过滤）；P2 用 payload.tags 精确化。
+        deleteRootAction: "refresh",
+      },
     },
   );
 

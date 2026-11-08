@@ -1,6 +1,9 @@
 /**
- * 连接生命周期：ep 校验 → health/认证状态 → 登录 → who/accounts → SSE。
+ * 连接生命周期：ep 校验 → health/认证状态 → 登录 → who/accounts。
  * 页面层只消费 ready 之后的 client；壳内无任何后端地址硬编码。
+ *
+ * 实时层不在本文件：EventHub（`state/hub/`）随 client/ep/account 单独建池，
+ * 这里只保留 presence 兜底轮询（who/accounts 30s）与手动 refreshWho。
  */
 import {
   createContext,
@@ -12,9 +15,9 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import type { NotificationEventLine } from "@core/types";
-import { AuthError, ReportClient, ReportStream, type AccountRow, type AuthStatus, type ServerStatus, type SseState, type WhoRow } from "@/lib/api";
+import { AuthError, ReportClient, type AccountRow, type AuthStatus, type ServerStatus, type WhoRow } from "@/lib/api";
 import { clearMediaCache } from "@/lib/media";
+import { clearEntityCache } from "@/state/cache";
 import { installStaticApi, readReportSnapshot, type StaticReportClient } from "@/lib/static-api";
 import {
   checkEp,
@@ -46,7 +49,6 @@ export interface ConnectionValue {
   /** 静态归档模式：数据来自内联快照，写入口全部只读（spec report-static-mode）。 */
   staticMode: boolean;
   snapshot: { asOfSeq: number; viewer: string } | null;
-  sseState: SseState;
   error: string | null;
   loginError: string | null;
   connect: (url: string) => Promise<void>;
@@ -55,7 +57,6 @@ export interface ConnectionValue {
   switchBackend: () => void;
   retry: () => void;
   refreshWho: () => void;
-  subscribeEvents: (listener: (event: NotificationEventLine) => void) => () => void;
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
@@ -95,20 +96,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [account, setAccount] = useState<ConnectionValue["account"]>(boot?.info.account ?? null);
   const [accounts, setAccounts] = useState<AccountRow[]>(boot?.info.accounts ?? []);
   const [who, setWho] = useState<WhoRow[]>(boot?.info.who ?? []);
-  const [sseState, setSseState] = useState<SseState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [staticMode, setStaticMode] = useState(boot !== null);
 
-  const listeners = useRef(new Set<(event: NotificationEventLine) => void>());
   const pendingClient = useRef<ReportClient | null>(null);
   const autoStarted = useRef(false);
   const whoTimer = useRef<number | null>(null);
-
-  const subscribeEvents = useCallback((listener: (event: NotificationEventLine) => void) => {
-    listeners.current.add(listener);
-    return () => listeners.current.delete(listener);
-  }, []);
+  /** 上一次已就绪的 base：换实例时清空实体缓存（私域帖/线程/身份不得跨实例泄漏）。 */
+  const cacheBaseRef = useRef<string | null>(null);
 
   const refreshWho = useCallback(() => {
     const current = client;
@@ -146,6 +142,12 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         });
       setStaticMode(current.mode === "static");
       if (current.mode !== "static") {
+        // 换实例（base 变化）必须在进入 ready 之前清掉实体缓存：feed/线程/身份
+        // 的旧实例快照会作为首帧种子渲染，构成私域数据串台。
+        if (cacheBaseRef.current !== null && cacheBaseRef.current !== current.base) {
+          clearEntityCache();
+        }
+        cacheBaseRef.current = current.base;
         saveCurrentEp(current.base);
         rememberEp(current.base);
         setEp(current.base);
@@ -244,6 +246,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     if (ep) clearToken(ep);
     clearCurrentEp();
     clearMediaCache();
+    clearEntityCache();
+    cacheBaseRef.current = null;
     setClient(null);
     setAccount(null);
     setWho([]);
@@ -259,6 +263,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const switchBackend = useCallback(() => {
     clearCurrentEp();
     clearMediaCache();
+    clearEntityCache();
+    cacheBaseRef.current = null;
     setClient(null);
     setAccount(null);
     setWho([]);
@@ -314,23 +320,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     };
   }, [boot, connect, startConnect]);
 
-  // SSE lifecycle（静态归档没有事件流，也不做 presence 轮询）
-  useEffect(() => {
-    if (staticMode) return;
-    if (phase !== "ready" || !client || !auth) return;
-    const stream = new ReportStream(client, auth.mode, {
-      onEvent: (event) => {
-        for (const listener of listeners.current) listener(event);
-        // presence may change when an agent posts; refresh lazily
-        refreshWho();
-      },
-      onState: setSseState,
-    });
-    stream.start();
-    return () => stream.stop();
-  }, [phase, client, auth, refreshWho]);
-
-  // Presence fallback: poll slowly while visible; SSE is the primary channel.
+  // Presence fallback: poll slowly while visible (realtime events live in EventHub).
   useEffect(() => {
     if (staticMode) return;
     if (phase !== "ready" || !client) return;
@@ -370,7 +360,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       sameOrigin,
       staticMode,
       snapshot: boot?.snapshot ?? null,
-      sseState,
       error,
       loginError,
       connect,
@@ -379,7 +368,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       switchBackend,
       retry,
       refreshWho,
-      subscribeEvents,
     }),
     [
       phase,
@@ -393,7 +381,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       sameOrigin,
       staticMode,
       boot,
-      sseState,
       error,
       loginError,
       connect,
@@ -402,7 +389,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       switchBackend,
       retry,
       refreshWho,
-      subscribeEvents,
     ],
   );
 

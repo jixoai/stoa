@@ -786,7 +786,7 @@ export class StaticReportClient extends ReportClient {
     throw readOnlyError();
   }
 
-  override async ackNotifications(): Promise<number> {
+  override async ackNotifications(): Promise<{ cursor: number; unread_count: number }> {
     throw readOnlyError();
   }
 

@@ -36,7 +36,12 @@ export function BookmarksPage() {
     [client],
   );
 
-  const feed = usePostFeed(client ? loader : null, { cacheKey: "bookmarks" });
+  // 收藏集合只受显式收藏/取消影响：新帖不触发请求；删除按当前列表 id 回落移除
+  // （`post.deleted` 命中 → feed 控制器本地移除）。
+  const feed = usePostFeed(client ? loader : null, {
+    cacheKey: "bookmarks",
+    live: { matches: () => false },
+  });
 
   // 取消收藏后立即从列表移除（服务端返回前也不闪回）。
   const visible = useMemo(() => {

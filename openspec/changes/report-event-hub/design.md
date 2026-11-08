@@ -317,40 +317,49 @@ function advanceWatermark(asOf: number): void {
 src/ui/state/hub/
   types.ts              # HubEvent/HubState/TOPICS/控制帧
   event-hub.ts          # 零 React、零组件；EventSource 工厂注入（可单测）
-  provider.tsx          # EventHubProvider + useEventHub + useHubStatus
-  notification-store.ts # 通知投影（read-set 公式 + union）
-  legacy-adapter.ts     # 仅 hello 无 hub:2 的旧后端（§5.3）
+  provider.tsx          # EventHubProvider + useEventHub + useHubStatus + useEventHubView
+  notification-projection.ts # 通知投影（按帖角标 + read-set + union）
 ```
+（legacy-adapter 不在 P1：`hello` 无 `hub:2` 时直接 off，去留见 §5.3。）
 
 ### 4.2 状态机
 
 ```
-idle → connecting → (hello) → live
-        │ error/close/non-200 → reconnecting（自有退避）
-        │ n≥5 → degraded（+60s 兜底轮询）
-        └ online/visible/pageshow → connecting（取消定时器）
+idle → connecting → (hello hub:2) → live
+        │ error/close/non-200 → reconnecting（自有退避 1/2/4/8s）
+        │ n≥5 → degraded{reconnect_failed}：对活跃视图每 60s 兜底 catch-up
+        │ reset 未确认 → degraded{catching_up}：REST 重取中（不是轮询）
+        └ online/visible/pageshow → connecting（取消定时器；online 立即重连）
 bye{recycle} → connecting（不退避）
 bye{auth} → off + 交登录态
+hello 无 hub:2（旧后端）→ off（P1 不做 legacy 适配器/兜底轮询）
 staticMode/stop → off
 ```
 
 - 退避 `min(30s, 1s*2^attempt)+jitter`；`hello` 清零；不依赖 EventSource 内置重试。
-- 看门狗：`2.5×heartbeatMs` 无任何帧 → `source.close()` + 重连。
-- `degraded` 只在 `document.visibilityState==="visible"` 时轮询活跃视图。
+- 看门狗：`2.5×heartbeatMs` 无任何帧 → `source.close()` + 重连（下限 1s）。
+- `degraded{reconnect_failed}` 只在 `document.visibilityState==="visible"` 时对活跃视图
+  每 60s 兜底 catch-up（`status.degradedPolling=true`）；hidden 时暂停（清定时器），
+  visible 恢复时立即补一次并重建定时器；`degraded{catching_up}` 不发轮询。
 - 每次重连必须重新取 ticket（一次性），禁止复用 URL。
 
 ### 4.3 顺序、去重、首连与 reset（评审阻塞 3）
 
 - Hub 维护 `lastSeq`（已应用高水位）与 `resumeSeq`（下次 `since`）。
 - 数据帧 `seq <= lastSeq` 丢弃；不推断稀疏 gap。
-- 连接参数：`since = 活跃视图最小 seed.as_of_seq`，无活跃视图则省略。
+- 连接参数：`since = 活跃视图最小 seed.as_of_seq`；无活跃视图则用 `resumeSeq`。
+  **pendingCatchUp 未清时只认 `resumeSeq`**——残留的视图旧 seed 不得把 since 顶回高位。
 - `hello`：记录 `as_of_seq`/`cursor`；若 `as_of_seq < lastSeq` → 视为 rollback；
   首连且 `hello.since===null` 时走 `advanceWatermark(hello.as_of_seq)`。
 - `caught_up` / `heartbeat`：走 `advanceWatermark(as_of_seq)`；`pendingCatchUp !== null` 时
   水位上限被钳在 `pendingCatchUp.asOfSeq`，不会越过空洞。
-- `reset{as_of_seq}`：
-  1. `resumeSeq = as_of_seq`（防止用旧 since 反复触发 reset）；
-  2. `pendingCatchUp = {asOfSeq, scopes: 活跃视图集合}`；`lastSeq` **保持不变**；
+- `reset{as_of_seq, reason}`：
+  1. `resumeSeq = as_of_seq`（直接赋值：可前跳，rollback 时可下降；防止用旧 since 反复
+     触发 reset）；
+  2. `pendingCatchUp = {asOfSeq, reason, scopes: 活跃视图集合}`；
+     - `replay_limit`：`lastSeq` **保持不变**；
+     - `rollback`（换库/恢复旧库）：**`lastSeq = as_of_seq`**（新库是唯一真相）。旧水位会让
+       新库 `seq ≤ 旧 lastSeq` 的事件在去重处被静默丢弃（review B2）；
   3. 对活跃视图执行 REST 重取；**全部成功后才** `lastSeq=max(lastSeq,as_of_seq)` 并清 pending；
      失败保留 pending（保留空洞标记），按退避重试，绝不在失败时假装水位已确认；
   4. 分发 `stream.reset` 供非视图 store（通知投影）重取。
@@ -402,38 +411,45 @@ union。
 `serverUnread`，`unreadByTarget: Map<target, count>`（来自最近一次 peek/heartbeat 对账），
 `readIds`（localStorage）。
 
-**badge 公式（精确版）**：
+**badge 公式（按帖口径，评审 B3 定稿）**：
 
 ```
-badge = max(0, serverUnread
-              - Σ_{id ∈ readIds} unreadByTarget[id]
-              - localUnreadDelta)
+badge = max(0, |{ target ∈ unreadByTarget : target ∉ readIds }|
+              + |{ target ∈ localTargets : target ∉ readIds ∧ target ∉ unreadByTarget }|)
 ```
 
-- `serverUnread`/`unreadByTarget` 来自服务端 `peek`（或 heartbeat 的 `unread_count` + 定期
-  `peek` 刷新 map），因此 read-set 命中即使不在已加载列表里也能精确扣减；
-- `localUnreadDelta` 仅用于「快照之后新到、尚未被下一次对账吸收」的事件；对账后清零。
+- 为什么不是按事件：一次 @ 提醒同时产生 `post.created` + `thread.invited` 两条事件、同一
+  target；UI 只展示一行、角标只应 +1。服务端 `unread_count` 是**事件数**（实测一次 @ = 2），
+  直接当角标会翻倍，也与 `report-notification-history-and-read` 的按帖语义冲突。
+- `unreadByTarget`（每个 target 的未读事件数）来自 `peek`；角标取 distinct target 数，
+  因此 read-set 命中即使不在已加载列表里也能精确扣减，且与分页无关。
+- `unread_count` 仍用于**事件级漂移对账**（`serverUnreadEvents + localEventDelta` 与
+  heartbeat 比对）；不一致才排一次 `peek&limit=1`。
+- `localTargets` 仅收录「快照之后新到、尚未被下一次对账吸收」的 target；对账后清空。
 
 **幂等增量规则**（只在 bySeq 新增 seq 时动作）：
 
 1. `notification.created`：若 `bySeq.has(seq)` → no-op；若 `post_deleted===true` → 插入但
-   **不计** `serverUnread`；否则插入，`serverUnread += (seq>cursor ? 1:0)`，
-   `unreadByTarget[target] += 1`。
+   **不计**未读；否则插入；target 不在 `unreadByTarget` 时加入 `localTargets`（同帖第二条
+   事件不再 +1），`localEventDelta += 1`（仅对账用）。
 2. `post.deleted`：`bySeq` 中该 target 的未读事件逐条标记 deleted（每 seq 一次），
-   已 deleted 的不重复扣；`serverUnread -= 扣减数`；若本地不知道全量事件数（该 target 的
-   未读事件未加载）→ 立即排一次 `refreshUnread()`（`peek&limit=1` 拿 count+by_target），
-   以服务端数为准。`post.deleted` 自身永不计数。
-3. `cursor.acked`：`cursor=服务器值`，`serverUnread=服务器值`（服务器同时给 `unread_count`）。
-4. 对账：heartbeat 带 `unread_count`，每 60s（或 visible 恢复）做一次 `peek&limit=1` 刷新
-   `unread_count+unread_by_target`；对账后 `localUnreadDelta=0`。这是删除/竞态的自愈通道。
+   已 deleted 的不重复扣；从 `unreadByTarget`/`localTargets` 移除该 target；仅对**本地计数过**
+   的 seq 扣 `localEventDelta`（避免与快照重复扣）。该帖是否还有未加载事件本地不可知 →
+   排一次 `peek&limit=1` 以服务端为准。`post.deleted` 自身永不计数。
+3. `cursor.acked`：`cursor=服务器值`；`unread_count===0` 时清空 target 投影，否则排对账。
+4. 对账：heartbeat 带 `unread_count`，每 60s（或 visible 恢复）做漂移检测；不一致才
+   `peek&limit=1` 刷新 `unread_count+unread_by_target`；对账后 `localEventDelta=0`、
+   `localTargets` 清空。这是删除/竞态的自愈通道。
 5. `ack()` 响应 `{cursor,unread_count}`：两者直接落地，清空未读投影（唯一清空路径）。
 6. `stream.reset/reconnected`：`peek` 一次，union 合并（保留本地新行），不删除历史。
+7. `degraded{reconnect_failed}`：每 60s 主动 `peek&limit=1` 对账（与 hub 活跃视图兜底轮询
+   同步，review B4）。
 
 **read-set 交互**：`markPostRead(postId)` 只更新 readIds 并持久化；badge 依据公式自动下降；
 不清列表、不推游标、不影响其他帖子。history 行 `read` 标记 = `line.read || readIds.has(targetId)`。
 
 **已知产品后果（与在途 change 共同承担，不在本 change 单独修）**：read-set 上限 500 按加入
-顺序淘汰；被淘汰的已读帖若仍有未读事件，`Σ readIds 命中 unreadByTarget` 会变小 → **角标回涨**。
+顺序淘汰；被淘汰的已读帖若仍有未读事件，其 target 重新计入角标 → **角标回涨**。
 这是「本地 read-set + 服务端游标」两 change 共同的产品语义，不引入服务端 per-post 表就无法
 根治；缓解是提高上限/按账号持久化（在途 change 的取舍），验收需知悉该行为。
 
@@ -498,10 +514,10 @@ hub `off`，无 EventSource；角标来自快照；WhoPanel 显示「静态归�
 
 | 兜底 | 理由 | 删除判据 |
 |------|------|----------|
-| legacy 适配器（hello 无 hub:2） | 静态壳可指向旧后端 | 后端升版后下一版删除；`healthz.hub.legacy_connects` 连续 7 天为 0 且 `rg` 无引用 |
+| legacy 适配器（hello 无 hub:2） | **P1 不实现**：旧后端 → 实时层 off（明确无推送）；是否补适配器是 P3 决策 | 若 P3 实现：后端升版后删除；`legacy_connects` 连续 7 天为 0 且 `rg` 无引用 |
 | `hub=2` 端点开关 | 升级窗口旧壳不受 `post.deleted` 影响 | legacy 删除时一并删除；默认切 v2 |
 | 30s presence 轮询 | presence 非事件源 | 未来有 `presence.changed` 再删；否则保留登记 |
-| degraded 60s 兜底轮询 | 移动端/代理阻断 SSE | 不删除；只允许在 degraded/static/legacy 存在 |
+| degraded 60s 兜底轮询 | 移动端/代理阻断 SSE；`{reconnect_failed}` 时对活跃视图每 60s catch-up（`status.degradedPolling`） | 不删除；只允许在 degraded/static 存在 |
 | visibilitychange catch-up | 后台节流 | 保留（断线兜底） |
 
 **不做构建期 `HUB_ENABLED` 开关**；回滚 = 端点版本（不带 `hub`）+ 部署回滚，避免长期双轨。
@@ -522,8 +538,9 @@ hub `off`，无 EventSource；角标来自快照；WhoPanel 显示「静态归�
 
 1. 可见性：hub/peek/history/timeline/thread/profile 共用 `visibleRootsClause`（带别名）；
    五个入口对同一私域 root 的命中集合一致。
-2. 未读：`unread_count` 与列表同 SQL 规则；客户端 badge = 服务端数 − read-set 命中 − 本地
-   增量，heartbeat/60s 对账自愈。**「同源」= 同一 read-set/cursor 投影，不要求角标等于已加载
+2. 未读：`unread_count`/`unread_by_target` 与列表同 SQL 规则；客户端 badge = **未被 read-set
+   命中的 distinct target 数**（+ 未对账吸收的本地 target），`unread_count` 只做事件级漂移
+   对账，heartbeat/60s 自愈。**「同源」= 同一 read-set/cursor 投影，不要求角标等于已加载
    行数**；角标 MAY 大于当前已加载列表（分页/未 hydrate 场景），列表用「还有 N 条」补齐。
 3. 跨端：「全部已读」游标由服务端广播 `cursor`；read-set 按在途 change 只影响本端。
 4. history + 实时：`bySeq` 以 seq 去重；`ack()` 唯一清空；refresh union。
@@ -541,6 +558,7 @@ hub `off`，无 EventSource；角标来自快照；WhoPanel 显示「静态归�
 - P2 线程页回复 → pending 胶囊或回复内容出现（按视口位置二选一断言）。
 - P3 删除 → feed/线程/收藏中按 id 消失或墓碑；通知行转「已删除」。
 - P4 成员页：只有 1 条 `/api/stream`；该成员新帖进 DOM；其他成员发帖不触发该页请求。
+  （P1 已验「1 条共享流 + 无 `author=`」；标签/收藏页的实时失效属 P2。）
 - P5 角标：A 回复 B → B 角标 +1 ≤2s（不在通知页）；打开该帖（read-set）→ 角标 −1；
   reload 后 read-set 仍在；`ack()` 后归零。
 - P6 多端：标签页 1 `ack()` → 标签页 2 角标 ≤2s 归零（`cursor` 帧）。
@@ -580,7 +598,8 @@ hub `off`，无 EventSource；角标来自快照；WhoPanel 显示「静态归�
 ### 7.5 兼容/静态/未覆盖
 
 - 旧壳 + 新后端：无 `hub` 行为逐字段不变；`post.deleted` 不改旧通知。
-- 新壳 + 旧后端：legacy 适配器 + 兜底轮询。
+- 新壳 + 旧后端（`hello` 无 `hub:2`）：P1 **实时层 off**（无 EventSource、无兜底轮询），
+  不假装实时；legacy 适配器是否实现是 P3 决策（§5.3）。
 - 静态归档：无 EventSource、无实时指示。
 - **移动端后台冻结**：若本轮不实测真机，验收报告显式登记「未覆盖」并给出看门狗/visible
   重连的代码级证据；不得默认声称已验证。
@@ -598,8 +617,8 @@ hub `off`，无 EventSource；角标来自快照；WhoPanel 显示「静态归�
 | 移动后台冻结 | 真实 heartbeat + 2.5×看门狗 + visible 重连；未实测则登记未覆盖 |
 | 代理缓冲 SSE | `X-Accel-Buffering: no`/`no-transform`；隧道 ≤5s 验收 |
 | owner 可见全部 → 读放大 | 50ms 合并、逐帧写、replay 上限、payload 只带引用、unread 计数 5s 缓存 |
-| 服务恢复/回滚 | `since > as_of_seq` reset；reset 后 REST 成功才确认水位 |
-| read-set 与 server count 漂移 | `unread_by_target` 精确扣减 + heartbeat/60s 对账 + 删除后重取兜底 |
+| 服务恢复/回滚 | `since > as_of_seq` 判 rollback；rollback 声明即 `lastSeq=as_of`（新库真相），`replay_limit` 保持旧水位等 REST 确认 |
+| read-set 与 server count 漂移 | `unread_by_target` distinct target 角标 + heartbeat/60s 漂移对账 + 删除后重取兜底 |
 | 并行 change 冲突 | 先合在途 change；只扩展既有 handler 响应；history 仅适配器 |
 | 邀请重放 | spec 承认整树可见；replay 有界 + seq 去重；未来要严格静默再加 `joined_seq` |
 
@@ -625,3 +644,6 @@ hub `off`，无 EventSource；角标来自快照；WhoPanel 显示「静态归�
 | D11 | 删除事件谓词 = 当前列表 id 命中 | delete 无 tags/author | actor/tags 匹配 |
 | D12 | 邀请允许整树重放 | 可见性模型=参与即全树；snapshot 已给全树 | 加 joined_seq（留未来） |
 | D13 | 不做 `HUB_ENABLED` 构建开关 | 避免长期双轨；端点版本可回滚 | 构建期双轨 |
+| D14 | rollback 声明即 `lastSeq = as_of_seq`；`resumeSeq` 直接取 reset as_of（可下降） | 换库后新 seq 可能低于旧水位；不降会丢事件并反复 reset（review B1/B2） | 继续 keep lastSeq / max(resumeSeq) |
+| D15 | 角标按 distinct target（按帖），`unread_count` 只做事件级对账 | 一次 @ = 2 事件 1 行；与在途 change 的按帖语义一致（review B3） | 原始 unread_count 当角标 |
+| D16 | `degraded{reconnect_failed}` 对活跃视图每 60s catch-up；`{catching_up}` 不算轮询 | 文案「轮询兜底」必须真实（review B4） | 只显示指示不轮询 |

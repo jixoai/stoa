@@ -6,7 +6,7 @@
  * tab 状态写在 URL（`#/?tab=following`），刷新后保持；切换 tab 只换面板，
  * 两个 FeedController 常驻在 HomeFeedsProvider 里，游标互不复用。
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FeedTab } from "@core/types";
 import { InfoIcon } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -36,6 +36,18 @@ export function HomePage() {
   const tab: FeedTab = route.name === "home" ? route.tab : "recommended";
   const { recommended, following } = useHomeFeeds();
   const feed = tab === "following" ? following : recommended;
+  const setRecommendedActive = recommended.setLiveActive;
+  const setFollowingActive = following.setLiveActive;
+
+  // 只有当前 tab 响应推送（另一条只标脏，切回时补一次）；首页未挂载时两条都不活跃。
+  useEffect(() => {
+    setRecommendedActive(tab === "recommended");
+    setFollowingActive(tab === "following");
+    return () => {
+      setRecommendedActive(false);
+      setFollowingActive(false);
+    };
+  }, [tab, setRecommendedActive, setFollowingActive]);
 
   const switchTab = (value: string) => {
     const next: FeedTab = value === "following" ? "following" : "recommended";

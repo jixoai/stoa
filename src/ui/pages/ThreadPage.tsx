@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PageHeader } from "@/components/PageHeader";
 import { useConnection } from "@/state/connection";
+import { useEventHub, useEventHubView } from "@/state/hub/provider";
 import { useNotifications } from "@/state/notifications";
 import { getCachedThread, getThreadSeed, rememberThread } from "@/state/cache";
 import {
@@ -533,7 +534,7 @@ export function ThreadPage() {
   const postId = route.name === "post" ? route.id : "";
   const source = routeSource(route);
   const wantReply = route.name === "post" && route.reply === true;
-  const { client, subscribeEvents, staticMode } = useConnection();
+  const { client, staticMode } = useConnection();
   // 首帧优先用已见线程；只有单帖缓存时也要把焦点帖排出来（合成线程），
   // 回复区在下方用骨架占位——转场快照即最终排版，转场结束后焦点帖不再移动。
   const [thread, setThread] = useState<ThreadView | null>(() =>
@@ -651,16 +652,49 @@ export function ThreadPage() {
     }, 350);
   }, [load]);
 
-  // SSE：本会话有新帖 → 静默补拉，进 pending（不直接重排）
-  useEffect(() => {
-    if (!thread) return;
-    const rootId = thread.root_id;
-    return subscribeEvents((event) => {
-      if (event.root_id === rootId || event.post_id === rootId || event.post_id === postId) {
-        scheduleRefresh();
+  // Hub（共享单流）：本会话有新帖 → 静默补拉，进 pending（不直接重排）；
+  // 删除按 root/post id 命中 → 同样静默补拉（帖子转墓碑/消失）。
+  // reset 是总线声明的空洞：强重取（清 pending 与易变投影）；重连只轻量补拉。
+  useEventHub(
+    ["post.created", "post.deleted", "stream.reset", "stream.reconnected"],
+    (dispatch) => {
+      if (dispatch.topic === "stream.reset") {
+        void load(false);
+        return;
       }
-    });
-  }, [thread?.root_id, postId, scheduleRefresh, subscribeEvents]);
+      if (dispatch.topic === "stream.reconnected") {
+        scheduleRefresh();
+        return;
+      }
+      if (dispatch.topic !== "post.created" && dispatch.topic !== "post.deleted") return;
+      const current = threadRef.current;
+      if (!current) return;
+      const event = dispatch.event;
+      if (
+        event.root_id === current.root_id ||
+        event.post_id === current.root_id ||
+        event.post_id === postId
+      ) {
+        if (dispatch.topic === "post.deleted") {
+          // 删除必须立即提交（静默补拉只在「有新回复」时替换视图，删除会被忽略）。
+          void load(false);
+        } else {
+          scheduleRefresh();
+        }
+      }
+    },
+  );
+
+  // 活跃视图：首连 since / hello 后补拉 / reset 强重取（thread 加载出 as_of_seq 后才注册）。
+  useEventHubView(
+    thread && thread.as_of_seq > 0
+      ? {
+          asOfSeq: thread.as_of_seq,
+          catchUp: () => load(true),
+          reload: () => load(false),
+        }
+      : null,
+  );
 
   useEffect(() => {
     return () => {

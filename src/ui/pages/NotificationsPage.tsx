@@ -91,12 +91,12 @@ export function NotificationsPage() {
     [client],
   );
 
-  // 进入通知页即 re-peek + 拉首页历史：SSE 只覆盖已订阅的作者，别人此刻回的话不能等手动刷新。
+  // 进入通知页只拉历史首页：未读/角标由 EventHub 增量 + provider 的 peek 对账维持，
+  // 不再做「进页 re-peek」（report-event-hub P1-11）。
   useEffect(() => {
     if (staticMode) return;
-    void refreshNotifications();
     void loadHistory(true);
-  }, [refreshNotifications, loadHistory, staticMode]);
+  }, [loadHistory, staticMode]);
 
   // 历史行的帖子投影（正文/删除态）由 provider 统一补拉，列表与详情共用一份缓存。
   useEffect(() => {
@@ -110,6 +110,19 @@ export function NotificationsPage() {
     ];
     ensurePosts(ids);
   }, [history, ensurePosts]);
+
+  // 停留在通知页时，实时新到达的行按需 hydrate（不在通知页时 0 次帖子正文请求）。
+  useEffect(() => {
+    if (notifications.liveEvents.length === 0) return;
+    const ids = [
+      ...new Set(
+        notifications.liveEvents
+          .map((event) => event.post_id ?? event.root_id ?? null)
+          .filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    ];
+    ensurePosts(ids);
+  }, [notifications.liveEvents, ensurePosts]);
 
   /** 历史事件 ∪ provider 实时事件，按帖子分组（同帖多条提醒一行；角标同源）。 */
   const rows = useMemo<NotificationItem[]>(() => {
@@ -133,6 +146,13 @@ export function NotificationsPage() {
     () => (scope === "unread" ? rows.filter((row) => !row.deleted && !row.read) : rows),
     [rows, scope],
   );
+
+  /** 已加载行里的未读数：服务端角标可能更大（分页/未 hydrate），用「还有 N 条」补齐。 */
+  const unreadRowCount = useMemo(
+    () => rows.filter((row) => !row.deleted && !row.read).length,
+    [rows],
+  );
+  const unreadBeyondLoaded = Math.max(0, notifications.unread - unreadRowCount);
 
   const actorOf = (event: NotificationEventLine) => accounts.find((row) => row.id === event.actor) ?? null;
 
@@ -312,7 +332,15 @@ export function NotificationsPage() {
               {visible.map(renderRow)}
             </Card>
 
-            <div className="mt-3 flex justify-center" data-testid="notifications-history-footer">
+            <div className="mt-3 flex flex-col items-center gap-1" data-testid="notifications-history-footer">
+              {unreadBeyondLoaded > 0 ? (
+                <p
+                  className="py-1 text-center text-xs text-muted-foreground"
+                  data-testid="notifications-more-unread"
+                >
+                  还有 {unreadBeyondLoaded} 条未读（加载更早）
+                </p>
+              ) : null}
               {historyLoadingMore ? (
                 <div className="flex flex-col gap-2 py-2" aria-label="正在加载更早通知">
                   {Array.from({ length: 2 }).map((_, index) => (

@@ -1,11 +1,18 @@
 /**
- * 通用帖子流控制器（主页双流 / 成员页 / 标签页共用一套机制）。
+ * 通用帖子流控制器（主页双流 / 成员页 / 标签页 / 收藏页共用一套机制）。
  *
  * design §12.2 的硬规则全部收敛在这里，视图层只决定「何时吸收」：
  * - 新数据一律先进 `pending[]`，绝不直接插入 `posts`
  * - 向下滚动用 before 游标；向上刷新用 after 游标；按 post id 去重
  * - 每个 feed 实例拥有**独立**的游标 / pending / 锚点（切 tab 不串流）
  * - 断线重连后按 after 游标补拉；去重由 mergePosts 保证
+ *
+ * 实时失效（report-event-hub §4.6）：
+ * - `post.created` 只有「命中本 feed 谓词」的根帖才刷新，且只有**活跃** feed 发请求，
+ *   非活跃只标脏（切回时补一次）；回复不进列表流。
+ * - `post.deleted` 只按当前已渲染 id 命中（delete 载荷没有 tags/author）：
+ *   post_id 命中 → 本地移除；root_id 命中 → 按 `deleteRootAction` 决定是否轻量补拉。
+ * - `stream.reset` → 强重取（清空易变投影）；`stream.reconnected` → 轻量补拉。
  */
 import {
   createContext,
@@ -21,6 +28,8 @@ import type { PostView } from "@core/types";
 import { postCursor } from "@/lib/cursor";
 import { rememberPosts, readFeedCache, writeFeedCache } from "@/state/cache";
 import { useConnection } from "@/state/connection";
+import { useEventHub, useEventHubView } from "@/state/hub/provider";
+import { isRootCreated, type HubEventLine, type HubView } from "@/state/hub/types";
 
 export interface TimelineAnchor {
   firstVisibleId: string | null;
@@ -66,10 +75,25 @@ export interface FeedController extends FeedState {
   prepareReturn: () => void;
   takeRestore: () => TimelineAnchor | null;
   clearRestore: () => void;
+  /** 页面级活跃开关：只有活跃 feed 响应推送（非活跃只标脏）。 */
+  setLiveActive: (active: boolean) => void;
+}
+
+/** 实时失效谓词（report-event-hub §4.6）；不传 = 默认「根帖」规则。 */
+export interface FeedLiveOptions {
+  /** 页面挂载即活跃（默认 true；主页双流由 HomePage 显式切换）。 */
+  active?: boolean;
+  /** 哪些 `post.created` 属于本 feed（默认：根帖）。 */
+  matches?: (event: HubEventLine) => boolean;
+  /**
+   * `post.deleted` 只命中 root_id（当前列表里的根帖，被删的是其下回复）时：
+   * 成员页/标签页需要轻量补拉；主页/收藏页忽略。
+   */
+  deleteRootAction?: "ignore" | "refresh";
 }
 
 export interface UsePostFeedOptions {
-  /** Disable the app-wide SSE subscription (member page uses its own author stream). */
+  /** Disable the app-wide hub subscription (static archives never mount the hub). */
   realtime?: boolean;
   /** Load the first page on mount (default true). */
   autoLoad?: boolean;
@@ -78,8 +102,10 @@ export interface UsePostFeedOptions {
   limit?: number;
   /** 首帧种子（已在别处见过的帖子）；缺省时按 `cacheKey` 读上次快照。 */
   initialPosts?: PostView[];
-  /** 时间线快照键：加载成功后写回，下次进入同一路由/标签/成员页立即排版。 */
+  /** 时间线快照键：加载成功后写回，下次进入同一路由/标签页/成员页立即排版。 */
   cacheKey?: string;
+  /** 推送失效规则（见 FeedLiveOptions）。 */
+  live?: FeedLiveOptions;
 }
 
 const EMPTY_STATE: FeedState = {
@@ -126,8 +152,15 @@ export function usePostFeed(
     limit = 30,
     initialPosts,
     cacheKey,
+    live,
   } = options;
-  const { subscribeEvents, sseState } = useConnection();
+  const liveMatch = live?.matches;
+  const deleteRootAction = live?.deleteRootAction ?? "ignore";
+  const [liveActive, setLiveActiveState] = useState(live?.active ?? true);
+  const liveActiveRef = useRef(liveActive);
+  liveActiveRef.current = liveActive;
+  /** 非活跃期间收到的失效意图：切回活跃时补一次。 */
+  const dirtyReason = useRef<"refresh" | "reload" | null>(null);
   const [state, setState] = useState<FeedState>(() =>
     seedState(initialPosts ?? (cacheKey ? readFeedCache(cacheKey) : [])),
   );
@@ -224,10 +257,13 @@ export function usePostFeed(
     setState((prev) => ({ ...prev, refreshing: true }));
     const collected: PostView[] = [];
     let after: string | null = postCursor(top);
+    let asOf = current.asOfSeq;
     try {
       for (let page = 0; page < 5 && after; page += 1) {
         const result = await load({ after, limit: 100 });
         if (gen !== generation.current) return;
+        // 服务端快照水位（而非最后一条帖子的 seq）才是视图的 seed 上界。
+        asOf = Math.max(asOf, result.as_of_seq ?? 0);
         collected.push(...result.posts);
         if (!result.has_more || !result.next_cursor) break;
         after = result.next_cursor;
@@ -239,10 +275,10 @@ export function usePostFeed(
           pending: mergePosts(collected, prev.pending),
           refreshing: false,
           error: null,
-          asOfSeq: Math.max(prev.asOfSeq, ...collected.map((post) => post.seq)),
+          asOfSeq: Math.max(prev.asOfSeq, asOf),
         }));
       } else {
-        setState((prev) => ({ ...prev, refreshing: false }));
+        setState((prev) => ({ ...prev, refreshing: false, asOfSeq: Math.max(prev.asOfSeq, asOf) }));
       }
     } catch (err) {
       if (gen !== generation.current) return;
@@ -272,6 +308,7 @@ export function usePostFeed(
     initializedRef.current = false;
     restoreNext.current = false;
     savedAnchor.current = null;
+    dirtyReason.current = null;
     if (refreshTimer.current !== null) {
       window.clearTimeout(refreshTimer.current);
       refreshTimer.current = null;
@@ -295,17 +332,89 @@ export function usePostFeed(
     void loadInitial();
   }, [hasLoader, autoLoad, loadInitial, resetKey]);
 
-  // SSE → debounced after-cursor refresh (dedupe happens in mergePosts)
-  useEffect(() => {
-    if (!realtime) return;
-    return subscribeEvents(() => refreshNew());
-  }, [realtime, subscribeEvents, refreshNew]);
+  /** 删除命中：只按当前已渲染 id 从 posts/pending 移除（不发请求）。 */
+  const removePosts = useCallback((ids: readonly string[]) => {
+    if (ids.length === 0) return;
+    const drop = new Set(ids);
+    setState((prev) => {
+      const posts = prev.posts.filter((post) => !drop.has(post.id));
+      const pending = prev.pending.filter((post) => !drop.has(post.id));
+      if (posts.length === prev.posts.length && pending.length === prev.pending.length) return prev;
+      return { ...prev, posts, pending };
+    });
+  }, []);
 
-  // reconnect → catch up from the feed's own top cursor
+  // Hub → 精确失效（design §4.6）：回复不进列表流；非活跃只标脏；删除按 id 命中。
+  useEventHub(
+    ["post.created", "post.deleted", "stream.reset", "stream.reconnected"],
+    (dispatch) => {
+      if (!realtime) return;
+      switch (dispatch.topic) {
+        case "post.created": {
+          const matches = liveMatch ? liveMatch(dispatch.event) : isRootCreated(dispatch.event);
+          if (!matches) return;
+          if (liveActiveRef.current) refreshNew();
+          else dirtyReason.current = "refresh";
+          return;
+        }
+        case "post.deleted": {
+          const postId = dispatch.event.post_id;
+          const rootId = dispatch.event.root_id;
+          const current = stateRef.current;
+          const ids = new Set([...current.posts, ...current.pending].map((post) => post.id));
+          if (postId && ids.has(postId)) {
+            removePosts([postId]);
+            return;
+          }
+          if (rootId && ids.has(rootId) && deleteRootAction === "refresh") {
+            if (liveActiveRef.current) refreshNew();
+            else if (dirtyReason.current !== "reload") dirtyReason.current = "refresh";
+          }
+          return;
+        }
+        case "stream.reset": {
+          if (liveActiveRef.current) {
+            dirtyReason.current = null;
+            void loadInitial();
+          } else {
+            dirtyReason.current = "reload";
+          }
+          return;
+        }
+        case "stream.reconnected": {
+          if (liveActiveRef.current) refreshNew();
+          else if (dirtyReason.current !== "reload") dirtyReason.current = "refresh";
+          return;
+        }
+      }
+    },
+  );
+
+  // 活跃视图：把 REST seed 水位交给总线（首连 since / hello 后补拉 / reset 强重取）。
+  // 首帧 seed 没有服务端水位（asOfSeq=0）时不注册：等 REST 回来拿到 as_of_seq 再注册，
+  // 注册时会与 hub.lastSeq 比对，落后就立刻补一次。
+  useEventHubView(
+    realtime && liveActive && state.asOfSeq > 0
+      ? {
+          asOfSeq: state.asOfSeq,
+          catchUp: () => refreshNew(),
+          reload: () => loadInitial(),
+        }
+      : null,
+  );
+
+  // 切回活跃：补一次非活跃期间标脏的失效。
   useEffect(() => {
-    if (!realtime) return;
-    if (sseState === "open") refreshNew();
-  }, [realtime, sseState, refreshNew]);
+    if (!liveActive) return;
+    const reason = dirtyReason.current;
+    dirtyReason.current = null;
+    if (reason === "reload") void loadInitial();
+    else if (reason === "refresh") refreshNew();
+  }, [liveActive, loadInitial, refreshNew]);
+
+  const setLiveActive = useCallback((active: boolean) => {
+    setLiveActiveState((prev) => (prev === active ? prev : active));
+  }, []);
 
   // tab visible again → catch up on anything missed while throttled
   useEffect(() => {
@@ -356,6 +465,7 @@ export function usePostFeed(
       prepareReturn,
       takeRestore,
       clearRestore,
+      setLiveActive,
     }),
     [
       state,
@@ -367,6 +477,7 @@ export function usePostFeed(
       prepareReturn,
       takeRestore,
       clearRestore,
+      setLiveActive,
     ],
   );
 }
@@ -382,13 +493,15 @@ const HomeFeedsContext = createContext<HomeFeedsValue | null>(null);
 
 export function HomeFeedsProvider({ children }: { children: ReactNode }) {
   const { client } = useConnection();
+  // 两条流常驻，但默认都**非活跃**：由 HomePage 按当前 tab 调 setLiveActive，
+  // 保证一条推送最多只刷一个 feed（首页未挂载时 0 次）。
   const recommended = usePostFeed(
     client ? (query) => client.feed({ tab: "recommended", ...query }) : null,
-    { cacheKey: "home:recommended" },
+    { cacheKey: "home:recommended", live: { active: false } },
   );
   const following = usePostFeed(
     client ? (query) => client.feed({ tab: "following", ...query }) : null,
-    { cacheKey: "home:following" },
+    { cacheKey: "home:following", live: { active: false } },
   );
   const value = useMemo<HomeFeedsValue>(
     () => ({ recommended, following }),

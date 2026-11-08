@@ -4,7 +4,7 @@
  * 契约以服务端 `src/server/http.ts` 为准：
  * - 认证模式 REST 一律 `Authorization: Bearer <token>`；开放模式服务端声明式身份
  * - SSE 不直传 token：先 `POST /api/stream/ticket` 换 60s 一次性票据，再
- *   `GET /api/stream?ticket=…`（design §4/§11）
+ *   `GET /api/stream?hub=2&ticket=…`（连接状态机在 `state/hub/event-hub.ts`）
  * - 媒体读取只认 Authorization：<img> 不能带 header，因此走 blob 缓存
  */
 import type {
@@ -13,7 +13,6 @@ import type {
   AuthorView,
   FeedPage,
   FeedTab,
-  NotificationEventLine,
   NotificationHistoryPage,
   NotificationLine,
   PostView,
@@ -110,8 +109,6 @@ interface RequestOptions {
   auth?: boolean;
   signal?: AbortSignal;
 }
-
-export type SseState = "idle" | "connecting" | "open" | "reconnecting" | "closed";
 
 export class ReportClient {
   readonly base: string;
@@ -442,22 +439,39 @@ export class ReportClient {
   }
 
   // ── notifications ──────────────────────────────────────────────────────────
-  async notifications(opts: { peek?: boolean; wait?: boolean; cursor?: number | null } = {}): Promise<{
+  async notifications(opts: {
+    peek?: boolean;
+    wait?: boolean;
+    cursor?: number | null;
+    /** 一次性 peek 的分页上限（默认 100/上限 200；服务端口径） */
+    limit?: number;
+  } = {}): Promise<{
     events: NotificationLine[];
     target: number | null;
     cursor: number;
     role: Account["role"];
+    /** 游标口径未读事件数（服务端权威；角标按 target 去重，见 notification-projection） */
+    unread_count?: number;
+    /** 按 COALESCE(post_id, root_id) 分组的未读事件数 */
+    unread_by_target?: Record<string, number>;
+    limit?: number | null;
+    has_more?: boolean;
   }> {
     const params = new URLSearchParams();
     if (opts.peek) params.set("peek", "1");
     if (opts.wait) params.set("wait", "1");
     if (opts.cursor !== undefined && opts.cursor !== null) params.set("cursor", String(opts.cursor));
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
     const suffix = params.toString() ? `?${params.toString()}` : "";
     return (await this.request(`/api/notifications${suffix}`)) as {
       events: NotificationLine[];
       target: number | null;
       cursor: number;
       role: Account["role"];
+      unread_count?: number;
+      unread_by_target?: Record<string, number>;
+      limit?: number | null;
+      has_more?: boolean;
     };
   }
 
@@ -471,12 +485,12 @@ export class ReportClient {
     return (await this.request(`/api/notifications/history${suffix}`)) as NotificationHistoryPage;
   }
 
-  async ackNotifications(target: number): Promise<number> {
+  async ackNotifications(target: number): Promise<{ cursor: number; unread_count: number }> {
     const data = (await this.request("/api/notifications/ack", {
       method: "POST",
       body: { target },
-    })) as { cursor: number };
-    return data.cursor;
+    })) as { cursor: number; unread_count?: number };
+    return { cursor: data.cursor, unread_count: data.unread_count ?? 0 };
   }
 
   // ── media ──────────────────────────────────────────────────────────────────
@@ -555,137 +569,5 @@ export class ReportClient {
   async streamTicket(): Promise<string> {
     const data = (await this.request("/api/stream/ticket", { method: "POST" })) as { ticket: string };
     return data.ticket;
-  }
-}
-
-export interface SseHandlers {
-  onEvent: (event: NotificationEventLine) => void;
-  onState: (state: SseState) => void;
-  onHello?: (hello: { account: string; cursor: number; as_of_seq: number; auth_mode: string }) => void;
-}
-
-/**
- * EventSource 管理：认证模式每次（重）连都换新票据；断线指数退避重连。
- * 断线补拉由消费者负责（时间线用 after 游标，通知用 seq 去重）——本类只保证
- * “重连后事件会再次到达/或由消费者补拉”，不持有业务游标。
- */
-export interface ReportStreamOptions {
-  /**
-   * Member-page live subscription: `?author=<acct>` makes the server push only
-   * events produced by that account. This is a technical filter, not a follow.
-   */
-  author?: string | null;
-}
-
-export class ReportStream {
-  private readonly client: ReportClient;
-  private readonly authMode: "open" | "auth";
-  private readonly handlers: SseHandlers;
-  private readonly options: ReportStreamOptions;
-  private source: EventSource | null = null;
-  private timer: number | null = null;
-  private attempt = 0;
-  private stopped = false;
-  private state: SseState = "idle";
-
-  constructor(
-    client: ReportClient,
-    authMode: "open" | "auth",
-    handlers: SseHandlers,
-    options: ReportStreamOptions = {},
-  ) {
-    this.client = client;
-    this.authMode = authMode;
-    this.handlers = handlers;
-    this.options = options;
-  }
-
-  start(): void {
-    this.stopped = false;
-    void this.connect();
-  }
-
-  stop(): void {
-    this.stopped = true;
-    if (this.timer !== null) {
-      window.clearTimeout(this.timer);
-      this.timer = null;
-    }
-    this.source?.close();
-    this.source = null;
-    this.setState("closed");
-  }
-
-  private setState(state: SseState): void {
-    if (this.state === state) return;
-    this.state = state;
-    this.handlers.onState(state);
-  }
-
-  private scheduleReconnect(): void {
-    if (this.stopped || this.timer !== null) return;
-    const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.attempt, 5));
-    this.attempt += 1;
-    this.setState("reconnecting");
-    this.timer = window.setTimeout(() => {
-      this.timer = null;
-      void this.connect();
-    }, delay + Math.floor(Math.random() * 400));
-  }
-
-  private async connect(): Promise<void> {
-    if (this.stopped) return;
-    this.setState("connecting");
-    let url: string;
-    try {
-      const params = new URLSearchParams();
-      if (this.authMode === "auth") {
-        params.set("ticket", await this.client.streamTicket());
-      } else {
-        params.set("as", "owner");
-      }
-      if (this.options.author) params.set("author", this.options.author);
-      url = `${this.client.base}/api/stream?${params.toString()}`;
-    } catch {
-      this.scheduleReconnect();
-      return;
-    }
-    if (this.stopped) return;
-
-    this.source?.close();
-    const source = new EventSource(url);
-    this.source = source;
-
-    source.addEventListener("hello", (raw) => {
-      this.attempt = 0;
-      this.setState("open");
-      try {
-        const hello = JSON.parse((raw as MessageEvent<string>).data) as {
-          account: string;
-          cursor: number;
-          as_of_seq: number;
-          auth_mode: string;
-        };
-        this.handlers.onHello?.(hello);
-      } catch {
-        // malformed hello is not fatal: the stream itself is up
-      }
-    });
-
-    source.addEventListener("report", (raw) => {
-      try {
-        const event = JSON.parse((raw as MessageEvent<string>).data) as NotificationEventLine;
-        this.handlers.onEvent(event);
-      } catch {
-        // ignore malformed frame
-      }
-    });
-
-    source.onerror = () => {
-      if (this.stopped) return;
-      source.close();
-      if (this.source === source) this.source = null;
-      this.scheduleReconnect();
-    };
   }
 }

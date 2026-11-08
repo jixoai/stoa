@@ -3,8 +3,8 @@
  *
  * - 资料卡：display / @id / profile / 角色 / 在线态 / 粉丝数 / 关注按钮
  * - 该成员的根帖时间线（复用通用 feed 控制器）
- * - 页面打开期间用 SSE `author=<acct>` **技术订阅**该成员事件：新帖即时进入时间线，
- *   断线重连按 after 游标补拉、按 id 去重。浏览不产生 follows 边，关注只有按钮。
+ * - 实时：**不再开第二条流**（report-event-hub P1）——共享 EventHub 按 actor 过滤；
+ *   删除事件按当前列表 id 命中。浏览不产生 follows 边，关注只有按钮。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -14,7 +14,7 @@ import {
   UserPlusIcon,
 } from "lucide-react";
 import { cn } from "cn";
-import type { ProfileAccountView, SseState } from "@/lib/api";
+import type { ProfileAccountView } from "@/lib/api";
 import type { FeedQuery, FeedPageData } from "@/state/feed";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -26,7 +26,8 @@ import { toast } from "@/components/ui/toast";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { useConnection } from "@/state/connection";
-import { useAuthorStream } from "@/state/author-stream";
+import { useHubStatus } from "@/state/hub/provider";
+import { isRootCreated, type HubStatus } from "@/state/hub/types";
 import { useHomeFeeds, usePostFeed } from "@/state/feed";
 import {
   getCachedAuthorRoots,
@@ -38,12 +39,12 @@ import { goBack, routeSource, useRoute } from "@/lib/router";
 import { toastReadOnly } from "@/lib/readonly";
 import { dateTimeShort, roleLabel, timeShort } from "@/lib/format";
 
-const STREAM_LABEL: Record<SseState, string> = {
-  idle: "未连接",
+const STREAM_LABEL: Record<HubStatus["state"], string> = {
+  off: "未连接",
   connecting: "连接中",
-  open: "实时",
+  live: "实时",
   reconnecting: "重连中",
-  closed: "已断开",
+  degraded: "轮询兜底",
 };
 
 export function ProfilePage() {
@@ -91,17 +92,24 @@ export function ProfilePage() {
   );
   const feed = usePostFeed(account ? loader : null, {
     resetKey: account,
-    realtime: false,
     initialPosts: seedPosts,
     cacheKey: account ? `profile:${account}` : undefined,
+    live: {
+      // 成员页只显示该成员的根帖：其他成员发帖不触发本页请求（P4 验收）。
+      matches: (event) => event.actor === account && isRootCreated(event),
+      deleteRootAction: "refresh",
+    },
   });
 
-  // SSE author filter: technical live subscription for this member page only.
-  const streamState = useAuthorStream(account, () => feed.refreshNew());
-  const { refreshNew } = feed;
-  useEffect(() => {
-    if (streamState === "open") refreshNew();
-  }, [streamState, refreshNew]);
+  // 实时状态来自共享 EventHub（每标签页一条流，成员页不再自开第二条）。
+  const hubStatus = useHubStatus();
+  const streamState = hubStatus.state;
+  const streamLabel =
+    streamState === "degraded"
+      ? hubStatus.reason === "catching_up"
+        ? "补齐中"
+        : "轮询兜底"
+      : STREAM_LABEL[streamState];
 
   useEffect(() => {
     setProfile(account ? getCachedProfile(account) : null);
@@ -263,16 +271,18 @@ export function ProfilePage() {
                 )}
                 <span
                   className="inline-flex items-center gap-1"
-                  title={`事件流订阅：${STREAM_LABEL[streamState]}`}
+                  title={`事件流订阅：${streamLabel}`}
                   data-testid="profile-live"
+                  data-live-state={streamState}
+                  data-reason={hubStatus.reason ?? undefined}
                 >
                   <RadioIcon
                     className={cn(
                       "size-3",
-                      streamState === "open" ? "text-success" : "text-muted-foreground",
+                      streamState === "live" ? "text-success" : "text-muted-foreground",
                     )}
                   />
-                  {STREAM_LABEL[streamState]}
+                  {streamLabel}
                 </span>
               </div>
 

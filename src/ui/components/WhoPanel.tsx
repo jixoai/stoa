@@ -7,15 +7,17 @@ import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { useConnection } from "@/state/connection";
+import { useHubStatus } from "@/state/hub/provider";
+import type { HubState } from "@/state/hub/types";
 import { prefetchProfile } from "@/state/cache";
 import { navigate } from "@/lib/router";
 
-const SSE_LABEL: Record<string, string> = {
-  idle: "未连接",
+const HUB_LABEL: Record<HubState, string> = {
+  off: "未连接",
   connecting: "连接中",
-  open: "实时",
+  live: "实时",
   reconnecting: "重连中",
-  closed: "已断开",
+  degraded: "轮询兜底",
 };
 
 /**
@@ -30,8 +32,15 @@ export function WhoPanelContent({
   /** 移动端 sheet 用：点成员/连接动作前先收起面板。 */
   onNavigate?: () => void;
 }) {
-  const { who, account, ep, auth, sseState, sameOrigin, staticMode, snapshot, refreshWho, switchBackend, client } =
+  const { who, account, ep, auth, sameOrigin, staticMode, snapshot, refreshWho, switchBackend, client } =
     useConnection();
+  const hubStatus = useHubStatus();
+  const hubLabel =
+    hubStatus.state === "degraded"
+      ? hubStatus.reason === "catching_up"
+        ? "补齐中"
+        : "轮询兜底"
+      : HUB_LABEL[hubStatus.state];
 
   const sorted = useMemo(() => {
     const rank = (role: string) => (role === "owner" ? 0 : role === "manager" ? 1 : 2);
@@ -121,6 +130,46 @@ export function WhoPanelContent({
               {account ? `@${account.id}` : "—"}
             </span>
           </div>
+          {/* 实时状态常显（不藏在调试折叠里）：degraded = 轮询兜底，明确不假装实时。 */}
+          <div className="flex items-center justify-between gap-2">
+            <span>实时连接</span>
+            <span
+              className={cn(
+                "flex items-center gap-1 rounded-md px-1.5 py-0.5",
+                hubStatus.state === "degraded"
+                  ? "bg-destructive/10 text-destructive"
+                  : "text-foreground",
+              )}
+              data-testid="hub-live-state"
+              data-state={hubStatus.state}
+              data-reason={hubStatus.reason ?? undefined}
+              data-polling={hubStatus.degradedPolling ? "1" : "0"}
+              data-caught-up={hubStatus.catchingUp ? "0" : "1"}
+              // 注意：data-last-seq 是**状态迁移时**的快照（数据帧不重发 status）；
+              // 实时流位置以 hub.getStatus() 为准（ack 水位即用它）。
+              data-last-seq={hubStatus.asOfSeq}
+              data-resume-seq={hubStatus.resumeSeq ?? ""}
+              title={
+                hubStatus.state === "degraded"
+                  ? hubStatus.reason === "catching_up"
+                    ? "实时流出现空洞：正在用 REST 补齐并核对水位，不伪装实时"
+                    : "实时流降级：已启用 60s 兜底轮询，不伪装实时"
+                  : `事件流 @${hubStatus.asOfSeq} · 重试 ${hubStatus.attempts}`
+              }
+            >
+              <span
+                className={cn(
+                  "inline-block size-1.5 rounded-full",
+                  hubStatus.state === "live"
+                    ? "bg-success"
+                    : hubStatus.state === "degraded"
+                      ? "bg-destructive"
+                      : "bg-muted-foreground/50",
+                )}
+              />
+              {hubLabel}
+            </span>
+          </div>
           <Collapsible className="rounded-lg border border-border/60 px-2 py-1.5" data-testid="connection-debug">
             <CollapsibleTrigger
               render={
@@ -135,18 +184,6 @@ export function WhoPanelContent({
               调试 / 状态
             </CollapsibleTrigger>
             <CollapsibleContent className="mt-1.5 flex flex-col gap-1">
-              <div className="flex items-center justify-between gap-2">
-                <span>实时连接</span>
-                <span className="flex items-center gap-1 text-foreground">
-                  <span
-                    className={cn(
-                      "inline-block size-1.5 rounded-full",
-                      sseState === "open" ? "bg-success" : "bg-muted-foreground/50",
-                    )}
-                  />
-                  {SSE_LABEL[sseState] ?? sseState}
-                </span>
-              </div>
               <div className="flex items-center justify-between gap-2">
                 <span>认证方式</span>
                 <span className="text-foreground">
@@ -167,7 +204,13 @@ export function WhoPanelContent({
               ) : null}
             </CollapsibleContent>
           </Collapsible>
-          <Button variant="outline" size="sm" className="mt-1 w-full" onClick={switchBackend}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-1 w-full"
+            data-testid="switch-backend"
+            onClick={switchBackend}
+          >
             <ServerIcon data-icon="inline-start" />
             连接其它实例
           </Button>

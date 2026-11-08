@@ -88,6 +88,11 @@ bun scripts/qa/notifications-read.mjs     # read-state + unread/all filter
 bun scripts/qa/reply-composer.mjs         # immersive reply editor
 bun scripts/qa/overlay-back.mjs           # overlay back-close + shared-element morph
 bun scripts/qa/account-bookmarks.mjs      # account drawer + bookmarks + InputGroup
+bun scripts/qa/event-hub-client.mjs       # EventHub client P1: two-context live feed/thread/badge,
+                                          # offline catch-up, visibility isolation, idle 60s,
+                                          # reset (REPLAY_LIMIT=2 board), rollback (snapshot/restore
+                                          # board), degraded 60s polling, instance-switch cache,
+                                          # member-page single stream, degraded screenshots
 ```
 
 Behaviour:

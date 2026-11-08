@@ -96,20 +96,28 @@ SHALL 受重放上限约束并按 seq 去重，SHALL NOT 越权到其他 root。
 
 ### Requirement: 通知计数与分页同源
 
-服务端 SHALL 返回 `unread_count`（可见 + 排除本人 + `NOTIFICATION_TYPES` + 未删除 +
-`seq > 游标`）与 `unread_by_target`；`peek=1` SHALL 支持 `limit`（默认 100/上限 200）与
-`has_more`；ack SHALL 返回 `cursor` 与 `unread_count`。客户端角标 SHALL 为
-`max(0, unread_count − read-set 命中的 unread_by_target 之和 − 对账后本地增量)`，SHALL NOT
-直接用本地已加载行数充当角标。客户端增量 SHALL 以 seq 幂等（重复帧 no-op）；未读 SHALL 由
-heartbeat 或 60s 的 `unread_count` 对账自愈，删除后不确定时 SHALL 重取服务端计数。
+服务端 SHALL 返回 `unread_count`（可见、排除本人、`NOTIFICATION_TYPES`、未删除、`seq > 游标`）
+与 `unread_by_target`；`peek=1` SHALL 支持 `limit` 与 `has_more`；ack SHALL 返回 `cursor` 与
+`unread_count`。客户端角标 SHALL 为「`unread_by_target` 中未被本端 read-set 命中的 distinct
+target 数 + 尚未被对账吸收的本地 target 数」（按帖口径）；`unread_count` 是事件数，SHALL 仅用于
+事件级漂移对账，SHALL NOT 直接充当角标，也 SHALL NOT 用已加载行数。增量 SHALL 以 seq/target
+幂等；未读 SHALL 由 heartbeat 或 60s 对账自愈，删除后不确定时 SHALL 重取服务端计数。
 
 #### Scenario: 角标与列表一致
-- **WHEN** 服务端有 3 条未读提醒（2 条存活、1 条已删）
-- **THEN** 角标为 2，未读列表 2 行，删除帖只在「已删除」分组
+- **WHEN** 服务端有 3 条未读提醒，分属 2 个帖子（2 条存活、1 条已删）
+- **THEN** 角标为 2（按帖），未读列表 2 行，删除帖只在「已删除」分组
+
+#### Scenario: 一次 @ 两事件只算一帖
+- **WHEN** 一条被 @ 的根帖同时产生 `post.created` 与 `thread.invited`（同一 target）
+- **THEN** 角标只 +1；打开该帖后只 -1
 
 #### Scenario: 计数不受分页影响
 - **WHEN** 未读提醒超过 peek 分页上限
-- **THEN** 角标仍显示服务端完整未读（扣除 read-set），列表提示还有更多
+- **THEN** 角标仍显示服务端完整未读 target 数（扣除 read-set），列表提示还有更多
+
+#### Scenario: read-set 淘汰后角标回涨（已知产品后果）
+- **WHEN** read-set 达到 500 上限并淘汰某已读帖，且该帖仍有未读事件
+- **THEN** 该 target 重新计入角标；这是本地 read-set 与服务端游标共同的产品语义（design §4.7）
 
 ### Requirement: 已读游标与多端同步
 
@@ -144,9 +152,10 @@ SHALL 仅作列表补全；历史分页与实时增量 SHALL 按 seq union 合�
 ### Requirement: 推送为主、轮询仅兜底
 
 实时面 SHALL 以事件推送为主通道；空闲时 SHALL NOT 发起周期性业务轮询。轮询 SHALL 只允许：
-静态归档、旧后端（无 `hub=2`）、hub `degraded`、presence（30s + 90s TTL）。任何非 200 响应
-（含 204/503）SHALL 由客户端自有状态机处理（EventSource 不会自动重连）；每次重连 SHALL 换新
-ticket。一次推送 SHALL 只触发必要请求与渲染，非活跃视图只标脏。
+静态归档、hub `degraded`、presence（30s + 90s TTL）。**旧后端（`hello` 无 `hub:2`）在 P1
+SHALL 关闭实时层（state off），不做 legacy 兜底轮询；legacy 适配器去留是 P3 决策**（见
+design §5.3）。任何非 200 响应（含 204/503）SHALL 由客户端自有状态机处理（EventSource 不会
+自动重连）；每次重连 SHALL 换新 ticket。一次推送 SHALL 只触发必要请求与渲染，非活跃视图只标脏。
 
 #### Scenario: 空闲无轮询
 - **WHEN** 用户停留在主页 60s 无操作
@@ -158,4 +167,11 @@ ticket。一次推送 SHALL 只触发必要请求与渲染，非活跃视图只�
 
 #### Scenario: 降级可观测
 - **WHEN** 连续 5 次重连失败
-- **THEN** 客户端进入 `degraded` 并启动低频兜底轮询，界面显示「轮询兜底」
+- **THEN** 客户端进入 `degraded`（reason=`reconnect_failed`），`hub.status.degradedPolling=true`
+  并对活跃视图每 60s 发一次轻量 catch-up（通知投影同时 60s 对账），界面显示「轮询兜底」；
+  恢复 live 后兜底轮询 SHALL 停止
+
+#### Scenario: 空洞补齐与降级区分
+- **WHEN** 服务端发 `reset`（replay_limit/rollback）且 REST 尚未确认
+- **THEN** 客户端状态为 `degraded`（reason=`catching_up`），界面显示「补齐中」，SHALL NOT
+  显示「轮询兜底」；REST 全部成功后才回 live
