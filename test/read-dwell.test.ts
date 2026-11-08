@@ -315,6 +315,77 @@ describe("ReadDwellEngine", () => {
     expect(marks).toEqual(["p3"]);
   });
 
+  test("scoped hold pauses only targets outside the overlay scope", () => {
+    const clock = new FakeClock();
+    const observer = new FakeObserver(() => {});
+    const { engine, marks } = makeEngine({ clock, observer });
+    const rootCard = makeEl(STANDARD_RECT);
+    const detailCard = makeEl({ ...STANDARD_RECT, top: 120, bottom: 220 });
+    engine.observe(rootCard, { postId: "root", author: "a", seq: 1, bodyMd: "", hasMedia: false });
+    engine.observe(detailCard, { postId: "detail", author: "a", seq: 2, bodyMd: "", hasMedia: false });
+    observer.emit([
+      entryFor(rootCard, STANDARD_RECT, { ratio: 1 }),
+      entryFor(detailCard, { ...STANDARD_RECT, top: 120, bottom: 220 }, { ratio: 1 }),
+    ]);
+    clock.advance(100);
+
+    const scope = { contains: (node: unknown) => node === detailCard } as unknown as Element;
+    engine.hold("route-detail", scope);
+    expect(rootCard.dataset.dwellState).toBe("paused");
+    expect(detailCard.dataset.dwellState).toBe("dwell");
+
+    clock.advance(400);
+    expect(marks).toEqual(["detail"]);
+    // 底层卡在覆盖期间不计时；关闭覆盖层后从累计 100ms 继续。
+    engine.release("route-detail");
+    expect(rootCard.dataset.dwellState).toBe("dwell");
+    clock.advance(299);
+    expect(marks).toEqual(["detail"]);
+    clock.advance(1);
+    expect(marks).toEqual(["detail", "root"]);
+  });
+
+  test("re-observing a read card keeps data-dwell-state=read (fade animation survives)", () => {
+    const clock = new FakeClock();
+    const observer = new FakeObserver(() => {});
+    const { engine, marks } = makeEngine({ clock, observer });
+    const el = makeEl(STANDARD_RECT);
+    const target = { postId: "read-again", author: "a", seq: 1, bodyMd: "", hasMedia: false };
+    engine.observe(el, target);
+    observer.emit([entryFor(el, STANDARD_RECT, { ratio: 1 })]);
+    clock.advance(400);
+    expect(marks).toEqual(["read-again"]);
+    expect(el.dataset.dwellState).toBe("read");
+
+    // 0→1 后的 effect 重注册（同元素）不得把 read 降级为 skipped。
+    engine.observe(el, target);
+    expect(el.dataset.dwellState).toBe("read");
+    expect(engine.trackedCount()).toBe(0);
+  });
+
+  test("LRU-evicted post can be written again after remount (no permanent written gate)", () => {
+    const clock = new FakeClock();
+    const observer = new FakeObserver(() => {});
+    const readSet = new Set<string>();
+    const { engine, marks } = makeEngine({ clock, observer, readSet });
+    const target = { postId: "evicted", author: "a", seq: 1, bodyMd: "", hasMedia: false };
+
+    const first = makeEl(STANDARD_RECT);
+    engine.observe(first, target);
+    observer.emit([entryFor(first, STANDARD_RECT, { ratio: 1 })]);
+    clock.advance(400);
+    expect(marks).toEqual(["evicted"]);
+
+    // 模拟 LRU 淘汰 + 重新挂载：read-set 不再命中，应能再次写回。
+    readSet.delete("evicted");
+    const second = makeEl(STANDARD_RECT);
+    engine.observe(second, target);
+    observer.emit([entryFor(second, STANDARD_RECT, { ratio: 1 })]);
+    clock.advance(400);
+    expect(marks).toEqual(["evicted", "evicted"]);
+    expect(second.dataset.read).toBe("1");
+  });
+
   test("hold() pauses and release() resumes (modal overlay)", () => {
     const clock = new FakeClock();
     const observer = new FakeObserver(() => {});
@@ -440,7 +511,8 @@ class FakeStorage implements ReadSetStorage {
 }
 
 describe("ReadSetStore", () => {
-  test("storage key keeps backend+account isolation", () => {
+  test("storage key keeps backend+account isolation and the 2000 cap is pinned", () => {
+    expect(READ_SET_LIMIT).toBe(2000);
     expect(readSetStorageKey("http://127.0.0.1:13688", "owner")).toBe(
       "report.read.v1:http://127.0.0.1:13688:owner",
     );

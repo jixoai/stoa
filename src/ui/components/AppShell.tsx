@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { LockIcon } from "lucide-react";
 import { DesktopNav, MobileNav } from "@/components/Nav";
 import { WhoPanel } from "@/components/WhoPanel";
@@ -23,6 +23,7 @@ import {
   type Route,
 } from "@/lib/router";
 import { useConnection } from "@/state/connection";
+import { useReadDwell } from "@/components/ReadDwellProvider";
 
 function RootView({ route }: { route: Route }) {
   switch (route.name) {
@@ -56,6 +57,8 @@ function DetailView({ route }: { route: Route }) {
 export function AppShell() {
   const { staticMode, snapshot } = useConnection();
   const route = useRoute();
+  const readDwell = useReadDwell();
+  const detailLayerRef = useRef<HTMLDivElement | null>(null);
 
   // 详情/成员/标签/发帖箱以覆盖层出现；底层根页保持挂载（列表节点与滚动位置不丢）。
   const lastRoot = useRef<Route>(
@@ -64,6 +67,16 @@ export function AppShell() {
   if (isRootRoute(route)) lastRoot.current = route;
   const rootRoute = isRootRoute(route) ? route : lastRoot.current;
   const detail = !isRootRoute(route);
+
+  // 覆盖层只做视觉覆盖（IO 不能感知遮挡）：详情打开时暂停「覆盖层之外」的
+  // 停留计时，覆盖层内部的卡片继续正常计时。layout effect 在首帧 IO 回调前生效。
+  useLayoutEffect(() => {
+    if (!detail) return;
+    const layer = detailLayerRef.current;
+    if (!layer) return;
+    readDwell.hold("route-detail", layer);
+    return () => readDwell.release("route-detail");
+  }, [detail, readDwell]);
 
   return (
     <SettingsSheetProvider>
@@ -84,7 +97,11 @@ export function AppShell() {
       <div className="flex min-h-0 flex-1 justify-center">
         <DesktopNav />
         <main className="relative flex min-h-0 min-w-0 flex-1 flex-col lg:max-w-[640px]">
-          <RouteTransition routeKey={routeKey(rootRoute)} kind="root">
+          <RouteTransition
+            routeKey={routeKey(rootRoute)}
+            kind="root"
+            testId="app-root-view"
+          >
             <RouteScopeProvider route={rootRoute}>
               <SharedNamesProvider active={!detail}>
                 <RootView route={rootRoute} />
@@ -93,17 +110,20 @@ export function AppShell() {
           </RouteTransition>
 
           {detail ? (
-            <RouteTransition
-              routeKey={routeKey(route)}
-              kind="detail"
-              className="absolute inset-0 z-30 bg-background"
-            >
-              <SharedNamesProvider active>
-                {/* 子页按路由键重建：A→B 的第二次导航必须是全新实例，
-                    否则转场快照会拍到上一页的 state（数据要等 effect 才换）。 */}
-                <DetailView key={routeKey(route)} route={route} />
-              </SharedNamesProvider>
-            </RouteTransition>
+            <div ref={detailLayerRef} data-testid="app-detail-layer" className="contents">
+              <RouteTransition
+                routeKey={routeKey(route)}
+                kind="detail"
+                testId="app-detail-view"
+                className="absolute inset-0 z-30 bg-background"
+              >
+                <SharedNamesProvider active>
+                  {/* 子页按路由键重建：A→B 的第二次导航必须是全新实例，
+                      否则转场快照会拍到上一页的 state（数据要等 effect 才换）。 */}
+                  <DetailView key={routeKey(route)} route={route} />
+                </SharedNamesProvider>
+              </RouteTransition>
+            </div>
           ) : null}
         </main>
         <aside className="hidden w-[320px] shrink-0 border-l border-border/50 xl:block">

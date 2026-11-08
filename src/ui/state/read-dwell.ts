@@ -137,6 +137,9 @@ export function setReadDwellEnabled(enabled: boolean): void {
     diagnostics.observers = 0;
     diagnostics.targets = 0;
     diagnostics.timers = 0;
+    diagnostics.marks = 0;
+    diagnostics.persists = 0;
+    diagnostics.lastMarkAt = 0;
   }
 }
 
@@ -178,6 +181,12 @@ function defaultCreateObserver(
   );
 }
 
+interface HoldEntry {
+  /** null = 全局遮挡（模态层）；Element = 只豁免该子树内的卡片 */
+  scope: Element | null;
+  refs: number;
+}
+
 interface TrackedTarget {
   el: DwellElementLike & Element;
   postId: string;
@@ -194,8 +203,7 @@ export class ReadDwellEngine {
   private readonly options: ReadDwellEngineOptions;
   private readonly doc: DwellDocumentLike | null;
   private readonly entries = new Map<Element, TrackedTarget>();
-  private readonly written = new Set<string>();
-  private readonly holds = new Set<string>();
+  private readonly holds = new Map<string, HoldEntry>();
   private observer: ObserverLike | null = null;
   private modalObserver: MutationObserver | null = null;
   private modalHeld = false;
@@ -208,19 +216,22 @@ export class ReadDwellEngine {
     this.doc = options.document ?? defaultDocument();
   }
 
-  /** 注册一个卡片根节点；自己的帖/软删帖/已读帖直接 skipped（不建 timer）。 */
+  /**
+   * 注册一个卡片根节点。自己的帖/软删帖**不注册**；已读帖也不注册（不建 timer），
+   * 但保留既有的 `data-dwell-state=read`，避免 0→1 翻转后的重注册杀掉淡出动画。
+   */
   observe(el: Element, target: DwellTargetInput): void {
     if (this.disposed) return;
     if (this.entries.has(el)) this.unobserve(el);
     const element = el as unknown as DwellElementLike & Element;
     const selfId = this.options.getSelfId?.() ?? null;
     if (target.deleted || (selfId !== null && target.author === selfId)) {
-      element.dataset.dwellState = "skipped";
+      if (element.dataset.dwellState !== "read") element.dataset.dwellState = "skipped";
       return;
     }
     if (this.options.isRead(target.postId, target.seq)) {
-      // 已读帖首帧由 React 渲染 data-read="1"；引擎只登记 skipped，不播淡出动画。
-      element.dataset.dwellState = "skipped";
+      // 已读帖首帧由 React 渲染 data-read="1"；已有 read 状态时不要重置。
+      if (element.dataset.dwellState !== "read") element.dataset.dwellState = "skipped";
       return;
     }
     const observer = this.ensureObserver();
@@ -259,23 +270,35 @@ export class ReadDwellEngine {
     this.syncStats();
   }
 
-  /** 模态/其它遮挡的显式暂停门（引用计数）。 */
-  hold(reason: string): void {
-    const before = this.holds.size;
-    this.holds.add(reason);
-    if (before === 0 && this.holds.size > 0) this.pauseAll();
+  /**
+   * 遮挡/覆盖层暂停门（引用计数）。
+   * - `hold(reason)`：全局，暂停所有目标（模态层）；
+   * - `hold(reason, scopeEl)`：只暂停 scope 之外的目标（详情覆盖层）——
+   *   覆盖层内的卡片继续计时，底层根页卡片暂停并保留累计。
+   */
+  hold(reason: string, scope?: Element | null): void {
+    const existing = this.holds.get(reason);
+    if (existing) {
+      existing.refs += 1;
+      if (scope && !existing.scope) existing.scope = scope;
+    } else {
+      this.holds.set(reason, { scope: scope ?? null, refs: 1 });
+    }
+    this.reconcileAll();
   }
 
   release(reason: string): void {
-    if (!this.holds.delete(reason)) return;
-    if (this.holds.size === 0) this.resumeAll();
+    const entry = this.holds.get(reason);
+    if (!entry) return;
+    entry.refs -= 1;
+    if (entry.refs <= 0) this.holds.delete(reason);
+    this.reconcileAll();
   }
 
   /** 账号/后端切换：断开并丢弃全部状态（新 read-set 重新计时）。 */
   reset(): void {
     for (const tracked of this.entries.values()) this.clearTimer(tracked);
     this.entries.clear();
-    this.written.clear();
     this.teardownObserver();
     this.syncStats();
   }
@@ -391,12 +414,28 @@ export class ReadDwellEngine {
   private reconcile(tracked: TrackedTarget, coverage: number): void {
     if (tracked.state === "read") return;
     const eligible =
-      coverage >= DWELL_COVERAGE && this.documentVisible() && this.holds.size === 0;
+      coverage >= DWELL_COVERAGE &&
+      this.documentVisible() &&
+      !this.holdAppliesTo(tracked.el);
     if (eligible) {
       this.enterDwell(tracked);
       return;
     }
     this.pause(tracked, coverage);
+  }
+
+  /** 只暂停 scope 之外的目标：详情覆盖层内的卡片继续计时。 */
+  private holdAppliesTo(el: Element): boolean {
+    for (const entry of this.holds.values()) {
+      if (!entry.scope || !entry.scope.contains(el)) return true;
+    }
+    return false;
+  }
+
+  private reconcileAll(): void {
+    for (const tracked of this.entries.values()) {
+      this.reconcile(tracked, tracked.lastCoverage);
+    }
   }
 
   private enterDwell(tracked: TrackedTarget): void {
@@ -454,7 +493,7 @@ export class ReadDwellEngine {
 
   /** 到点复核（design §3.4）：每帖最多一次布局读取。 */
   private recheck(el: DwellElementLike): boolean {
-    if (!this.documentVisible() || this.holds.size > 0) return false;
+    if (!this.documentVisible() || this.holdAppliesTo(el as unknown as Element)) return false;
     const rect = el.getBoundingClientRect();
     const rootH = this.viewportHeight();
     const rootW = this.viewportWidth();
@@ -472,8 +511,9 @@ export class ReadDwellEngine {
     this.clearTimer(tracked);
     tracked.el.dataset.dwellState = "read";
     tracked.el.dataset.read = "1";
-    if (!this.written.has(tracked.postId) && !this.options.isRead(tracked.postId, tracked.seq)) {
-      this.written.add(tracked.postId);
+    // 以 read-set 为唯一权威（LRU 淘汰后重新挂载可以再次写入）；
+    // 已读（含 ack 游标）时不重复写、不递增 marks。
+    if (!this.options.isRead(tracked.postId, tracked.seq)) {
       this.options.markPostRead(tracked.postId);
       diagnostics.marks += 1;
       diagnostics.lastMarkAt = this.now();

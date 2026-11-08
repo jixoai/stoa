@@ -249,8 +249,9 @@ html[data-vt="fade"]::view-transition-new(root) {
   article[data-read="0"]:not([data-selected="1"])::after {
     opacity: 1;
   }
-  /* 达标瞬间：背景 1.2s 淡出（引擎写 data-dwell-state=read 时触发一次）。 */
-  article[data-read="1"][data-dwell-state="read"] {
+  /* 达标瞬间：背景 1.2s 淡出（引擎写 data-dwell-state=read 时触发一次）。
+     选中态压过未读视觉，不参与淡出，避免强调条/底色打架。 */
+  article[data-read="1"][data-dwell-state="read"]:not([data-selected="1"]) {
     animation: read-fade-out 1200ms var(--ios-ease-out);
   }
   /* 新帖入场：复用 flashIds 包裹层（900ms 背景脉冲）；仅未读卡生效。 */
@@ -264,7 +265,7 @@ html[data-vt="fade"]::view-transition-new(root) {
     article[data-read]::after {
       transition: none;
     }
-    article[data-read="1"][data-dwell-state="read"],
+    article[data-read="1"][data-dwell-state="read"]:not([data-selected="1"]),
     .report-row-new > article[data-read="0"] {
       animation: none;
     }

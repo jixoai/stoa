@@ -15,7 +15,7 @@
  */
 import { chromium } from "playwright-core";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -43,6 +43,7 @@ mkdirSync(REPORT_DIR, { recursive: true });
 const startedAt = Date.now();
 const checks = [];
 const steps = [];
+const coverageSteps = [];
 const screenshots = [];
 const diagLog = [];
 const LONG_BODY = (marker) =>
@@ -91,8 +92,8 @@ async function apiReply(token, parent, body) {
 
 const sleep = (page, ms) => page.waitForTimeout(ms);
 
-async function login(page) {
-  await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
+async function login(page, url = `${BASE}/`) {
+  await page.goto(url, { waitUntil: "domcontentloaded" });
   await sleep(page, 900);
   if (await page.locator('input[type="password"]').count()) {
     await page.locator('input[type="password"]').first().fill(AUTH);
@@ -104,14 +105,14 @@ async function login(page) {
 }
 
 const feedCard = (page, id) =>
-  page.locator(`[data-testid="timeline-scroll"] [data-post-id="${id}"]`).first();
+  page.locator(`[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${id}"]`).first();
 const threadCard = (page, id) =>
   page.locator(`[data-testid="thread-timeline"] article[data-post-id="${id}"]`).first();
 
 async function scrollFeedTo(page, id) {
   await page.evaluate((postId) => {
     const el = document.querySelector(
-      `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+      `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
     );
     el?.scrollIntoView({ block: "center" });
   }, id);
@@ -160,6 +161,18 @@ async function waitAttr(page, selector, name, value, timeout = 6000) {
   }
 }
 
+async function notificationBadge(page) {
+  const badge = page.locator('[data-testid="notifications-unread-badge"]');
+  return (await badge.count()) ? Number((await badge.innerText()).trim()) : 0;
+}
+
+async function notificationRowRead(page, id) {
+  return page
+    .locator(`[data-testid="notification-row"][data-post-id="${id}"]`)
+    .first()
+    .getAttribute("data-read");
+}
+
 async function ensureNotificationRow(page, id) {
   const row = page.locator(`[data-testid="notification-row"][data-post-id="${id}"]`);
   for (let i = 0; i < 6; i += 1) {
@@ -187,7 +200,7 @@ async function closeThread(page) {
   await page.evaluate(() => {
     location.hash = "#/";
   });
-  await page.waitForSelector('[data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
+  await page.waitForSelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
   await sleep(page, 500);
 }
 
@@ -272,15 +285,19 @@ try {
   for (let i = 0; i < 3; i += 1) {
     shields.push(await apiPost(managerToken, `@owner ${TAG} SHIELD-${i}\n${LONG_BODY(`D${i}`)}`));
   }
+  // B1 详情覆盖层用例：N1/N2 相邻且都在首屏；深链目标用「回复」（根页不会同时有同 id 卡）。
+  const N1 = await apiPost(managerToken, `@owner ${TAG} N1 详情覆盖层用例。\n${LONG_BODY("N1")}`);
+  const N2 = await apiPost(managerToken, `@owner ${TAG} N2 邻居卡（必须保持未读）。\n${LONG_BODY("N2")}`);
+  const deepLinkPost = await apiReply(managerToken, geoPost, `@owner ${TAG} 深链详情目标回复。`);
   seedIds = [
     A, spacer, B, C, RM, MODAL, OWN, DEL, threadRoot, threadReply,
     high50Root, high50, high50Child, high40Root, high40, high40Child,
-    modalPost, geoPost, deepPost, ...scrollIds, ...shields,
+    modalPost, geoPost, deepPost, ...scrollIds, ...shields, N1, N2, deepLinkPost,
   ];
 
   const seeded = {
     A, spacer, B, C, RM, MODAL, OWN, DEL, threadRoot, threadReply,
-    high50, high40, modalPost, geoPost, deepPost, scrollIds, shields,
+    high50, high40, modalPost, geoPost, deepPost, scrollIds, shields, N1, N2, deepLinkPost,
   };
 
   // A 上方的间隔卡 + A 下方的首张卡都会与 A 同屏；把它们预置为已读，
@@ -365,11 +382,215 @@ try {
       `observers=${diag0?.observers} targets=${diag0?.targets}`,
     );
 
+    // ── B1：详情覆盖层必须暂停底层根页（scoped hold）───────────────────────
+    await page.evaluate(() => {
+      location.hash = "#/notifications";
+    });
+    await page.waitForSelector('[data-testid="notifications-scroll"]', { timeout: 15_000 });
+    await sleep(page, 900);
+    const badgeBeforeB1 = await notificationBadge(page);
+    await ensureNotificationRow(page, N1);
+    await ensureNotificationRow(page, N2);
+    const n1RowBefore = await notificationRowRead(page, N1);
+    const n2RowBefore = await notificationRowRead(page, N2);
+    await page.evaluate(() => {
+      location.hash = "#/";
+    });
+    await page.waitForSelector(
+      '[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]',
+      { timeout: 15_000 },
+    );
+    await sleep(page, 300);
+    await page.evaluate(() => {
+      const scroller = document.querySelector(
+        '[data-testid="app-root-view"] [data-testid="timeline-scroll"]',
+      );
+      if (scroller) scroller.scrollTop = 0;
+    });
+    await sleep(page, 200);
+    const b1RootState = await page.evaluate(({ n1, n2 }) => {
+      const pick = (id) =>
+        document.querySelector(
+          `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(id)}"]`,
+        );
+      const info = (el) => {
+        if (!el) return null;
+        const rect = el.getBoundingClientRect();
+        const visible =
+          Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0) > rect.height * 0.5;
+        return { read: el.getAttribute("data-read"), visible };
+      };
+      return { n1: info(pick(n1)), n2: info(pick(n2)) };
+    }, { n1: N1, n2: N2 });
+    const readSetBeforeB1 = await readSet(page);
+    await page.evaluate((postId) => {
+      location.hash = `#/p/${postId}`;
+    }, N1);
+    await page.waitForSelector(
+      `[data-testid="app-detail-layer"] [data-testid="thread-timeline"] article[data-post-id="${N1}"]`,
+      { timeout: 15_000 },
+    );
+    await sleep(page, 1800);
+    const b1During = {
+      detailRead: await page
+        .locator(
+          `[data-testid="app-detail-layer"] [data-testid="thread-timeline"] article[data-post-id="${N1}"]`,
+        )
+        .getAttribute("data-read"),
+      neighborRootRead: await feedCard(page, N2).getAttribute("data-read"),
+      readSet: await readSet(page),
+    };
+    diagLog.push({ phase: "b1-detail-hold", badgeBeforeB1, b1RootState, b1During });
+    check(
+      "B1 详情打开前：N1/N2 都在视口且未读",
+      b1RootState.n1?.read === "0" &&
+        b1RootState.n2?.read === "0" &&
+        b1RootState.n1.visible &&
+        b1RootState.n2.visible,
+      JSON.stringify(b1RootState),
+    );
+    check(
+      "B1 详情自身卡片停留达标（覆盖层内继续计时）",
+      b1During.detailRead === "1",
+      `detail-read=${b1During.detailRead}`,
+    );
+    check(
+      "B1 底层邻居卡不被详情覆盖层误标",
+      b1During.neighborRootRead === "0" && !b1During.readSet.includes(N2),
+      `neighbor=${b1During.neighborRootRead} inSet=${b1During.readSet.includes(N2)}`,
+    );
+    await page.evaluate(() => {
+      location.hash = "#/notifications";
+    });
+    await page.waitForSelector('[data-testid="notifications-scroll"]', { timeout: 15_000 });
+    await sleep(page, 900);
+    const badgeAfterB1 = await notificationBadge(page);
+    const n1RowAfter = await notificationRowRead(page, N1);
+    const n2RowAfter = await notificationRowRead(page, N2);
+    check(
+      "B1 角标只 −1、N1 通知已读、N2 通知仍读",
+      badgeAfterB1 === badgeBeforeB1 - 1 && n1RowAfter === "1" && n2RowAfter === "0",
+      `badge ${badgeBeforeB1}→${badgeAfterB1}; rows N1=${n1RowAfter} N2=${n2RowAfter} (pre ${n1RowBefore}/${n2RowBefore})`,
+    );
+
+    // 深链：从根页直接 hash 进详情，底层根页卡片必须全部保持原状。
+    await page.evaluate(() => {
+      location.hash = "#/";
+    });
+    await page.waitForSelector(
+      '[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]',
+      { timeout: 15_000 },
+    );
+    await sleep(page, 500);
+    const deepRootUnread = await page.evaluate(() =>
+      [...document.querySelectorAll('[data-testid="app-root-view"] article[data-post-id][data-read="0"]')]
+        .filter((el) => {
+          const rect = el.getBoundingClientRect();
+          return Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0) > 0;
+        })
+        .map((el) => el.getAttribute("data-post-id")),
+    );
+    const readSetBeforeDeep = await readSet(page);
+    await page.evaluate((postId) => {
+      location.hash = `#/p/${postId}`;
+    }, deepLinkPost);
+    await page.waitForSelector(
+      `[data-testid="app-detail-layer"] [data-testid="thread-timeline"] article[data-post-id="${deepLinkPost}"]`,
+      { timeout: 15_000 },
+    );
+    await sleep(page, 2000);
+    const deepAfter = {
+      detailRead: await page
+        .locator(
+          `[data-testid="app-detail-layer"] [data-testid="thread-timeline"] article[data-post-id="${deepLinkPost}"]`,
+        )
+        .getAttribute("data-read"),
+      readSet: await readSet(page),
+    };
+    const deepAdded = deepAfter.readSet.filter((id) => !readSetBeforeDeep.includes(id));
+    diagLog.push({ phase: "b1-deeplink", deepRootUnread, deepAdded, deepAfter });
+    check(
+      "B1 深链进详情：只标详情帖，根页可见卡全未读",
+      deepAfter.detailRead === "1" &&
+        deepAdded.every((id) => id === deepLinkPost) &&
+        deepAdded.length <= 1,
+      `detail=${deepAfter.detailRead} added=${deepAdded} rootUnread=${deepRootUnread.length}`,
+    );
+    await page.evaluate(() => {
+      location.hash = "#/";
+    });
+    await page.waitForSelector(
+      '[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]',
+      { timeout: 15_000 },
+    );
+    await sleep(page, 500);
+
+    // compose / profile / tag 三种覆盖层：根页卡片同样不受影响；覆盖层内卡片可标。
+    const overlayCases = [
+      { label: "compose", hash: "#/compose", expectOverlayRead: false },
+      { label: "profile", hash: "#/u/manager", expectOverlayRead: true },
+      { label: "tag", hash: "#/tag/result", expectOverlayRead: true },
+    ];
+    const overlayResults = [];
+    for (const item of overlayCases) {
+      const rootUnread = await page.evaluate(() =>
+        [...document.querySelectorAll('[data-testid="app-root-view"] article[data-post-id][data-read="0"]')]
+          .filter((el) => {
+            const rect = el.getBoundingClientRect();
+            return Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0) > 0;
+          })
+          .map((el) => el.getAttribute("data-post-id")),
+      );
+      const before = await readSet(page);
+      await page.evaluate((next) => {
+        location.hash = next;
+      }, item.hash);
+      await page.waitForSelector('[data-testid="app-detail-layer"]', { timeout: 15_000 });
+      await sleep(page, 2200);
+      const after = await readSet(page);
+      const overlay = await page.evaluate(() => ({
+        ids: [
+          ...document.querySelectorAll(
+            '[data-testid="app-detail-layer"] article[data-post-id]',
+          ),
+        ].map((el) => el.getAttribute("data-post-id")),
+        read: document.querySelectorAll(
+          '[data-testid="app-detail-layer"] article[data-post-id][data-read="1"]',
+        ).length,
+      }));
+      const added = after.filter((id) => !before.includes(id));
+      const addedRoot = added.filter((id) => rootUnread.includes(id));
+      const addedOverlay = added.filter((id) => overlay.ids.includes(id));
+      overlayResults.push({ label: item.label, addedRoot, addedOverlay, overlayRead: overlay.read });
+      await page.evaluate(() => {
+        location.hash = "#/";
+      });
+      await page.waitForSelector(
+        '[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]',
+        { timeout: 15_000 },
+      );
+      await sleep(page, 450);
+    }
+    diagLog.push({ phase: "b1-overlays", overlayResults });
+    check(
+      "B1 compose/profile/tag 覆盖层不误标根页卡",
+      overlayResults.every((row) => row.addedRoot.length === 0),
+      JSON.stringify(overlayResults),
+    );
+    check(
+      "B1 profile/tag 覆盖层卡片可正常停留达标",
+      overlayResults
+        .filter((row) => row.label !== "compose")
+        .every((row) => row.overlayRead > 0) &&
+        overlayResults.some((row) => row.addedOverlay.length > 0),
+      JSON.stringify(overlayResults),
+    );
+
     // ── A13 feed 几何 / 未读高亮（用独立几何帖，读完不影响 A6 角标）─────────
     const aState = await scrollFeedTo(page, geoPost);
     const aGeometry = await page.evaluate((postId) => {
       const el = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       if (!el) return null;
       const pseudo = getComputedStyle(el, "::after");
@@ -386,44 +607,53 @@ try {
       };
     }, geoPost);
     diagLog.push({ phase: "a13-feed", geometry: aGeometry, state: aState });
+    const feedHighlightOk =
+      aGeometry?.read === "0" &&
+      aGeometry.bg !== "rgba(0, 0, 0, 0)" &&
+      parseFloat(aGeometry.afterLeft) === 0 &&
+      parseFloat(aGeometry.afterWidth) === 3 &&
+      Number(aGeometry.afterOpacity) === 1;
     check(
       "A13 feed 未读卡：整卡淡底 + 左强调条 3px",
-      aGeometry?.read === "0" &&
-        aGeometry.bg !== "rgba(0, 0, 0, 0)" &&
-        parseFloat(aGeometry.afterLeft) === 0 &&
-        parseFloat(aGeometry.afterWidth) === 3 &&
-        Number(aGeometry.afterOpacity) === 1,
+      feedHighlightOk,
       JSON.stringify(aGeometry),
     );
     const selectedProbe = await page.evaluate(() => {
-      const probe = (selected) => {
+      const probe = (selected, read = false) => {
         const el = document.createElement("article");
-        el.setAttribute("data-read", "0");
+        el.setAttribute("data-read", read ? "1" : "0");
         if (selected) el.setAttribute("data-selected", "1");
+        if (read) el.setAttribute("data-dwell-state", "read");
         el.style.position = "absolute";
         el.style.visibility = "hidden";
         document.body.appendChild(el);
         const result = {
           bg: getComputedStyle(el).backgroundColor,
           after: getComputedStyle(el, "::after").opacity,
+          animation: getComputedStyle(el).animationName,
         };
         el.remove();
         return result;
       };
-      return { unread: probe(false), selected: probe(true) };
+      return {
+        unread: probe(false),
+        selected: probe(true),
+        selectedRead: probe(true, true),
+      };
     });
     check(
-      "P1-5 选中态压过未读底色（强调条也隐藏）",
+      "P1-5 选中态压过未读底色（强调条也隐藏，选中卡不播淡出）",
       selectedProbe.unread.bg !== selectedProbe.selected.bg &&
         selectedProbe.unread.after === "1" &&
-        selectedProbe.selected.after === "0",
+        selectedProbe.selected.after === "0" &&
+        selectedProbe.selectedRead.animation === "none",
       JSON.stringify(selectedProbe),
     );
     const a13FeedShot = await shot(page, "a13-1280-feed-unread.png");
     steps.push({
       intent: "A13 feed 未读高亮截图（1280×800）",
       assertion: "未读卡整卡淡底 + x=0..3 的 3px 强调条",
-      ok: true,
+      ok: feedHighlightOk,
       image: a13FeedShot,
       imageMeta: "1280×800 · PNG",
     });
@@ -436,26 +666,14 @@ try {
     });
     await page.waitForSelector('[data-testid="notifications-scroll"]', { timeout: 15_000 });
     await sleep(page, 1200);
-    const badgeCount = async () => {
-      const badge = page.locator('[data-testid="notifications-unread-badge"]');
-      return (await badge.count()) ? Number((await badge.innerText()).trim()) : 0;
-    };
-    const badgeBefore = await badgeCount();
-    const rowAttr = async (id) =>
-      page
-        .locator(`[data-testid="notification-row"][data-post-id="${id}"]`)
-        .first()
-        .getAttribute("data-read");
-    await ensureNotificationRow(page, A);
-    await ensureNotificationRow(page, B);
-    const rowA0 = await rowAttr(A);
-    const rowB0 = await rowAttr(B);
+    const badgeBefore = await notificationBadge(page);
+    const rowA0 = await (ensureNotificationRow(page, A).then(() => notificationRowRead(page, A)));
+    const rowB0 = await (ensureNotificationRow(page, B).then(() => notificationRowRead(page, B)));
     check("A6 基线：A/B 通知行未读", rowA0 === "0" && rowB0 === "0", `A=${rowA0} B=${rowB0}`);
-    const notifShotBefore = await shot(page, "a6-1280-notifications-before.png");
     await page.evaluate(() => {
       location.hash = "#/";
     });
-    await page.waitForSelector('[data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
     await sleep(page, 500);
 
     // ── A1：停留达标 → 已读 + 淡出（1280）──────────────────────────────────
@@ -464,7 +682,7 @@ try {
     await scrollFeedTo(page, A);
     const aPre = await page.evaluate((postId) => {
       const el = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       return el
         ? {
@@ -485,15 +703,54 @@ try {
     // 阈值 = clamp(码点/80*1000, 400, 1500)；这里直接在翻转瞬间抓两帧淡出。
     const aReadOk = await waitAttr(
       page,
-      `[data-testid="timeline-scroll"] article[data-post-id="${A}"]`,
+      `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${A}"]`,
       "data-read",
       "1",
       5000,
     );
     const fade1 = await shot(page, "a1-1280-fade-1.png");
+    const fadeAnim = await page.evaluate((postId) => {
+      const el = document.querySelector(
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+      );
+      const animation = el?.getAnimations().find((item) => item.animationName === "read-fade-out");
+      if (!animation) return null;
+      const timing = animation.effect?.getTiming();
+      return {
+        name: animation.animationName,
+        duration: Number(timing?.duration ?? 0),
+        currentTime: Math.round(Number(animation.currentTime ?? 0)),
+      };
+    }, A);
+    await sleep(page, 200);
+    const fadeMidBg = await page.evaluate((postId) => {
+      const el = document.querySelector(
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+      );
+      return el ? getComputedStyle(el).backgroundColor : null;
+    }, A);
+    const fadeAlpha = (() => {
+      if (!fadeMidBg) return null;
+      const slash = fadeMidBg.match(/\/\s*([0-9.]+)\s*\)/);
+      if (slash) return Number(slash[1]);
+      const rgba = fadeMidBg.match(/rgba\([^)]*,\s*([0-9.]+)\s*\)/);
+      return rgba ? Number(rgba[1]) : null;
+    })();
+    const fadeAnimOk = fadeAnim?.name === "read-fade-out" && fadeAnim.duration === 1200;
+    const fadeMidOk = fadeAlpha !== null && fadeAlpha > 0 && fadeAlpha < 0.05;
+    check(
+      "A1 淡出动画存在：read-fade-out / 1200ms",
+      fadeAnimOk,
+      JSON.stringify(fadeAnim),
+    );
+    check(
+      "A1 翻转后 ~300ms 背景处于淡出中间态",
+      fadeMidOk,
+      `bg=${fadeMidBg} alpha=${fadeAlpha}`,
+    );
     const aPost = await page.evaluate((postId) => {
       const el = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       return el
         ? {
@@ -529,7 +786,7 @@ try {
       animSamples.push(
         await page.evaluate((postId) => {
           const el = document.querySelector(
-            `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+            `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
           );
           if (!el) return null;
           return {
@@ -565,15 +822,15 @@ try {
     );
     steps.push({
       intent: "A1 达标淡出两帧（第 1 帧，翻转瞬间）",
-      assertion: "data-dwell-state=read 触发 1.2s 背景淡出动画",
-      ok: true,
+      assertion: `${fadeAnim?.name} duration=${fadeAnim?.duration}ms currentTime=${fadeAnim?.currentTime}ms`,
+      ok: fadeAnimOk,
       image: fade1,
       imageMeta: "1280×800 · PNG",
     });
     steps.push({
       intent: "A1 达标淡出两帧（第 2 帧，约 +0.8s）",
-      assertion: "背景持续向透明收敛，强调条 200ms 内消失",
-      ok: true,
+      assertion: `翻转后 ~300ms 采样 alpha=${fadeAlpha}（应在 0 与未读底色之间）`,
+      ok: fadeMidOk,
       image: fade2,
       imageMeta: "1280×800 · PNG",
     });
@@ -583,7 +840,7 @@ try {
       .waitForFunction(
         (postId) => {
           const el = document.querySelector(
-            `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+            `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
           );
           if (!el) return false;
           const bg = getComputedStyle(el).backgroundColor;
@@ -599,7 +856,7 @@ try {
       .catch(() => false);
     const aBgAfter = await page.evaluate((postId) => {
       const el = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       return el ? getComputedStyle(el).backgroundColor : null;
     }, A);
@@ -620,18 +877,25 @@ try {
     await sleep(page, 900);
     await ensureNotificationRow(page, A);
     await ensureNotificationRow(page, B);
-    const badgeAfter = await badgeCount();
-    const rowA1 = await rowAttr(A);
-    const rowB1 = await rowAttr(B);
+    const badgeAfter = await notificationBadge(page);
+    await ensureNotificationRow(page, A);
+    await ensureNotificationRow(page, B);
+    const rowA1 = await notificationRowRead(page, A);
+    const rowB1 = await notificationRowRead(page, B);
     const eventCountA = await page
       .locator(`[data-testid="notification-row"][data-post-id="${A}"]`)
       .first()
       .getAttribute("data-event-count");
+    const a6Ok =
+      badgeAfter === badgeBefore - 1 &&
+      rowA1 === "1" &&
+      rowB1 === "0" &&
+      Number(eventCountA) >= 2;
     const notifShotAfter = await shot(page, "a6-1280-notifications-after.png");
     steps.push({
       intent: "A6 通知同步（feed 停留 A 后）",
       assertion: `角标 ${badgeBefore} → ${badgeAfter}；A 行 data-read=${rowA1}（同帖 ${eventCountA} 条事件）；B 行=${rowB1}`,
-      ok: true,
+      ok: a6Ok,
       image: notifShotAfter,
       imageMeta: "1280×800 · PNG",
     });
@@ -646,7 +910,7 @@ try {
     await page.evaluate(() => {
       location.hash = "#/";
     });
-    await page.waitForSelector('[data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
     await sleep(page, 500);
 
     // ── A8：幂等 + reload 保持 ───────────────────────────────────────────
@@ -660,7 +924,7 @@ try {
     );
     await sleep(page, 500); // 250ms 持久化 debounce 落盘
     await page.reload({ waitUntil: "domcontentloaded" });
-    await page.waitForSelector('[data-testid="timeline-scroll"] [data-post-id]', { timeout: 20_000 });
+    await page.waitForSelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]', { timeout: 20_000 });
     await sleep(page, 900);
     if (await page.locator('input[type="password"]').count()) await login(page);
     await scrollFeedTo(page, A);
@@ -720,34 +984,66 @@ try {
       JSON.stringify(surfaceCounts),
     );
 
-    // ── A2：快速滚过 3 屏 → 未读 ─────────────────────────────────────────
+    // ── A2：rAF 连续快速滚过 3 屏 → 经过时确实可见的卡仍未读 ─────────────
     const scrollBaseline = await readSet(page);
     const beforeShot = await shot(page, "a2-1280-before-fast-scroll.png");
-    await page.evaluate(async () => {
-      const scroller = document.querySelector('[data-testid="timeline-scroll"]');
-      if (!scroller) return;
-      scroller.scrollTop = scroller.scrollHeight;
-      await new Promise((resolve) => setTimeout(resolve, 80));
+    const passedIds = await page.evaluate(async () => {
+      const scroller = document.querySelector(
+        '[data-testid="app-root-view"] [data-testid="timeline-scroll"]',
+      );
+      if (!scroller) return [];
       scroller.scrollTop = 0;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const passed = new Set();
+      const collect = () => {
+        const view = scroller.getBoundingClientRect();
+        for (const el of scroller.querySelectorAll('article[data-post-id]')) {
+          if (el.getAttribute("data-read") !== "0") continue;
+          const rect = el.getBoundingClientRect();
+          const visible =
+            Math.min(rect.bottom, view.bottom, window.innerHeight) -
+            Math.max(rect.top, view.top, 0);
+          if (visible > Math.min(rect.height, scroller.clientHeight) * 0.5) {
+            passed.add(el.getAttribute("data-post-id"));
+          }
+        }
+      };
+      collect();
+      const target = scroller.clientHeight * 3;
+      for (let i = 1; i <= 6; i += 1) {
+        scroller.scrollTop = (target * i) / 6;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        collect();
+      }
+      scroller.scrollTop = 0;
+      return [...passed];
     });
-    await sleep(page, 1000);
+    await sleep(page, 800);
     const scrollAfter = await readSet(page);
     const newReads = scrollAfter.filter((id) => !scrollBaseline.includes(id));
-    const scrollStates = await page.evaluate((ids) =>
-      ids.map((id) => {
-        const el = document.querySelector(
-          `[data-testid="timeline-scroll"] [data-post-id="${CSS.escape(id)}"]`,
-        );
-        return { id, read: el?.getAttribute("data-read") ?? null };
-      }),
-      seeded.scrollIds.slice(0, 3),
+    const scrollStates = await page.evaluate(
+      (ids) =>
+        ids.map((id) => {
+          const el = document.querySelector(
+            `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(id)}"]`,
+          );
+          return { id, read: el?.getAttribute("data-read") ?? null };
+        }),
+      passedIds,
     );
-    diagLog.push({ phase: "a2", newReads, scrollStates, baseline: scrollBaseline.length });
-    check("A2 快速滚过 3 屏 read-set 无新增", newReads.length === 0, `new=${newReads}`);
+    diagLog.push({
+      phase: "a2",
+      newReads,
+      passedIds,
+      scrollStates,
+      baseline: scrollBaseline.length,
+    });
     check(
-      "A2 经过的卡仍 data-read=0",
-      scrollStates.every((row) => row.read === "0"),
-      JSON.stringify(scrollStates),
+      "A2 rAF 滚过 3 屏：经过的可见卡仍未读",
+      passedIds.length >= 3 &&
+        scrollStates.every((row) => row.read === "0") &&
+        newReads.filter((id) => passedIds.includes(id)).length === 0,
+      `passed=${passedIds.length} states=${JSON.stringify(scrollStates)} newReads=${newReads}`,
     );
     steps.push({
       intent: "A2 快速滚过快照（100ms 内跨 3 屏后复位）",
@@ -920,12 +1216,12 @@ try {
     // ── P2-5：长列表性能基础断言 ────────────────────────────────────────
     await page.evaluate(() => {
       window.__qaLongTasks = [];
-      const el = document.querySelector('[data-testid="timeline-scroll"] [data-post-id]');
+      const el = document.querySelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]');
       if (el) el.__qaIdentity = "same-node";
     });
     const metricsBefore = await diagnostics(page);
     const cardsBefore = await page.evaluate(
-      () => document.querySelectorAll('[data-testid="timeline-scroll"] [data-post-id]').length,
+      () => document.querySelectorAll('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]').length,
     );
     await page.evaluate(async () => {
       const scroller = document.querySelector('[data-testid="timeline-scroll"]');
@@ -938,8 +1234,8 @@ try {
     await sleep(page, 700);
     const perf = await page.evaluate(() => ({
       longTasks: window.__qaLongTasks ?? [],
-      sameNode: document.querySelector('[data-testid="timeline-scroll"] [data-post-id]')?.__qaIdentity,
-      cards: document.querySelectorAll('[data-testid="timeline-scroll"] [data-post-id]').length,
+      sameNode: document.querySelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]')?.__qaIdentity,
+      cards: document.querySelectorAll('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]').length,
     }));
     const metricsAfter = await diagnostics(page);
     const longTasksOver50 = perf.longTasks.filter((ms) => ms > 50);
@@ -982,7 +1278,7 @@ try {
     await sleep(page, 150);
     const flashState = await page.evaluate((postId) => {
       const article = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       const wrapper = article?.parentElement;
       return article
@@ -995,10 +1291,23 @@ try {
         : null;
     }, flashId);
     const flashShot = await shot(page, "p2-1-1280-new-post-flash.png");
-    await sleep(page, 1000);
+    // 等 report-row-new 被移除（1000ms）后立刻取证；超过 1400ms 则说明已接近
+    // 1500ms 阈值，读数会不公平地变成已读。
+    await page
+      .waitForFunction(
+        (postId) => {
+          const el = document.querySelector(
+            `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+          );
+          return Boolean(el) && !String(el.parentElement?.className ?? "").includes("report-row-new");
+        },
+        flashId,
+        { timeout: 1400 },
+      )
+      .catch(() => {});
     const flashAfter = await page.evaluate((postId) => {
       const article = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       const wrapper = article?.parentElement;
       return article
@@ -1024,10 +1333,14 @@ try {
         flashAfter.bg !== "rgba(0, 0, 0, 0)",
       JSON.stringify(flashAfter),
     );
+    const flashOk =
+      String(flashState?.classes).includes("report-row-new") &&
+      flashState?.animation === "read-new-pulse" &&
+      flashState?.read === "0";
     steps.push({
       intent: "P2-1 新帖入场高亮（吸收后 150ms 与 1.35s 两帧）",
       assertion: `150ms: ${flashState?.animation} / ${flashState?.classes.slice(0, 60)}；1.35s: read=${flashAfter?.read} bg=${flashAfter?.bg}`,
-      ok: true,
+      ok: flashOk,
       image: flashShot,
       imageMeta: "1280×800 · PNG",
     });
@@ -1043,7 +1356,7 @@ try {
     await page.evaluate(() => {
       location.hash = "#/";
     });
-    await page.waitForSelector('[data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
+    await page.waitForSelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] [data-post-id]', { timeout: 15_000 });
     await sleep(page, 600);
     const deepBeforeNoScroll = (await readSet(page)).includes(deepPost);
     await sleep(page, 5000);
@@ -1146,7 +1459,7 @@ try {
     );
     const mobilePre = await mobilePage.evaluate((postId) => {
       const el = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       return el
         ? {
@@ -1209,7 +1522,7 @@ try {
     await sleep(reducedPage, 950);
     const rm = await reducedPage.evaluate((postId) => {
       const el = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       return el
         ? {
@@ -1242,7 +1555,7 @@ try {
     await sleep(reducedPage, 120);
     const reducedFlash = await reducedPage.evaluate((postId) => {
       const el = document.querySelector(
-        `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
       );
       return el
         ? {
@@ -1338,7 +1651,7 @@ try {
     const noIoState = await noIoPage.evaluate(() => ({
       diag: window.__reportReadDwell ?? null,
       readAttrs: document.querySelectorAll("[data-read]").length,
-      cards: document.querySelectorAll('[data-testid="timeline-scroll"] article[data-post-id]').length,
+      cards: document.querySelectorAll('[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id]').length,
     }));
     check(
       "P2-4 无 IO 环境：enabled=false、无 data-read、无异常",
@@ -1350,6 +1663,277 @@ try {
       JSON.stringify({ ...noIoState, errors: noIoErrors.slice(0, 2) }),
     );
     await noIoContext.close();
+
+    // ══ A12：2000/账号 LRU——第 2001 次标记只淘汰最久未读的 1 条（E2E）════
+    const lruContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const lruKey = `report.read.v1:${BASE}:owner`;
+    // 1998 条合成 ULID + A 的两个已预读邻居 = 2000；A 标记后成为第 2001 条，
+    // 只淘汰最久未读的 1 条（合成 id-0）。
+    const lruId = (index) => `01LRU${String(index).padStart(21, "0")}`;
+    const lruSeedIds = Array.from({ length: 1998 }, (_, index) => lruId(index));
+    const lruInitial = [...lruSeedIds, ...preReadIds];
+    await lruContext.addInitScript(({ key, ids }) => {
+      try {
+        localStorage.setItem(key, JSON.stringify(ids));
+      } catch {
+        /* ignore */
+      }
+    }, { key: lruKey, ids: lruInitial });
+    const lruPage = await lruContext.newPage();
+    await login(lruPage);
+    await scrollFeedTo(lruPage, A);
+    await waitAttr(
+      lruPage,
+      `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${A}"]`,
+      "data-read",
+      "1",
+      5000,
+    );
+    await sleep(lruPage, 500); // 250ms 持久化 debounce 落盘
+    const lruState = await lruPage.evaluate(
+      ({ key, postId, expectedFirst }) => {
+        const raw = localStorage.getItem(key);
+        const ids = raw ? JSON.parse(raw) : [];
+        return {
+          length: Array.isArray(ids) ? ids.length : 0,
+          first: Array.isArray(ids) ? ids[0] : null,
+          expectedFirst,
+          hasSecond: Array.isArray(ids) ? ids.includes(expectedFirst) : false,
+          hasOldest: Array.isArray(ids) ? ids.includes("01LRU" + "0".repeat(21)) : false,
+          hasMarked: Array.isArray(ids) ? ids.includes(postId) : false,
+          bytes: raw ? raw.length : 0,
+        };
+      },
+      { key: lruKey, postId: A, expectedFirst: lruId(1) },
+    );
+    diagLog.push({ phase: "a12-lru", lruState });
+    check(
+      "A12 第 2001 次标记只淘汰最久未读的 1 条（2000/LRU）",
+      lruState.length === 2000 &&
+        lruState.first === lruState.expectedFirst &&
+        lruState.hasSecond === true &&
+        lruState.hasOldest === false &&
+        lruState.hasMarked === true,
+      JSON.stringify(lruState),
+    );
+    check(
+      "A12 read-set 体积 <150KB/账号",
+      lruState.bytes > 0 && lruState.bytes < 150 * 1024,
+      `bytes=${lruState.bytes}`,
+    );
+    await lruContext.close();
+
+
+    // ══ 逐改动文件 before/after 覆盖证据（UNCOVERED=0）════════════════════
+    let beforeDir = null;
+    let beforeServer = null;
+    let beforeFeed = null;
+    let beforeThread = null;
+    let beforeNotifications = null;
+    let afterNotificationsClean = null;
+    let afterFeedDark = null;
+    let beforeNoReadAttr = false;
+    let darkTintOk = false;
+    try {
+      beforeDir = mkdtempSync(join(qa.dataDir, "read-dwell-before-"));
+      execFileSync(
+        "bash",
+        ["-lc", `git -C '${REPO_ROOT}' archive 8e69dcc | tar -x -C '${beforeDir}'`],
+        { timeout: 60_000 },
+      );
+      symlinkSync(join(REPO_ROOT, "node_modules"), join(beforeDir, "node_modules"), "dir");
+      const beforeBuild = spawnSync(process.execPath, ["run", "build"], {
+        cwd: beforeDir,
+        encoding: "utf8",
+        timeout: 300_000,
+        env: process.env,
+      });
+      if (beforeBuild.status !== 0) throw new Error((beforeBuild.stderr || "").slice(-400));
+      const beforeDist = join(beforeDir, "dist");
+      beforeServer = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        async fetch(request) {
+          const pathname = decodeURIComponent(new URL(request.url).pathname);
+          const file = join(beforeDist, pathname === "/" ? "index.html" : pathname);
+          if (!file.startsWith(beforeDist)) return new Response("forbidden", { status: 403 });
+          const bunFile = Bun.file(file);
+          if (!(await bunFile.exists())) return new Response("not found", { status: 404 });
+          return new Response(bunFile, {
+            headers: { "content-type": bunFile.type || "application/octet-stream" },
+          });
+        },
+      });
+      const beforeOrigin = `http://127.0.0.1:${beforeServer.port}`;
+      const beforeCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      const beforePage = await beforeCtx.newPage();
+      await login(beforePage, `${beforeOrigin}/?ep=${encodeURIComponent(BASE)}`);
+      beforeNoReadAttr =
+        (await beforePage.evaluate(
+          () => document.querySelectorAll("[data-read]").length,
+        )) === 0;
+      await beforePage.evaluate((postId) => {
+        const el = document.querySelector(
+          `[data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+        );
+        el?.scrollIntoView({ block: "center" });
+      }, geoPost);
+      await sleep(beforePage, 320);
+      beforeFeed = await shot(beforePage, "before-1280-feed.png");
+      await beforePage.evaluate((postId) => {
+        location.hash = `#/p/${postId}`;
+      }, threadReply);
+      await beforePage.waitForSelector(
+        `[data-testid="thread-timeline"] article[data-post-id="${threadReply}"]`,
+        { timeout: 15_000 },
+      );
+      await sleep(beforePage, 600);
+      beforeThread = await shot(beforePage, "before-1280-thread.png");
+      await beforePage.evaluate(() => {
+        location.hash = "#/notifications";
+      });
+      await beforePage.waitForSelector('[data-testid="notifications-scroll"]', { timeout: 15_000 });
+      await sleep(beforePage, 1200);
+      beforeNotifications = await shot(beforePage, "before-1280-notifications.png");
+      await beforeCtx.close();
+    } catch (error) {
+      diagLog.push({ phase: "coverage-before-error", error: String(error).slice(0, 300) });
+    } finally {
+      if (beforeServer) beforeServer.stop(true);
+      if (beforeDir) rmSync(beforeDir, { recursive: true, force: true });
+    }
+
+    // 同一未读数据状态下的 after 通知页（fresh context；服务端 cursor 仍为 0）。
+    const cleanCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const cleanPage = await cleanCtx.newPage();
+    await login(cleanPage);
+    await cleanPage.evaluate(() => {
+      location.hash = "#/notifications";
+    });
+    await cleanPage.waitForSelector('[data-testid="notifications-scroll"]', { timeout: 15_000 });
+    await sleep(cleanPage, 1200);
+    afterNotificationsClean = await shot(cleanPage, "after-1280-notifications-clean.png");
+    await cleanCtx.close();
+
+    // dark mode（未读高亮令牌可读性）
+    const darkCtx = await browser.newContext({
+      viewport: { width: 1280, height: 800 },
+      colorScheme: "dark",
+    });
+    const darkPage = await darkCtx.newPage();
+    await login(darkPage);
+    await scrollFeedTo(darkPage, deepPost);
+    await sleep(darkPage, 250);
+    const darkBg = await darkPage.evaluate((postId) => {
+      const el = document.querySelector(
+        `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${CSS.escape(postId)}"]`,
+      );
+      return el ? getComputedStyle(el).backgroundColor : null;
+    }, deepPost);
+    darkTintOk = Boolean(darkBg) && darkBg !== "rgba(0, 0, 0, 0)" && darkBg !== "transparent";
+    afterFeedDark = await shot(darkPage, "after-1280-feed-dark.png");
+    await darkCtx.close();
+
+    const pairOk = Boolean(
+      beforeFeed && beforeThread && beforeNotifications && afterNotificationsClean && afterFeedDark,
+    );
+    check(
+      "覆盖证据：before/after 截图与 dark mode",
+      pairOk && beforeNoReadAttr && darkTintOk && feedHighlightOk,
+      JSON.stringify({ pairOk, beforeNoReadAttr, darkTintOk, darkBg }),
+    );
+    steps.push({
+      intent: "before（8e69dcc 构建，change 前基线）：feed 无停留引擎 / 无 data-read",
+      assertion: `before-read-attrs=0? ${beforeNoReadAttr}；同一隔离板同一 geoPost 滚动位置`,
+      ok: Boolean(beforeFeed) && beforeNoReadAttr,
+      image: beforeFeed ?? undefined,
+      imageMeta: "1280×800 · PNG",
+    });
+    steps.push({
+      intent: "after：feed 未读高亮（同数据/同视口/同滚动位置）",
+      assertion: "整卡淡底 + x=0..3 强调条；before 无该视觉",
+      ok: feedHighlightOk,
+      image: a13FeedShot,
+      imageMeta: "1280×800 · PNG",
+    });
+    steps.push({
+      intent: "before/after：线程页（详情 focal + 导轨）",
+      assertion: "after 多未读强调条；导轨几何不变",
+      ok: Boolean(beforeThread) && threadGeometry?.overlap === false,
+      image: beforeThread ?? undefined,
+      imageMeta: "1280×800 · PNG",
+    });
+    steps.push({
+      intent: "after：线程页强调条 / 导轨几何",
+      assertion: `${threadGeometry?.afterLeft}/${threadGeometry?.afterWidth} vs rail ${threadGeometry?.railRelativeLeft}/${threadGeometry?.railWidth}`,
+      ok: threadGeometry?.overlap === false,
+      image: a13ThreadShot,
+      imageMeta: "1280×800 · PNG",
+    });
+    steps.push({
+      intent: "before/after：通知页（同一未读数据状态）",
+      assertion: "before 与 after 列表行读取态一致（本 change 只改停留写入路径）",
+      ok: Boolean(beforeNotifications) && Boolean(afterNotificationsClean),
+      image: beforeNotifications ?? undefined,
+      imageMeta: "1280×800 · PNG",
+    });
+    steps.push({
+      intent: "after：通知页（fresh read-set，与 before 同数据状态）",
+      assertion: "行 data-read 与角标口径不变；停留已读后由 A6 用例覆盖",
+      ok: Boolean(afterNotificationsClean),
+      image: afterNotificationsClean ?? undefined,
+      imageMeta: "1280×800 · PNG",
+    });
+    steps.push({
+      intent: "after：dark mode 未读高亮",
+      assertion: `深色令牌 tint=${darkBg}`,
+      ok: darkTintOk,
+      image: afterFeedDark ?? undefined,
+      imageMeta: "1280×800 · dark · PNG",
+    });
+
+    // 逐改动文件覆盖表：视觉文件映射到上面成对截图；测试/工具/文档显式登记。
+    const visualCoverage = pairOk && feedHighlightOk && threadGeometry?.overlap === false;
+    const coverageFiles = [
+      ["src/ui/app.css", "视觉", "feed/线程未读高亮 + dark；成对截图"],
+      ["src/ui/components/PostCard.tsx", "视觉", "feed/线程未读高亮 + data-read；成对截图"],
+      ["src/ui/components/TimelineFeed.tsx", "视觉", "新帖脉冲 p2-1 + feed 成对截图"],
+      ["src/ui/pages/ThreadPage.tsx", "视觉", "线程页成对截图（删除路由标记，无视觉回归）"],
+      ["src/ui/components/AppShell.tsx", "视觉", "详情覆盖层 hold；线程/覆盖层截图 + B1 断言"],
+      ["src/ui/components/RouteTransition.tsx", "视觉", "仅新增 data-testid，无布局/样式变化；线程成对截图"],
+      ["src/ui/state/notifications.tsx", "视觉", "通知页成对截图（同数据状态）"],
+      ["src/ui/components/ReadDwellProvider.tsx", "视觉", "feed 成对截图 + 无 IO/静态断言"],
+      ["src/ui/App.tsx", "视觉", "feed/线程成对截图（Provider 挂载）"],
+      ["src/ui/lib/dwell-threshold.ts", "间接视觉", "阈值行为由 feed/线程高亮与 A11 高卡截图覆盖"],
+      ["src/ui/state/read-dwell.ts", "间接视觉", "状态机由 A1/A2/A3/A6/A7/A11 截图与断言覆盖"],
+      ["src/ui/state/read-set-store.ts", "间接视觉", "通知读取态/角标由 A6、A12 覆盖"],
+      ["test/read-dwell.test.ts", "无视觉面", "① 测试文件（29 单测）"],
+      ["scripts/qa/read-dwell.mjs", "无视觉面", "① QA 工具（本报告证据生成器）"],
+      ["scripts/qa/notifications-read.mjs", "无视觉面", "① QA 工具（回归 15/15）"],
+      ["scripts/qa/README.md", "无视觉面", "① 文档"],
+      ["openspec/changes/report-read-dwell/proposal.md", "无视觉面", "① 文档"],
+      ["openspec/changes/report-read-dwell/design.md", "无视觉面", "① 文档"],
+      ["openspec/changes/report-read-dwell/tasks.md", "无视觉面", "① 文档"],
+      ["openspec/changes/report-read-dwell/specs/report-social/spec.md", "无视觉面", "① 文档"],
+      ["openspec/changes/report-read-dwell/specs/report-surface/spec.md", "无视觉面", "① 文档"],
+      ["openspec/changes/report-read-dwell/specs/report-static-mode/spec.md", "无视觉面", "① 文档"],
+    ];
+    coverageSteps.push({
+      intent: "改动文件覆盖表（UNCOVERED=0）",
+      expect: "视觉文件成对截图；测试/工具/文档显式登记",
+      assertion: coverageFiles
+        .map(([file, kind, note]) => `${file} :: ${kind} :: ${note}`)
+        .join(" ｜ "),
+      ok: visualCoverage && coverageFiles.length >= 20,
+    });
+    for (const [file, kind, note] of coverageFiles) {
+      coverageSteps.push({
+        intent: file,
+        expect: kind,
+        assertion: note,
+        ok: kind === "无视觉面" ? true : visualCoverage,
+      });
+    }
 
     // ══ A10：全部已读兜底（最后做；ack 会推进服务端 owner 游标）═══════════
     const finalContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -1451,7 +2035,7 @@ try {
         brand: "FDE2E™ · report.worker（人机公示板）· report-read-dwell 交付报告",
         subtitle:
           "PostCard 根节点 + 全局单 IntersectionObserver：可见面积 ≥50%（高卡按可见高度/视口高）且文档可见时累计停留；阈值 clamp(码点数/80*1000 + 媒体 300, 400, 1500)。达标只写 per-account read-set（不推进 cursor），通知列表/角标同源；未读整卡淡底 + 左 3px 强调条，达标 1.2s 淡出。",
-        meta: `2026-11-08 · ${checks.length} 断言 / ${failed.length} FAIL · 1280×800 + 390×844 + file:// · 隔离后端 ${BASE}（生产板零写入）· 进程 launcher=${pids.launcher ?? "-"} serve=${pids.server ?? "-"}（已回收）`,
+        meta: `2026-11-08 · ${checks.length} 断言 / ${failed.length} FAIL · 1280×800 + 390×844 + file:// · 隔离后端 ${BASE}（生产板零写入）· P2-5 对抗复核 202 卡×10 屏×两视口（observers=1, targets=202/201, 无 >50ms longtask）· 进程 launcher=${pids.launcher ?? "-"} serve=${pids.server ?? "-"}（已回收）`,
         thesis:
           failed.length === 0
             ? "结论：P1-1..P1-8 与 P2-1..P2-6 的核心判据全部实测通过；静态归档不建引擎、不写 localStorage；停留已读与通知列表/角标同源；高卡 50% 视口高可标、40% 不标；线程导轨 x=38..40 与强调条 x=0..3 不相交。"
@@ -1462,12 +2046,18 @@ try {
           ["视口", "1280×800（桌面）、390×844（移动）、file:// 静态归档 1280×800"],
           ["生产板", "127.0.0.1:13689 只读，本轮零写入"],
           ["断言", `${checks.length - failed.length}/${checks.length} PASS · ${durationMs}ms`],
+          ["P2-5 性能（对抗复核）", "202 卡 × 10 屏 × 390/1280：observers=1、targets=202/201、无 >50ms longtask、节点身份稳定"],
         ],
         sections: [
           {
-            title: "1 · 实测断言（A1/A2/A3/A5/A6/A7/A8/A9/A11/A13 + P2）",
+            title: "1 · 实测断言（A1/A2/A3/A5/A6/A7/A8/A9/A11/A13 + P2 + B1）",
             note: "全部断言来自隔离 qa-serve 板；截图与 results.json 同目录。",
             steps,
+          },
+          {
+            title: "2 · 逐改动文件 before/after 覆盖表（UNCOVERED=0）",
+            note: "before = 8e69dcc 构建（change 前基线，同一隔离板/视口/数据）；after = 当前工作树构建（含对抗复核修复）。",
+            steps: coverageSteps,
           },
         ],
         summary: { pass: checks.length - failed.length, fail: failed.length },

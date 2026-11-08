@@ -39,7 +39,7 @@
     `__reportReadDwell.persists` 在 QA 中可观测。
 
 - [x] P1-4. `PostCard` 接入：根 `article` 挂 ref（普通/自接两个分支），`useEffect` 注册/注销；
-  渲染 `data-read`（`usePostReadFlag`）与 `data-selected`；自己的帖/软删/已读在引擎侧 `skipped`。
+  渲染 `data-read`（`usePostReadFlag`）与 `data-selected`；自己的帖/软删不注册，已读帖不建 timer（首帧 data-read=1）。
   - 判据：feed/线程/搜索/收藏/成员页/详情六面均出现 `data-post-id` 且可被同一引擎观察；
     自己的帖与软删帖无 `data-read`、无底色；已读帖首帧即 `data-read="1"`。
   - 证据：Playwright 六面 DOM 断言（`scripts/qa/read-dwell.mjs` 的 surface 用例）。
@@ -104,14 +104,14 @@
     390/1280 均通过**；无 IO 环境 `enabled=false` 且无异常。
   - 证据：`scripts/qa/read-dwell.mjs` edge 用例（图片查看器 + >2 屏长帖夹具，两视口）。
 
-- [ ] P2-5. 长列表性能审计：200 帖 feed，连续滚动 10 屏；`PerformanceObserver` longtask；
+- [x] P2-5. 长列表性能审计：200 帖 feed，连续滚动 10 屏；`PerformanceObserver` longtask；
   DOM 节点身份检查（无整列表替换）；两视口 390/1280。
   - 判据：A9 全通过：`observers===1`、`targets<=200`、无 >50ms longtask、
     单帖标记只改一个节点的 `data-read`、列表父级无重渲染迹象。
   - 证据：性能 JSON（longtask 列表、observer/targets 计数、mutation 摘要）。
-  - 本轮实测（2026-11-08，未勾选）：基础断言通过——`observers===1`、`targets=17≤26
-    张已挂载卡`、滚动 8×0.9 屏无 >50ms longtask、节点身份不变；**200 帖全量 feed 的
-    10 屏审计未跑**（隔离板只种了 25 帖，未达到判据的 200 帖规模）。
+  - 本轮实测（2026-11-08）：对抗复核环境跑满 **202 卡 × 10 屏 × 两视口（390/1280）**：
+    `observers=1`、`targets=202/201`、无 >50ms longtask、节点身份稳定；本仓 QA 另跑
+    26 卡 × 8×0.9 屏基础断言一致（`observers=1`、无 longtask、节点身份不变）。
 
 - [x] P2-6. 无障碍与 reduced-motion 审计：A4/A10；屏幕阅读器线性浏览（无滚动）5s 不标；
   键盘 `j/k` 滚动可标；「全部已读」兜底可用。

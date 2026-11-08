@@ -115,6 +115,21 @@ try {
 
   // ② 从时间线（非通知）进详情同样标已读
   const seedB = await seedReply();
+  // 登录后首屏 fixture 早已被停留读完：另种两个全新根帖作为「可见邻居卡」，
+  // 用于断言详情覆盖层不会误标底层 feed。
+  const seedNeighbors = [];
+  for (let i = 0; i < 2; i += 1) {
+    const result = await apiJson(BASE, "/api/posts", managerToken, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+          body: `@owner ${SEED_TAG} 邻居卡 ${i + 1}（详情覆盖层隔离）\n${"长正文用于把停留阈值拉到 1500ms。".repeat(12)}`,
+        media: [],
+        tags: ["result"],
+      }),
+    });
+    seedNeighbors.push(result.posts[0].id);
+  }
   // 让通知页重新取一次（页面只在进入时 re-peek）：回主页再进通知页
   await page.evaluate(() => {
     location.hash = "#/";
@@ -126,6 +141,40 @@ try {
   await page.waitForTimeout(1600);
   const beforeB = await badgeText();
   check("②种子进入未读（前提）", beforeB >= 1, `badge=${beforeB}`);
+
+  // 从 home feed 出发进详情（不是通知页起点）；记录底层根页可见未读卡，
+  // report-read-dwell 的详情覆盖层 scoped hold 必须让它们保持未读。
+  await page.evaluate(() => {
+    location.hash = "#/";
+  });
+  await page.waitForSelector('[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id]', {
+    timeout: 15_000,
+  });
+  await page.waitForSelector(
+    `[data-testid="app-root-view"] [data-testid="timeline-scroll"] article[data-post-id="${seedNeighbors[0]}"]`,
+    { timeout: 10_000 },
+  );
+  await page.evaluate(() => {
+    const scroller = document.querySelector(
+      '[data-testid="app-root-view"] [data-testid="timeline-scroll"]',
+    );
+    if (scroller) scroller.scrollTop = 0;
+  });
+  await page.waitForTimeout(200);
+  const neighborIds = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="app-root-view"] article[data-post-id][data-read="0"]')]
+      .filter((el) => {
+        const rect = el.getBoundingClientRect();
+        return Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0) > 0;
+      })
+      .map((el) => el.getAttribute("data-post-id")),
+  );
+  check(
+    "② home feed 有可见未读邻居卡（前提）",
+    neighborIds.length > 0 && seedNeighbors.some((id) => neighborIds.includes(id)),
+    `neighbors=${neighborIds.length} seeds=${seedNeighbors.join(",")}`,
+  );
+
   await page.evaluate((id) => {
     location.hash = `#/p/${id}`;
   }, seedB);
@@ -135,7 +184,7 @@ try {
     (id) =>
       Boolean(
         document.querySelector(
-          `[data-testid="thread-timeline"] [data-post-id="${CSS.escape(id)}"][data-read="1"]`,
+          `[data-testid="thread-timeline"] article[data-post-id="${CSS.escape(id)}"][data-read="1"]`,
         ),
       ),
     seedB,
@@ -144,7 +193,37 @@ try {
   check("直接进详情（非通知入口）", (await page.evaluate(() => location.hash)).includes(seedB));
   check(
     "详情停留达标后标已读",
-    (await page.locator(`[data-testid="thread-timeline"] [data-post-id="${seedB}"][data-read="1"]`).count()) >= 1,
+    (await page.locator(`[data-testid="thread-timeline"] article[data-post-id="${seedB}"][data-read="1"]`).count()) >= 1,
+  );
+  const neighborAfter = await page.evaluate((ids) => {
+    const readSet = new Set();
+    try {
+      for (let i = 0; i < localStorage.length; i += 1) {
+        const key = localStorage.key(i);
+        if (!key || !key.startsWith("report.read.v1:")) continue;
+        try {
+          for (const id of JSON.parse(localStorage.getItem(key) ?? "[]")) readSet.add(id);
+        } catch {
+          /* ignore */
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    return ids.map((id) => ({
+      id,
+      attr: document
+        .querySelector(
+          `[data-testid="app-root-view"] article[data-post-id="${CSS.escape(id)}"]`,
+        )
+        ?.getAttribute("data-read"),
+      inReadSet: readSet.has(id),
+    }));
+  }, neighborIds);
+  check(
+    "②详情停留不误标底层邻居卡",
+    neighborAfter.every((row) => row.attr === "0" && !row.inReadSet),
+    JSON.stringify(neighborAfter),
   );
   await page.evaluate(() => {
     location.hash = "#/notifications";

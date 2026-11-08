@@ -27,7 +27,8 @@ export interface ReadDwellApi {
   active: boolean;
   observe: (el: HTMLElement, target: DwellTargetInput) => void;
   unobserve: (el: HTMLElement) => void;
-  hold: (reason: string) => void;
+  /** 无 scope＝全局暂停；带 scope＝只暂停 scope 之外的目标（详情覆盖层）。 */
+  hold: (reason: string, scope?: Element | null) => void;
   release: (reason: string) => void;
 }
 
@@ -87,7 +88,7 @@ export function ReadDwellProvider({ children }: { children: ReactNode }) {
       active: true,
       observe: (el, target) => engine.observe(el, target),
       unobserve: (el) => engine.unobserve(el),
-      hold: (reason) => engine.hold(reason),
+      hold: (reason, scope) => engine.hold(reason, scope),
       release: (reason) => engine.release(reason),
     };
   }, [engine]);

@@ -115,6 +115,9 @@ export function PostCard({
   }, [
     readDwell,
     trackable,
+    // read 翻转时重注册：0→1 由引擎保留 dwell-state=read（不杀淡出动画）；
+    // 1→0（LRU 淘汰）重新观察，停留后可以再次写回 read-set。
+    read,
     post.id,
     post.author,
     post.seq,

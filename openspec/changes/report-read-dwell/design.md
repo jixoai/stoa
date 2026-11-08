@@ -129,7 +129,7 @@ useEffect(() => {
 ### 2.4 重置与重连
 
 - **账号/后端切换**：`NotificationsProvider` 已按 `base+account` 换 read-set
-  （`notifications.tsx:218-232`）。`ReadDwellProvider` 监听 `client.base|account.id`，
+  （`notifications.tsx:218-232`）。`ReadDwellProvider` 监听 `account.id`，
   变化时 `engine.reset()`：`disconnect()`、清 entries/timers/written、通知所有已读订阅者。
 - **SSE 重连/reset**：与停留无关，引擎不重建；已读是本地属性，不依赖事件流。
 - **Provider 卸载**：`disconnect()` + 清全部 timer + 移除 visibility 监听。
@@ -144,6 +144,10 @@ useEffect(() => {
   `[data-slot="dialog-content"]`、`[data-slot="sheet-content"]`、`[role="dialog"][data-open]`
   的存在：存在即 `hold("modal")`，消失即 `release("modal")`。
   该 MutationObserver 只在引擎启用且至少跟踪一个条目时存在；它只观察节点增删，不观察滚动。
+- **覆盖层（route detail）**：`AppShell` 在 `detail === true` 时对详情层元素调用
+  `hold("route-detail", overlayEl)`；`hold(reason, scopeEl)` 只暂停**不在 scope 内**的目标，
+  因此底层根页卡片暂停并保留累计、详情层自己的卡片继续计时（IO 只能感知裁剪，不能感知覆盖）。
+  关闭详情时 `release` 恢复。
 - 已知不暂停的遮挡：toast（小而短暂）、下拉刷新指示器。显式登记为可接受（§10 R4）。
 
 ## 3. 计时状态机与阈值
@@ -153,7 +157,7 @@ useEffect(() => {
 每个被观察元素一个 `EntryState`：
 
 ```
-skipped ──(own/deleted/already-read/static)──▶ 终态（不建 timer）
+own/deleted/static ──▶ 不注册（不建 timer）；already-read ──▶ 不建 timer（保留 read 态）
 idle    ──coverage > 0──────────────────────▶ visible
 visible ──coverage = 0──────────────────────▶ idle
 visible ──coverage ≥ 0.5 & docVisible & !held─▶ dwell
@@ -394,15 +398,15 @@ article[data-read="0"]:not([data-selected="1"])::after { opacity: 1; }
 
 | 场景 | 行为 | 判据 |
 |------|------|------|
-| 自己的帖子 | `skipped`：不高亮、不观察、不写 | `data-read` 不存在 / 无底色 |
-| 软删帖（`deleted_at !== null`） | `skipped`：占位行不参与 | 无 `data-read`/强调条 |
+| 自己的帖子 | 不注册：不高亮、不观察、不写 | `data-read` 不存在 / 无底色 |
+| 软删帖（`deleted_at !== null`） | 不注册：占位行不参与 | 无 `data-read`/强调条 |
 | 后台标签页 / 切后台 | 暂停累计；hidden 期间到点的 timer 不写 | 切后台 2s 回来仍按剩余时间计时 |
 | 模态层遮挡（图片查看器/发帖箱/sheet） | `hold("modal")` 暂停 | 打开查看器停留 2s 不标 |
 | 快速滚动 | 不达标不标 | 300px/100ms 滚过整屏后 read-set 不变 |
 | 卡片卸载/路由切换 | 丢弃未完成累计 | 返回后重新计时 |
 | 同帖多实例（同页重复） | 以 postId 去重，先到点者写 | 只 1 次写入 |
 | 已读集合淘汰（>2000 LRU） | 最久未读的旧帖可能重新未读；再次停留再写 | 连续 600 条后最早 100 条仍已读；<150KB/账号 |
-| 屏幕阅读器/纯键盘焦点 | 不滚动不计时；`j/k` 滚动可计时 | 无滚动 5s 后仍未读 |
+| 屏幕阅读器/纯键盘焦点 | 不滚动不计时；`j/k` 滚动可计时 | 屏外卡片无滚动 5s 仍未读 |
 | `prefers-reduced-motion` | 直接切换，无 1.2s 淡出 | computed transition-duration = 0s |
 | 无 `IntersectionObserver` 环境 | 引擎 `enabled=false`，不标已读 | 功能降级为现状（无高亮） |
 | 静态归档 | 完全不启用 | §7 |
@@ -423,7 +427,7 @@ article[data-read="0"]:not([data-selected="1"])::after { opacity: 1; }
 | A7 | 自己/软删 | 自己发的帖 + 软删帖各停留 2s | 无 `data-read`、无底色；read-set 不含这两个 id |
 | A8 | 幂等/持久化 | 同帖停留达标两次；reload | 只 1 次写入（`__reportReadDwell.marks===1`）；reload 后仍 `data-read="1"` |
 | A9 | 长列表性能 | 200 帖 feed，连续滚动 10 屏 | `observers===1`；`targets≤200`；无整列表 DOM 替换（节点身份不变）；无 >50ms longtask；390/1280 均通过 |
-| A10 | 新帖入场 + 无障碍 | SSE 推新帖并在顶部吸收；另开无滚动会话 5s | 新行 900ms 内高亮后回到未读底色；无滚动会话 5s 后仍全部未读；点「全部已读」后角标 0 |
+| A10 | 新帖入场 + 无障碍 | SSE 推新帖并在顶部吸收；另开无滚动会话 5s | 新行 900ms 内高亮后回到未读底色；无滚动会话 5s 后屏外卡片仍未读；点「全部已读」后角标 0 |
 | A11 | 超视口长帖 | 构造高度 >2 屏的帖子，滚动到只露出 50% 视口高，停留 `threshold+250ms` | 该帖 `data-read="1"`（按「可见高度 ÷ 视口高 ≥50%」判定，不等整卡可见）；390/1280 均通过 |
 | A12 | read-set 2000/LRU | 连续标记 600 条 → 检查最早 100 条；再压测到 2001 条 → 检查最久未读被淘汰 | 600 条时最早 100 条仍已读（不出现「刚读过的旧帖复现未读」）；2001 条时第 1 条被淘汰、其余仍在；`localStorage` 值 <150KB/账号 |
 | A13 | 强调条几何 | 线程页未读卡与 feed 未读卡各取一条，读 `::after` 与 `[data-testid=thread-rail]` 矩形 | 强调条 left=0、width=3（x∈[0,3]）；线程导轨 left=38、width=2（x∈[38,40]）；两矩形不相交；卡片高度与无高亮时一致 |

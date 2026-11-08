@@ -57,11 +57,14 @@ export function RouteTransition({
   routeKey,
   kind,
   className,
+  testId,
   children,
 }: {
   routeKey: string;
   kind: "root" | "detail";
   className?: string;
+  /** 稳定测试锚点（QA/停留引擎按覆盖层子树加 hold）。 */
+  testId?: string;
   children: ReactNode;
 }) {
   const direction = useTransitionDirection();
@@ -70,7 +73,11 @@ export function RouteTransition({
   const variants = variantsFor(kind, direction);
 
   if (native || reduced) {
-    return <div className={cn("flex h-full min-h-0 flex-col", className)}>{children}</div>;
+    return (
+      <div data-testid={testId} className={cn("flex h-full min-h-0 flex-col", className)}>
+        {children}
+      </div>
+    );
   }
 
   return (
@@ -78,6 +85,7 @@ export function RouteTransition({
       <AnimatePresence initial={false} mode={kind === "detail" ? "popLayout" : "sync"} custom={direction}>
         <m.div
           key={routeKey}
+          data-testid={testId}
           custom={direction}
           variants={variants}
           initial="enter"
