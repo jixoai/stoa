@@ -12,6 +12,7 @@ import { SearchPage } from "@/pages/SearchPage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
 import { BookmarksPage } from "@/pages/BookmarksPage";
 import { ComposePage } from "@/pages/ComposePage";
+import { SettingsSheetProvider } from "@/components/SettingsSheet";
 import {
   historyDepth,
   isRootRoute,
@@ -65,7 +66,8 @@ export function AppShell() {
   const detail = !isRootRoute(route);
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-[1280px] flex-col">
+    <SettingsSheetProvider>
+      <div className="mx-auto flex h-dvh w-full max-w-[1280px] flex-col">
       {staticMode ? (
         <div
           data-testid="static-banner"
@@ -110,6 +112,7 @@ export function AppShell() {
       </div>
       <MobileNav />
       <LeaveGuard active={!detail && historyDepth() === 0} routeKey={routeKey(route)} />
-    </div>
+      </div>
+    </SettingsSheetProvider>
   );
 }

@@ -156,8 +156,10 @@ async function harness(
   hub.subscribe(
     [
       "post.created",
+      "post.updated",
       "post.deleted",
       "notification.created",
+      "plugin.updated",
       "stream.reset",
       "stream.reconnected",
       "stream.state",
@@ -220,6 +222,60 @@ describe("EventHub 客户端状态机", () => {
     h.clock.advance(250);
     // 两个视图的 seed 都落后于 hello.as_of_seq → hello 后强制补拉（各一次）
     expect(catchUps).toBe(2);
+    h.hub.stop();
+  });
+
+  test("post.updated：只派发 post.updated、不进通知、推进 lastSeq", async () => {
+    const h = await harness();
+    h.hub.start();
+    await flush();
+    const source = h.sources[0]!;
+    source.emit("hello", { ...HELLO, as_of_seq: 5, since: 5 });
+
+    source.emit("hub", event(6, { type: "post.updated" }));
+    const updated = h.dispatches.filter((dispatch) => dispatch.topic === "post.updated");
+    expect(updated).toHaveLength(1);
+    expect(
+      updated.map((dispatch) => (dispatch.topic === "post.updated" ? dispatch.event.seq : 0)),
+    ).toEqual([6]);
+    // post.updated 不是通知：不得派生 notification.created，也不得被当成 post.created。
+    expect(h.dispatches.filter((dispatch) => dispatch.topic === "notification.created")).toHaveLength(0);
+    expect(h.dispatches.filter((dispatch) => dispatch.topic === "post.created")).toHaveLength(0);
+    expect(h.hub.getStatus().asOfSeq).toBe(6);
+
+    // 重复/旧 seq 仍按 lastSeq 去重。
+    source.emit("hub", event(6, { type: "post.updated" }));
+    source.emit("hub", event(5, { type: "post.updated" }));
+    expect(h.dispatches.filter((dispatch) => dispatch.topic === "post.updated")).toHaveLength(1);
+    h.hub.stop();
+  });
+
+  test("plugin.updated 控制帧：合法帧派发、非法帧丢弃、不推进水位", async () => {
+    const h = await harness();
+    h.hub.start();
+    await flush();
+    const source = h.sources[0]!;
+    source.emit("hello", { ...HELLO });
+
+    source.emit("plugin.updated", {
+      plugin_id: "link-preview",
+      enabled: false,
+      version: "1.2.3",
+    });
+    const updates = h.dispatches.filter((dispatch) => dispatch.topic === "plugin.updated");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      topic: "plugin.updated",
+      pluginId: "link-preview",
+      enabled: false,
+      version: "1.2.3",
+    });
+    expect(h.hub.getStatus().asOfSeq).toBe(10);
+
+    source.emit("plugin.updated", { plugin_id: 123, enabled: false });
+    source.emit("plugin.updated", { plugin_id: "link-preview" });
+    source.emit("plugin.updated", { enabled: true });
+    expect(h.dispatches.filter((dispatch) => dispatch.topic === "plugin.updated")).toHaveLength(1);
     h.hub.stop();
   });
 

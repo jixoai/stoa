@@ -22,9 +22,34 @@ import type {
   TimelinePage,
   TrendingTag,
 } from "@core/types";
+import type { PluginView, PluginWorkerSummary } from "@core/plugins/types";
 
 // 发现接口的行类型由 core 统一声明（report-discover），这里只做壳侧再导出。
 export type { SuggestedAccount, TrendingTag } from "@core/types";
+// 预览/插件契约单源在 core（服务端同一份类型），壳侧只再导出。
+export type {
+  PluginDependencyView,
+  PluginView,
+  PluginWorkerSummary,
+  PreviewLink,
+} from "@core/plugins/types";
+
+/** `/api/status.preview_worker`：worker 计数 + 最近错误（P1-14）。 */
+export interface PreviewWorkerStatus extends PluginWorkerSummary {
+  last_error?: string | null;
+}
+
+/**
+ * `GET /api/capabilities` 的壳侧视图（P1-12 下发 `features.preview_fields`）。
+ * 启动期首帧门：feature 未加载/为 false 时不渲染预览整卡（见 PluginsProvider）。
+ */
+export interface CapabilitiesView {
+  product?: string;
+  version?: string;
+  protocol?: number;
+  features?: { preview_fields?: boolean } & Record<string, unknown>;
+  [key: string]: unknown;
+}
 
 export interface AuthStatus {
   mode: "open" | "auth";
@@ -104,7 +129,7 @@ export class AuthError extends ApiError {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PUT" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   auth?: boolean;
   signal?: AbortSignal;
@@ -128,6 +153,25 @@ export class ReportClient {
    */
   staticMediaUrl(_hash: string): string | null {
     return null;
+  }
+
+  /** 静态归档快照的 `preview_enabled`；线上返回 null（以 `/api/plugins` 为准）。 */
+  staticPreviewEnabled(): boolean | null {
+    return null;
+  }
+
+  // ── plugins（report-link-preview P1-12/P1-15）───────────────────────────────
+  async plugins(): Promise<PluginView[]> {
+    const data = (await this.request("/api/plugins")) as { plugins?: PluginView[] };
+    return Array.isArray(data.plugins) ? data.plugins : [];
+  }
+
+  async setPlugin(id: string, enabled: boolean): Promise<PluginView> {
+    const data = (await this.request(`/api/plugins/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: { enabled },
+    })) as { plugin: PluginView };
+    return data.plugin;
   }
 
   setToken(token: string | null): void {
@@ -225,16 +269,23 @@ export class ReportClient {
     server: ServerStatus;
     account: { id: string; role: Account["role"] };
     auth: AuthStatus;
+    preview_worker?: PreviewWorkerStatus;
   }> {
     return (await this.request("/api/status")) as {
       server: ServerStatus;
       account: { id: string; role: Account["role"] };
       auth: AuthStatus;
+      preview_worker?: PreviewWorkerStatus;
     };
   }
 
   async cursor(): Promise<{ account: string; cursor: number }> {
     return (await this.request("/api/cursor")) as { account: string; cursor: number };
+  }
+
+  /** 启动期能力矩阵（`features.preview_fields` 用于预览首帧门，P1-12）。 */
+  async capabilities(): Promise<CapabilitiesView> {
+    return (await this.request("/api/capabilities")) as CapabilitiesView;
   }
 
   // ── directory ──────────────────────────────────────────────────────────────

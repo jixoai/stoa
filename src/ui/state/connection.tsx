@@ -15,7 +15,15 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { AuthError, ReportClient, type AccountRow, type AuthStatus, type ServerStatus, type WhoRow } from "@/lib/api";
+import {
+  AuthError,
+  ReportClient,
+  type AccountRow,
+  type AuthStatus,
+  type CapabilitiesView,
+  type ServerStatus,
+  type WhoRow,
+} from "@/lib/api";
 import { clearMediaCache } from "@/lib/media";
 import { clearEntityCache } from "@/state/cache";
 import { installStaticApi, readReportSnapshot, type StaticReportClient } from "@/lib/static-api";
@@ -48,6 +56,8 @@ export interface ConnectionValue {
   sameOrigin: boolean;
   /** 静态归档模式：数据来自内联快照，写入口全部只读（spec report-static-mode）。 */
   staticMode: boolean;
+  /** 启动期能力矩阵（`features.preview_fields` 是预览首帧门；null = 未加载）。 */
+  capabilities: CapabilitiesView | null;
   snapshot: { asOfSeq: number; viewer: string } | null;
   error: string | null;
   loginError: string | null;
@@ -99,6 +109,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [staticMode, setStaticMode] = useState(boot !== null);
+  const [capabilities, setCapabilities] = useState<CapabilitiesView | null>(() =>
+    boot
+      ? { features: { preview_fields: boot.client.staticPreviewEnabled() !== false } }
+      : null,
+  );
 
   const pendingClient = useRef<ReportClient | null>(null);
   const autoStarted = useRef(false);
@@ -125,10 +140,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const finishReady = useCallback(
     async (current: ReportClient, authStatus: AuthStatus) => {
-      const status = await current.status();
+      const [status, capabilitiesView] = await Promise.all([
+        current.status(),
+        current.capabilities().catch(() => null),
+      ]);
       setAuth(authStatus);
       setServer(status.server);
       setAccount(status.account);
+      // feature 缺失 → null/false；PluginsProvider 会据此暂不渲染预览整卡。
+      setCapabilities(capabilitiesView);
       const myAccount = status.account.id;
       // 保证自己出现在 who 里（owner/manager 恒列）
       void Promise.all([current.who(), current.accounts()])
@@ -254,6 +274,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setAccounts([]);
     setAuth(null);
     setServer(null);
+    setCapabilities(null);
     setEp(null);
     setError(null);
     setPhase("landing");
@@ -271,6 +292,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     setAccounts([]);
     setAuth(null);
     setServer(null);
+    setCapabilities(null);
     setEp(null);
     setError(null);
     setPhase("landing");
@@ -359,6 +381,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       who,
       sameOrigin,
       staticMode,
+      capabilities,
       snapshot: boot?.snapshot ?? null,
       error,
       loginError,
@@ -380,6 +403,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       who,
       sameOrigin,
       staticMode,
+      capabilities,
       boot,
       error,
       loginError,

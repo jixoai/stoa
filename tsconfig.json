@@ -19,7 +19,8 @@
     "paths": {
       "@core/*": ["src/core/*"],
       "@server/*": ["src/server/*"],
-      "@cli/*": ["src/cli/*"]
+      "@cli/*": ["src/cli/*"],
+      "@/*": ["src/ui/*"]
     }
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs"],

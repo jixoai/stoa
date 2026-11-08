@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { Block, InlineToken } from "@core/markdown";
 import { parseMarkdown } from "@core/markdown";
+import { scanBareUrls } from "@core/link-extract";
 import { cn } from "cn";
 import { ExternalLinkIcon, ImageOffIcon } from "lucide-react";
 import { useConnection } from "@/state/connection";
@@ -47,7 +48,7 @@ const MENTION_RE = /(^|[^A-Za-z0-9_@/])@([a-z][a-z0-9_-]{0,31})\b/g;
 const HASHTAG_RE = /(^|[^A-Za-z0-9_-])#([A-Za-z0-9-]{1,24})(?![A-Za-z0-9-])/g;
 
 interface TextMatch {
-  kind: "mention" | "tag";
+  kind: "mention" | "tag" | "url";
   /** 替换起点（不含前缀分隔符） */
   index: number;
   /** 替换长度（含 @ / #） */
@@ -55,7 +56,12 @@ interface TextMatch {
   value: string;
 }
 
-function textMatches(text: string, known: Set<string>, linkTags: boolean): TextMatch[] {
+function textMatches(
+  text: string,
+  known: Set<string>,
+  linkTags: boolean,
+  linkUrls: boolean,
+): TextMatch[] {
   const matches: TextMatch[] = [];
   if (known.size > 0) {
     const re = new RegExp(MENTION_RE.source, "g");
@@ -84,12 +90,23 @@ function textMatches(text: string, known: Set<string>, linkTags: boolean): TextM
       });
     }
   }
+  if (linkUrls) {
+    // 裸 URL 兜底与服务端抽取共用 core/link-extract 的同一份正则/裁剪。
+    for (const match of scanBareUrls(text)) {
+      matches.push({ kind: "url", index: match.index, length: match.length, value: match.url });
+    }
+  }
   matches.sort((a, b) => a.index - b.index);
   return matches;
 }
 
-function renderText(text: string, known: Set<string>, linkTags: boolean): React.ReactNode {
-  const matches = textMatches(text, known, linkTags);
+function renderText(
+  text: string,
+  known: Set<string>,
+  linkTags: boolean,
+  linkUrls: boolean,
+): React.ReactNode {
+  const matches = textMatches(text, known, linkTags, linkUrls);
   if (matches.length === 0) return <span className="whitespace-pre-wrap">{text}</span>;
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
@@ -107,7 +124,7 @@ function renderText(text: string, known: Set<string>, linkTags: boolean): React.
           @{match.value}
         </a>,
       );
-    } else {
+    } else if (match.kind === "tag") {
       const tag = match.value.toLowerCase();
       nodes.push(
         <a
@@ -120,6 +137,19 @@ function renderText(text: string, known: Set<string>, linkTags: boolean): React.
           #{match.value}
         </a>,
       );
+    } else {
+      nodes.push(
+        <a
+          key={`${match.index}-${match.value}`}
+          href={match.value}
+          target="_blank"
+          rel="noreferrer noopener"
+          data-testid="bare-url-link"
+          className="text-link underline-offset-2 hover:underline"
+        >
+          {text.slice(match.index, match.index + match.length)}
+        </a>,
+      );
     }
     cursor = match.index + match.length;
   }
@@ -127,11 +157,16 @@ function renderText(text: string, known: Set<string>, linkTags: boolean): React.
   return <span className="whitespace-pre-wrap">{nodes}</span>;
 }
 
-function renderInline(tokens: InlineToken[], known: Set<string>, linkTags: boolean): React.ReactNode[] {
+function renderInline(
+  tokens: InlineToken[],
+  known: Set<string>,
+  linkTags: boolean,
+  linkUrls: boolean,
+): React.ReactNode[] {
   return tokens.map((token, index) => {
     switch (token.type) {
       case "text":
-        return <span key={index}>{renderText(token.text, known, linkTags)}</span>;
+        return <span key={index}>{renderText(token.text, known, linkTags, linkUrls)}</span>;
       case "code":
         return (
           <code key={index} className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]">
@@ -141,11 +176,11 @@ function renderInline(tokens: InlineToken[], known: Set<string>, linkTags: boole
       case "strong":
         return (
           <strong key={index} className="font-semibold">
-            {renderInline(token.children, known, linkTags)}
+            {renderInline(token.children, known, linkTags, linkUrls)}
           </strong>
         );
       case "em":
-        return <em key={index}>{renderInline(token.children, known, linkTags)}</em>;
+        return <em key={index}>{renderInline(token.children, known, linkTags, linkUrls)}</em>;
       case "link":
         return (
           <a
@@ -155,7 +190,7 @@ function renderInline(tokens: InlineToken[], known: Set<string>, linkTags: boole
             rel="noreferrer noopener"
             className="text-link underline-offset-2 hover:underline"
           >
-            {renderInline(token.children, known, false)}
+            {renderInline(token.children, known, false, false)}
             {token.href.startsWith("#") ? null : (
               <ExternalLinkIcon className="ml-0.5 inline size-3" aria-hidden />
             )}
@@ -185,14 +220,14 @@ function renderBlock(
       const Tag = (`h${level}` as unknown) as "h1";
       return (
         <Tag key={index} className={className}>
-          {renderInline(block.children, known, linkTags)}
+          {renderInline(block.children, known, linkTags, true)}
         </Tag>
       );
     }
     case "paragraph":
       return (
         <p key={index} className="my-1 text-[0.95rem] leading-relaxed">
-          {renderInline(block.children, known, linkTags)}
+          {renderInline(block.children, known, linkTags, true)}
         </p>
       );
     case "list": {
@@ -206,7 +241,7 @@ function renderBlock(
           )}
         >
           {block.items.map((item, itemIndex) => (
-            <li key={itemIndex}>{renderInline(item, known, linkTags)}</li>
+            <li key={itemIndex}>{renderInline(item, known, linkTags, true)}</li>
           ))}
         </Tag>
       );
@@ -214,7 +249,7 @@ function renderBlock(
     case "quote":
       return (
         <blockquote key={index} className="my-2 border-l-2 border-border pl-3 text-muted-foreground">
-          {renderInline(block.children, known, linkTags)}
+          {renderInline(block.children, known, linkTags, true)}
         </blockquote>
       );
     case "code":
@@ -234,7 +269,7 @@ function renderBlock(
               <tr>
                 {block.header.map((cell, cellIndex) => (
                   <th key={cellIndex} className="border border-border px-2 py-1 text-left font-medium">
-                    {renderInline(cell, known, linkTags)}
+                    {renderInline(cell, known, linkTags, true)}
                   </th>
                 ))}
               </tr>
@@ -244,7 +279,7 @@ function renderBlock(
                 <tr key={rowIndex}>
                   {row.map((cell, cellIndex) => (
                     <td key={cellIndex} className="border border-border px-2 py-1 align-top">
-                      {renderInline(cell, known, linkTags)}
+                      {renderInline(cell, known, linkTags, true)}
                     </td>
                   ))}
                 </tr>

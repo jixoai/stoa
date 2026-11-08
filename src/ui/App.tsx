@@ -4,6 +4,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Toaster } from "@/components/ui/toast";
 import { ConnectionProvider, useConnection } from "@/state/connection";
 import { EventHubProvider } from "@/state/hub/provider";
+import { PluginsProvider } from "@/state/plugins";
+import { PostPreviewsProvider } from "@/state/post-previews";
 import { HomeFeedsProvider } from "@/state/feed";
 import { NotificationsProvider } from "@/state/notifications";
 import { BookmarksProvider } from "@/state/bookmarks";
@@ -81,7 +83,11 @@ function EventHubBoundary() {
       accountId={account?.id ?? null}
       staticMode={staticMode}
     >
-      <PhaseView />
+      <PluginsProvider>
+        <PostPreviewsProvider>
+          <PhaseView />
+        </PostPreviewsProvider>
+      </PluginsProvider>
     </EventHubProvider>
   );
 }

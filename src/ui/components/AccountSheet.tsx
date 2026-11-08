@@ -10,6 +10,7 @@ import {
   LogOutIcon,
   MoonIcon,
   ServerIcon,
+  SettingsIcon,
   SunIcon,
   UserRoundIcon,
   UsersRoundIcon,
@@ -25,6 +26,7 @@ import { getCachedIdentity, getCachedProfile, rememberProfile } from "@/state/ca
 import { navigate } from "@/lib/router";
 import { roleLabel } from "@/lib/format";
 import { useTheme } from "@/lib/theme";
+import { useSettingsSheet } from "@/components/SettingsSheet";
 
 interface AccountSheetProps {
   open: boolean;
@@ -36,6 +38,7 @@ interface AccountSheetProps {
 export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetProps) {
   const { account, accounts, staticMode, client, logout, switchBackend } = useConnection();
   const { dark, toggle } = useTheme();
+  const settings = useSettingsSheet();
   const [profile, setProfile] = useState<ProfileAccountView | null>(() =>
     account ? getCachedProfile(account.id) : null,
   );
@@ -140,6 +143,19 @@ export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetPro
             </Button>
 
             <Separator className="my-2" />
+
+            <Button
+              variant="ghost"
+              className="h-11 justify-start gap-3 px-2 text-[0.95rem] font-normal"
+              data-testid="account-menu-settings"
+              onClick={() => {
+                onOpenChange(false);
+                settings.open();
+              }}
+            >
+              <SettingsIcon className="size-5" />
+              设置
+            </Button>
 
             <Button
               variant="ghost"

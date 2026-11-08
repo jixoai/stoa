@@ -14,6 +14,7 @@ import {
 import { Markdown } from "@/components/Markdown";
 import { MediaGrid } from "@/components/MediaGrid";
 import { QuoteCard } from "@/components/QuoteCard";
+import { LinkPreviews } from "@/components/LinkPreviews";
 import { TagChips } from "@/components/TagChips";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { Button } from "@/components/ui/button";
@@ -172,6 +173,7 @@ export function PostCard({
               </div>
               <MediaGrid media={post.media} />
               <QuoteCard post={post} />
+              <LinkPreviews post={post} />
               <TagChips tags={post.tags} />
             </>
           )}
@@ -262,6 +264,7 @@ export function PostCard({
               ) : null}
               <MediaGrid media={post.media} />
               <QuoteCard post={post} />
+              <LinkPreviews post={post} />
               <TagChips tags={post.tags} />
             </>
           )}

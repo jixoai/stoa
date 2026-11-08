@@ -23,12 +23,15 @@ import type {
   ThreadView,
   TimelinePage,
 } from "@core/types";
+import type { PreviewLink } from "@core/plugins/types";
 import { assembleThread } from "@core/thread";
 import {
   ApiError,
   ReportClient,
   type AccountRow,
   type AuthStatus,
+  type CapabilitiesView,
+  type PluginView,
   type ProfilePageView,
   type ReadPage,
   type ServerStatus,
@@ -67,6 +70,8 @@ export interface SnapshotPost {
   deleted_at?: number | null;
   tags?: string[];
   media?: SnapshotMedia[];
+  /** 持久化预览字段（导出快照原样携带；旧归档缺省 []）。 */
+  previews?: PreviewLink[];
 }
 
 export interface ReportSnapshot {
@@ -80,6 +85,8 @@ export interface ReportSnapshot {
   posts: SnapshotPost[];
   participants?: Record<string, string[]>;
   media?: SnapshotMedia[];
+  /** 导出时 link-preview 开关；旧归档缺省按 true 兼容（无 previews 时不显示）。 */
+  preview_enabled?: boolean;
 }
 
 export const SNAPSHOT_ELEMENT_ID = "report-snapshot";
@@ -114,6 +121,7 @@ export function readReportSnapshot(): ReportSnapshot | null {
       posts: parsed.posts as SnapshotPost[],
       participants: parsed.participants ?? {},
       media: Array.isArray(parsed.media) ? parsed.media : [],
+      preview_enabled: parsed.preview_enabled === false ? false : true,
     };
   } catch {
     cachedSnapshot = null;
@@ -225,7 +233,7 @@ const OWNER_MENTION_RE = /(^|[^A-Za-z0-9_@/])@owner\b/;
  * 只读客户端：所有数据从快照派生；写操作在客户端层直接拒绝（零网络）。
  */
 export class StaticReportClient extends ReportClient {
-  readonly mode = "static" as const;
+  override readonly mode = "static" as const;
   readonly snapshot: ReportSnapshot;
 
   private readonly accountsById = new Map<string, SnapshotAccount>();
@@ -323,6 +331,7 @@ export class StaticReportClient extends ReportClient {
       reply_count: replyCount,
       quoted: deleted ? null : quoted,
       quoted_visible: deleted ? false : post.quoted_visible ?? Boolean(quoted),
+      previews: deleted ? [] : post.previews ?? [],
     };
   }
 
@@ -759,6 +768,25 @@ export class StaticReportClient extends ReportClient {
     const url = media.url || `media/${media.hash}.${media.ext}`;
     if (url.startsWith("/")) return `.${url}`;
     return url;
+  }
+
+  /** 静态归档没有 `/api/plugins`：以快照导出时的开关为准。 */
+  override staticPreviewEnabled(): boolean | null {
+    return this.snapshot.preview_enabled !== false;
+  }
+
+  /** 静态归档不请求能力矩阵；preview_fields 取快照开关（PluginsProvider 静态走 enabled）。 */
+  override async capabilities(): Promise<CapabilitiesView> {
+    return { features: { preview_fields: this.snapshot.preview_enabled !== false } };
+  }
+
+  /** 静态模式不发 `/api/plugins`（设置页只读）。 */
+  override async plugins(): Promise<PluginView[]> {
+    return [];
+  }
+
+  override async setPlugin(): Promise<PluginView> {
+    throw readOnlyError();
   }
 
   // ── 写接口：客户端层拒绝，绝不发网络请求 ────────────────────────────────────

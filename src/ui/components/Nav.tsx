@@ -11,6 +11,7 @@ import {
   PenSquareIcon,
   SearchIcon,
   ServerIcon,
+  SettingsIcon,
   SunIcon,
   UserRoundIcon,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import { navigate, navigateTab, useRoute } from "@/lib/router";
 import { useTheme } from "@/lib/theme";
 import { displayCount } from "@/lib/format";
 import { toastReadOnly } from "@/lib/readonly";
+import { useSettingsSheet } from "@/components/SettingsSheet";
 
 interface NavItem {
   key: "home" | "search" | "notifications" | "compose";
@@ -60,6 +62,7 @@ export function DesktopNav() {
   const { account, accounts, logout, switchBackend, staticMode } = useConnection();
   const { unread } = useNotifications();
   const { dark, toggle } = useTheme();
+  const settings = useSettingsSheet();
 
   return (
     <aside className="hidden h-full w-[240px] shrink-0 flex-col gap-2 border-r border-border/50 px-3 py-4 lg:flex xl:w-[260px]">
@@ -132,6 +135,9 @@ export function DesktopNav() {
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => navigate("/bookmarks")}>
                 <BookmarkIcon className="size-4" /> 收藏
+              </DropdownMenuItem>
+              <DropdownMenuItem data-testid="nav-settings" onClick={settings.open}>
+                <SettingsIcon className="size-4" /> 设置
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={toggle}>

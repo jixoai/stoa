@@ -5,6 +5,7 @@
  * 页面层只通过 `provider.tsx` 暴露的 hooks 消费。
  */
 import type { NotificationEventLine, Role } from "@core/types";
+import type { PreviewLink } from "@core/plugins/types";
 
 /**
  * 数据帧：服务端 `event: hub` 的载荷。`post_deleted` 是**读时投影**
@@ -15,7 +16,7 @@ export interface HubEventLine extends NotificationEventLine {
   post_deleted?: boolean;
 }
 
-/** 控制帧（无 `id:`）：hello / caught_up / heartbeat / cursor / reset / bye。 */
+/** 控制帧（无 `id:`）：hello / caught_up / heartbeat / cursor / reset / bye / plugin.updated。 */
 export interface HubHelloFrame {
   hub?: number;
   account: string;
@@ -52,6 +53,13 @@ export interface HubResetFrame {
 
 export interface HubByeFrame {
   reason: "recycle" | "shutdown" | "auth";
+}
+
+/** 插件开关控制帧（PATCH /api/plugins 后广播；无 DB 事件）。 */
+export interface HubPluginUpdatedFrame {
+  plugin_id: string;
+  enabled: boolean;
+  version?: string;
 }
 
 /**
@@ -102,9 +110,11 @@ export interface HubView {
 /** 主题（design §4.4 + `stream.heartbeat` 对账通道）。 */
 export type HubTopic =
   | "post.created"
+  | "post.updated"
   | "post.deleted"
   | "thread.invited"
   | "notification.created"
+  | "plugin.updated"
   | "cursor.acked"
   | "stream.reset"
   | "stream.reconnected"
@@ -115,6 +125,7 @@ export type HubTopic =
 /** 派发给订阅者的事件（按 topic 判别，便于 switch 收窄）。 */
 export type HubDispatch =
   | { topic: "post.created"; event: HubEventLine & { type: "post.created" } }
+  | { topic: "post.updated"; event: HubEventLine & { type: "post.updated" } }
   | { topic: "post.deleted"; event: HubEventLine & { type: "post.deleted" } }
   | { topic: "thread.invited"; event: HubEventLine & { type: "thread.invited" } }
   | { topic: "*"; event: HubEventLine }
@@ -122,6 +133,7 @@ export type HubDispatch =
       topic: "notification.created";
       event: HubEventLine & { type: "post.created" | "thread.invited" };
     }
+  | { topic: "plugin.updated"; pluginId: string; enabled: boolean; version: string | null }
   | { topic: "cursor.acked"; cursor: number; unreadCount: number }
   | {
       topic: "stream.reset";
@@ -137,12 +149,20 @@ export type HubListener = (dispatch: HubDispatch) => void;
 /** 数据帧 topic 集合（不含派生/控制主题）。 */
 export const HUB_DATA_TOPICS: readonly HubTopic[] = [
   "post.created",
+  "post.updated",
   "post.deleted",
   "thread.invited",
 ];
 
-export function isDataTopic(topic: HubTopic): topic is "post.created" | "post.deleted" | "thread.invited" {
-  return topic === "post.created" || topic === "post.deleted" || topic === "thread.invited";
+export function isDataTopic(
+  topic: HubTopic,
+): topic is "post.created" | "post.updated" | "post.deleted" | "thread.invited" {
+  return (
+    topic === "post.created" ||
+    topic === "post.updated" ||
+    topic === "post.deleted" ||
+    topic === "thread.invited"
+  );
 }
 
 /** 数据帧的 `payload` 只带引用字段（design §2.2）。 */
@@ -155,6 +175,10 @@ export interface HubEventPayload {
   post_id?: string | null;
   snapshot_seq?: number;
   account_id?: string;
+  /** post.updated：阶段/状态与最新 previews（≤3，不带正文）。 */
+  phase?: string;
+  status?: string;
+  previews?: PreviewLink[];
 }
 
 export function eventPayload(event: HubEventLine): HubEventPayload {

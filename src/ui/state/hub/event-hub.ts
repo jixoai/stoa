@@ -25,6 +25,7 @@ import type {
   HubHeartbeatFrame,
   HubHelloFrame,
   HubListener,
+  HubPluginUpdatedFrame,
   HubResetFrame,
   HubState,
   HubStatus,
@@ -351,6 +352,7 @@ export class EventHub {
     source.addEventListener("cursor", (raw) => this.onCursor(source, raw.data));
     source.addEventListener("reset", (raw) => this.onReset(source, raw.data));
     source.addEventListener("bye", (raw) => this.onBye(source, raw.data));
+    source.addEventListener("plugin.updated", (raw) => this.onPluginUpdated(source, raw.data));
     source.addEventListener("hub", (raw) => this.onData(source, raw.data));
     source.onerror = () => this.onSourceFailure(source);
   }
@@ -460,6 +462,20 @@ export class EventHub {
     this.forceReconnect();
   }
 
+  /** 插件开关控制帧（无 id/seq）：不推进水位，只更新订阅者。 */
+  private onPluginUpdated(source: EventSourceLike, raw: string): void {
+    if (source !== this.source) return;
+    const frame = safeParse<HubPluginUpdatedFrame>(raw);
+    this.resetWatchdog();
+    if (!frame || typeof frame.plugin_id !== "string" || typeof frame.enabled !== "boolean") return;
+    this.emit({
+      topic: "plugin.updated",
+      pluginId: frame.plugin_id,
+      enabled: frame.enabled,
+      version: typeof frame.version === "string" ? frame.version : null,
+    });
+  }
+
   private onData(source: EventSourceLike, raw: string): void {
     if (source !== this.source) return;
     const event = safeParse<HubEventLine>(raw);
@@ -471,6 +487,8 @@ export class EventHub {
     this.resumeSeq = event.seq;
     if (event.type === "post.created") {
       this.emit({ topic: "post.created", event: event as HubEventLine & { type: "post.created" } });
+    } else if (event.type === "post.updated") {
+      this.emit({ topic: "post.updated", event: event as HubEventLine & { type: "post.updated" } });
     } else if (event.type === "post.deleted") {
       this.emit({ topic: "post.deleted", event: event as HubEventLine & { type: "post.deleted" } });
     } else if (event.type === "thread.invited") {
