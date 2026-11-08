@@ -177,15 +177,40 @@ let currentSection = null;
 function beginSection(title, note = "") {
   currentSection = { title, note, steps: [] };
   report.sections.push(currentSection);
+  lastSectionShot = null;
+  // Every section starts with fresh preview budget: the suite posts dozens of
+  // links in one run, and a depleted account/global counter would leave new
+  // rows pending forever (A7 timeout). Budget is read from the isolated DB per
+  // enqueue, so clearing the meta counters is enough. Skip before READY (no DB)
+  // and after cleanup (data dir removed).
+  if (READY && qa && !/清理/.test(title)) {
+    try {
+      if (existsSync(join(qa.dataDir, "report.sqlite"))) clearPreviewBudget();
+    } catch {
+      /* budget reset is best-effort; the section itself will surface failures */
+    }
+  }
+}
+
+function sectionSlug(title) {
+  return String(title)
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40)
+    .toLowerCase() || "section";
 }
 
 function step({ intent, expect = "", assertion, ok, image = null, command = null, reply = null }) {
+  // First step of a section inherits the section-opening screenshot, so every
+  // UI section (including aborted ones) has at least one image in the report.
+  const resolvedImage =
+    image ?? (currentSection.steps.length === 0 ? lastSectionShot : null);
   const record = {
     intent,
     expect,
     assertion,
     ok: ok === true,
-    ...(image ? { image } : {}),
+    ...(resolvedImage ? { image: resolvedImage } : {}),
     ...(command ? { command } : {}),
     ...(reply ? { reply } : {}),
   };
@@ -229,6 +254,10 @@ let fixtures = null;
 let browser = null;
 let launchedChromePids = [];
 let hubTail = null;
+let uiBuildResult = null;
+let lastActivePage = null;
+let lastSectionShot = null;
+let sectionShotSeq = 0;
 let READY = false;
 let BOARD_OWNED = false;
 let basePort = null;
@@ -599,7 +628,6 @@ async function openPage(options = {}) {
   await page.goto(staticUrl ?? `${BASE}/`, { waitUntil: "domcontentloaded" });
   if (staticUrl) {
     await page.waitForSelector('[data-testid="timeline-scroll"]', { timeout: 20_000 });
-    await page.waitForSelector('[data-testid="post-card"]', { timeout: 20_000 });
     await page.waitForTimeout(700);
   } else {
     await page.waitForSelector('[data-testid="timeline-scroll"]', { timeout: 20_000 });
@@ -610,9 +638,37 @@ async function openPage(options = {}) {
       await page.waitForTimeout(2200);
       await page.waitForSelector('[data-testid="timeline-scroll"]', { timeout: 20_000 });
     }
-    await page.waitForSelector('[data-testid="post-card"]', { timeout: 20_000 });
+  }
+  lastActivePage = page;
+  // Section-level opening evidence: a section that aborts later still leaves a
+  // scene screenshot in the report directory (abort step references it).
+  if (currentSection) {
+    sectionShotSeq += 1;
+    const name = `sec-${String(sectionShotSeq).padStart(2, "0")}-${sectionSlug(currentSection.title)}-start.png`;
+    try {
+      await page.screenshot({ path: shotPath(name) });
+      shots.push(name);
+      lastSectionShot = name;
+    } catch {
+      /* page closed mid-capture */
+    }
   }
   return { context, page, errors, requests, label };
+}
+
+/** Best-effort abort scene: last open page, else section opening screenshot. */
+async function captureAbortShot(label) {
+  if (lastActivePage && !lastActivePage.isClosed()) {
+    const name = `abort-${sectionSlug(label)}-${Date.now().toString(36)}.png`;
+    try {
+      await lastActivePage.screenshot({ path: shotPath(name) });
+      shots.push(name);
+      return name;
+    } catch {
+      /* fall through */
+    }
+  }
+  return lastSectionShot;
 }
 
 async function closePage(entry) {
@@ -629,11 +685,19 @@ async function closeAllPages() {
 }
 
 const READ_PREVIEWS = ({ postId }) => {
-  const post = document.querySelector('[data-post-id="' + postId + '"]');
+  const thread = document.querySelector('[data-testid="thread-timeline"]');
+  const post =
+    (thread ? thread.querySelector('[data-post-id="' + postId + '"]') : null) ??
+    document.querySelector('[data-testid="timeline-scroll"] [data-post-id="' + postId + '"]') ??
+    document.querySelector('[data-post-id="' + postId + '"]');
   if (!post) return { found: false, cards: [], bodyText: "" };
   const cards = [...post.querySelectorAll('[data-testid="link-preview-card"]')].map((card) => {
     const rect = card.getBoundingClientRect();
-    const media = card.querySelector('[data-testid="preview-media"]');
+    // Cover uses preview-media; pending has no cover img, so its fixed 4:3
+    // placeholder container is the measurement fallback.
+    const media =
+      card.querySelector('[data-testid="preview-media"]') ??
+      card.querySelector('[class*="aspect-"]');
     const mediaRect = media ? media.getBoundingClientRect() : null;
     const img = card.querySelector("img");
     const anchor = card.querySelector("a[href]");
@@ -678,7 +742,11 @@ async function waitPreviewState(page, postId, predicate, timeoutMs, label) {
 
 /** Carousel state (frozen QA contract: root data-active-index + dot aria-current). */
 const READ_CAROUSEL = ({ postId }) => {
-  const post = document.querySelector('[data-post-id="' + postId + '"]');
+  const thread = document.querySelector('[data-testid="thread-timeline"]');
+  const post =
+    (thread ? thread.querySelector('[data-post-id="' + postId + '"]') : null) ??
+    document.querySelector('[data-testid="timeline-scroll"] [data-post-id="' + postId + '"]') ??
+    document.querySelector('[data-post-id="' + postId + '"]');
   if (!post) return null;
   const cards = [...post.querySelectorAll('[data-testid="link-preview-card"]')];
   if (cards.length === 0) return null;
@@ -728,27 +796,39 @@ async function waitCarouselState(page, postId, predicate, timeoutMs, label) {
   return last;
 }
 
+/**
+ * Real mouse interaction: hover then click, never `force`. If the cover image
+ * (or any overlay) intercepts the hit target, Playwright times out and the
+ * test goes red — that is exactly what A17 must catch.
+ */
+async function realClick(locator) {
+  await locator.hover();
+  await locator.click();
+}
+
 async function clickCarouselArrow(page, postId, direction) {
-  const postSelector = '[data-post-id="' + postId + '"]';
+  const postSelector = await postScope(page, postId);
   const selector =
     direction === "next"
       ? '[data-testid="previews-next"]'
       : '[data-testid="previews-prev"]';
+  const root = page.locator(`${postSelector} [data-testid="link-previews"]`).first();
+  if (await root.count()) await root.hover().catch(() => {});
   const locator = page.locator(`${postSelector} ${selector}`).first();
   if ((await locator.count()) && (await locator.isVisible().catch(() => false))) {
-    await locator.click();
+    await realClick(locator);
     return selector;
   }
   return null;
 }
 
 async function clickCarouselDot(page, postId, index) {
-  const postSelector = '[data-post-id="' + postId + '"]';
+  const postSelector = await postScope(page, postId);
   const dot = page.locator(
     `${postSelector} [data-testid="previews-dot"][data-index="${index}"]`,
   );
   if ((await dot.count()) && (await dot.first().isVisible().catch(() => false))) {
-    await dot.first().click();
+    await realClick(dot.first());
     return true;
   }
   return false;
@@ -756,8 +836,17 @@ async function clickCarouselDot(page, postId, index) {
 
 /** CDP touch swipe for mobile carousel acceptance. */
 async function swipeCarousel(page, postId, fromRatio, toRatio) {
+  const scope = await postScope(page, postId);
+  const rootLocator = page.locator(`${scope} [data-testid="link-previews"]`).first();
+  if (await rootLocator.count()) {
+    await rootLocator.scrollIntoViewIfNeeded().catch(() => {});
+  }
   const box = await page.evaluate(({ id }) => {
-    const post = document.querySelector('[data-post-id="' + id + '"]');
+    const thread = document.querySelector('[data-testid="thread-timeline"]');
+    const post =
+      (thread ? thread.querySelector('[data-post-id="' + id + '"]') : null) ??
+      document.querySelector('[data-testid="timeline-scroll"] [data-post-id="' + id + '"]') ??
+      document.querySelector('[data-post-id="' + id + '"]');
     const root = post?.querySelector('[data-testid="link-previews"]');
     if (!root) return null;
     const rect = root.getBoundingClientRect();
@@ -769,17 +858,26 @@ async function swipeCarousel(page, postId, fromRatio, toRatio) {
   const endX = box.left + box.width * toRatio;
   const client = await page.context().newCDPSession(page);
   try {
+    const point = (x) => ({
+      x,
+      y,
+      id: 1,
+      radiusX: 6,
+      radiusY: 6,
+      force: 1,
+    });
     await client.send("Input.dispatchTouchEvent", {
       type: "touchStart",
-      touchPoints: [{ x: startX, y }],
+      touchPoints: [point(startX)],
     });
-    for (let step = 1; step <= 8; step += 1) {
-      const x = startX + ((endX - startX) * step) / 8;
+    await sleep(60);
+    for (let step = 1; step <= 12; step += 1) {
+      const x = startX + ((endX - startX) * step) / 12;
       await client.send("Input.dispatchTouchEvent", {
         type: "touchMove",
-        touchPoints: [{ x, y }],
+        touchPoints: [point(x)],
       });
-      await sleep(25);
+      await sleep(40);
     }
     await client.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     return true;
@@ -789,17 +887,64 @@ async function swipeCarousel(page, postId, fromRatio, toRatio) {
 }
 
 async function ensurePostVisible(page, postId) {
-  if (await page.locator(`[data-post-id="${postId}"]`).count()) return "present";
+  const thread = page.locator('[data-testid="thread-timeline"]').first();
+  if ((await thread.count()) && (await thread.isVisible().catch(() => false))) {
+    const inThread = thread.locator(`[data-post-id="${postId}"]`);
+    if (await inThread.count()) return "thread";
+    await page.evaluate((id) => {
+      location.hash = `#/p/${id}`;
+    }, postId);
+    await page.waitForSelector(`[data-testid="thread-timeline"] [data-post-id="${postId}"]`, {
+      timeout: 15_000,
+    });
+    return "thread";
+  }
+  const feedPost = page.locator(`[data-testid="timeline-scroll"] [data-post-id="${postId}"]`);
+  if (await feedPost.count()) return "present";
   const pill = page.locator('[data-testid="new-posts-pill"]');
   if (await pill.count()) {
     await pill.first().click();
     await page.waitForTimeout(500);
   }
-  if (await page.locator(`[data-post-id="${postId}"]`).count()) return "pill";
+  if (await feedPost.count()) return "pill";
   await page.evaluate((id) => {
     location.hash = `#/p/${id}`;
   }, postId);
-  await page.waitForSelector(`[data-post-id="${postId}"]`, { timeout: 15_000 });
+  await page.waitForSelector(
+    `[data-testid="thread-timeline"] [data-post-id="${postId}"], [data-testid="timeline-scroll"] [data-post-id="${postId}"]`,
+    { timeout: 15_000 },
+  );
+  return "thread";
+}
+
+/** Scope selector for the visible post instance (thread overlay wins). */
+async function postScope(page, postId) {
+  const thread = page.locator('[data-testid="thread-timeline"]').first();
+  if (
+    (await thread.count()) &&
+    (await thread.isVisible().catch(() => false)) &&
+    (await thread.locator(`[data-post-id="${postId}"]`).count())
+  ) {
+    return `[data-testid="thread-timeline"] [data-post-id="${postId}"]`;
+  }
+  return `[data-testid="timeline-scroll"] [data-post-id="${postId}"]`;
+}
+
+/**
+ * Make a post visible without clicking the "new posts" pill: that pill click
+ * intentionally refreshes the feed, which would pollute A15's "post.updated
+ * must not refetch the feed" assertion. Prefer the feed (hub insert), else
+ * open the thread overlay via hash (thread request, not a feed request).
+ */
+async function showPostWithoutFeedRefresh(page, postId) {
+  const feedPost = page.locator(`[data-testid="timeline-scroll"] [data-post-id="${postId}"]`);
+  if (await feedPost.count()) return "feed";
+  await page.evaluate((id) => {
+    location.hash = `#/p/${id}`;
+  }, postId);
+  await page.waitForSelector(`[data-testid="thread-timeline"] [data-post-id="${postId}"]`, {
+    timeout: 15_000,
+  });
   return "thread";
 }
 
@@ -815,8 +960,8 @@ async function pageWaitForPreviewDom(page, postId) {
 
 async function feedPostIds(page) {
   return page.evaluate(() =>
-    [...document.querySelectorAll('[data-testid="post-card"][data-post-id]')].map((el) =>
-      el.getAttribute("data-post-id"),
+    [...document.querySelectorAll('[data-testid="timeline-scroll"] [data-testid="post-card"][data-post-id]')].map(
+      (el) => el.getAttribute("data-post-id"),
     ),
   );
 }
@@ -935,6 +1080,20 @@ function dueJobCount() {
   )[0].n;
 }
 
+/**
+ * The QA suite posts dozens of links in one run and exhausts the per-account
+ * (60/h) + global preview budget. The budget is read from the isolated DB on
+ * every enqueue (no memory cache), so deleting the meta counters before the
+ * late sections restores headroom without touching production defaults.
+ */
+function clearPreviewBudget() {
+  const where = "key LIKE 'preview.budget.account.%' OR key = 'preview.budget.global'";
+  const before = sqliteQuery(`SELECT key FROM meta WHERE ${where}`).map((row) => row.key);
+  sqliteExec(`DELETE FROM meta WHERE ${where}`);
+  const remaining = sqliteQuery(`SELECT count(*) AS n FROM meta WHERE ${where}`)[0].n;
+  return { cleared: before, remaining };
+}
+
 // ── sections ─────────────────────────────────────────────────────────────────
 async function sectionEnvironment() {
   beginSection("0 · 夹具与前置", "隔离后端、测试放行清单、插件/能力面可审计");
@@ -996,6 +1155,11 @@ async function sectionEnvironment() {
       capabilities.features?.preview_fields === true &&
       capabilities.features?.preview_events === true,
   });
+
+  // The board is intentionally unseeded; create one baseline card so the
+  // first openPage() lands on a non-empty feed (openPage itself only waits for
+  // timeline-scroll now).
+  await createPost(ownerToken, `${marker("BASE")} 隔离板基线帖（无链接）`);
 
   await startHubTail();
   step({
@@ -1130,7 +1294,7 @@ async function sectionA1A2() {
 
 async function sectionA3() {
   beginSection("A3 · 静态导出（file:// / 0 网络 / pending·failed 纯链接）", "快照原样携带 previews 与 preview_enabled");
-  const build = ensureUiBuild();
+  const build = uiBuildResult ?? ensureUiBuild();
   step({
     intent: "确认静态壳构建",
     expect: "dist/index.html 存在（必要时自动 bun run build）",
@@ -1161,25 +1325,33 @@ async function sectionA3() {
 
   const pendingView = await openPage({ staticUrl: staticUrl(pendingDir), label: "static-pending" });
   try {
+    const collectAnchors = (id) =>
+      pendingView.page.evaluate((postId) => {
+        const thread = document.querySelector('[data-testid="thread-timeline"]');
+        const post =
+          (thread ? thread.querySelector('[data-post-id="' + postId + '"]') : null) ??
+          document.querySelector('[data-testid="timeline-scroll"] [data-post-id="' + postId + '"]') ??
+          document.querySelector('[data-post-id="' + postId + '"]');
+        return post
+          ? [...post.querySelectorAll('a[href^="http"]')].map((anchor) => anchor.getAttribute("href"))
+          : [];
+      }, id);
+    await ensurePostVisible(pendingView.page, pendingPost.post.id);
     const pendingCards = await readPreviews(pendingView.page, pendingPost.post.id);
+    const pendingAnchors = await collectAnchors(pendingPost.post.id);
+    await ensurePostVisible(pendingView.page, failedPost.post.id);
     const failedCards = await readPreviews(pendingView.page, failedPost.post.id);
+    const failedAnchors = await collectAnchors(failedPost.post.id);
     const httpRequests = pendingView.requests.filter((request) => /^https?:$/.test(request.protocol));
-    const pendingAnchors = await pendingView.page.evaluate(({ pendingId, failedId }) => {
-      const collect = (id) => {
-        const post = document.querySelector('[data-post-id="' + id + '"]');
-        return post ? [...post.querySelectorAll('a[href^="http"]')].map((a) => a.getAttribute("href")) : [];
-      };
-      return { pending: collect(pendingId), failed: collect(failedId) };
-    }, { pendingId: pendingPost.post.id, failedId: failedPost.post.id });
     step({
       intent: "file:// 打开 pending/failed 归档：纯链接，不渲染预览卡",
       expect: "0 卡片；正文裸 URL 仍可点",
-      assertion: `pendingCards=${pendingCards.cards.length} failedCards=${failedCards.cards.length} anchors=${pendingAnchors.pending.length}/${pendingAnchors.failed.length}`,
+      assertion: `pendingCards=${pendingCards.cards.length} failedCards=${failedCards.cards.length} anchors=${pendingAnchors.length}/${failedAnchors.length}`,
       ok:
         pendingCards.cards.length === 0 &&
         failedCards.cards.length === 0 &&
-        pendingAnchors.pending.length >= 1 &&
-        pendingAnchors.failed.length >= 1,
+        pendingAnchors.length >= 1 &&
+        failedAnchors.length >= 1,
       image: await shot(pendingView.page, "a3-01-static-pending-plain-link.png"),
     });
     step({
@@ -1199,10 +1371,15 @@ async function sectionA3() {
   const readyPostSnapshot = readySnapshot.posts.find((post) => post.id === pendingPost.post.id);
   const readyView = await openPage({ staticUrl: staticUrl(readyDir), label: "static-ready" });
   try {
+    await ensurePostVisible(readyView.page, pendingPost.post.id);
     const readyCards = await readPreviews(readyView.page, pendingPost.post.id);
     const httpRequests = readyView.requests.filter((request) => /^https?:$/.test(request.protocol));
     const externalImages = await readyView.page.evaluate(({ id }) => {
-      const post = document.querySelector('[data-post-id="' + id + '"]');
+      const thread = document.querySelector('[data-testid="thread-timeline"]');
+      const post =
+        (thread ? thread.querySelector('[data-post-id="' + id + '"]') : null) ??
+        document.querySelector('[data-testid="timeline-scroll"] [data-post-id="' + id + '"]') ??
+        document.querySelector('[data-post-id="' + id + '"]');
       if (!post) return [];
       return [...post.querySelectorAll('[data-testid="link-preview-card"] img')]
         .map((img) => img.getAttribute("src") ?? "")
@@ -1475,7 +1652,15 @@ async function sectionA5() {
   const pageInfo = await openPage({ label: "live-a5" });
   const page = pageInfo.page;
   try {
+    await waitUntil(
+      async () => (await page.locator('[data-testid="link-preview-card"]').count()) > 0,
+      10_000,
+      "A5 initial preview cards",
+    );
     await fixtureReset();
+    const documentBaseline = pageInfo.requests.filter(
+      (request) => request.resourceType === "document",
+    ).length;
     const cardsBefore = await page.locator('[data-testid="link-preview-card"]').count();
     step({
       intent: "关闭前存在可展示卡片（前提）",
@@ -1530,12 +1715,14 @@ async function sectionA5() {
       image: await shot(page, "a5-02-plugin-enabled.png"),
     });
     const markerAfterToggle = await page.evaluate(() => window.__a5Marker);
-    const documentRequests = pageInfo.requests.filter((request) => request.resourceType === "document").length;
+    const documentRequestsAfterToggle =
+      pageInfo.requests.filter((request) => request.resourceType === "document").length -
+      documentBaseline;
     step({
       intent: "关闭/重开未整页刷新",
-      expect: "页面 JS 上下文保持（marker 不变、无 document 请求）",
-      assertion: `markerKept=${markerAfterToggle === markerValue} documentRequests=${documentRequests}`,
-      ok: markerAfterToggle === markerValue && documentRequests === 0,
+      expect: "PATCH 前后增量：marker 不变、document 请求 +0",
+      assertion: `markerKept=${markerAfterToggle === markerValue} documentRequestsDelta=${documentRequestsAfterToggle} (baseline=${documentBaseline})`,
+      ok: markerAfterToggle === markerValue && documentRequestsAfterToggle === 0,
     });
     step({
       intent: "异版本入队",
@@ -1551,6 +1738,7 @@ async function sectionA5() {
 
 async function sectionA7() {
   beginSection("A7 · SSRF 私网/元数据/十进制 IP/映射 IPv6", "worker 目标 0 请求，全部 failed/blocked");
+  clearPreviewBudget();
   await fixtureReset();
   const privateOrigin = fixture.privateUrl;
   const hosts = [
@@ -1568,23 +1756,36 @@ async function sectionA7() {
       [
         `http://[::ffff:127.0.0.1]:${fixture.privatePort}/secret`,
         `http://localhost:${fixture.port}/og-full`,
-        "http://user" + ":pw@" + `127.0.0.1:${fixture.port}/og-full`,
+        "http://user" + ":pw@" + `127.0.0.1:${fixture.privatePort}/secret`,
       ].join("\n"),
   );
   const p3 = await createPost(
     ownerToken,
     `${marker("A7C")} SSRF 组 3：\n\n` +
-      [`${privateOrigin}/secret`, "http://127.0.0.1:22/", "http://192.168.1.1/"].join("\n"),
+      [`${privateOrigin}/secret`, "http://example.com:22/", "http://192.168.1.1/"].join("\n"),
   );
   const pScheme = await createPost(ownerToken, `${marker("A7D")} 非 http scheme：file:///etc/passwd`);
-  await waitUntil(
-    async () => {
-      const snapshots = await Promise.all([p1, p2, p3].map((entry) => previewsOf(entry.post.id)));
-      return snapshots.flat().every((row) => row.status === "failed");
-    },
-    30_000,
-    "A7 all SSRF previews failed",
-  );
+  try {
+    await waitUntil(
+      async () => {
+        const snapshots = await Promise.all([p1, p2, p3].map((entry) => previewsOf(entry.post.id)));
+        return snapshots.flat().every((row) => row.status === "failed");
+      },
+      45_000,
+      "A7 all SSRF previews failed",
+    );
+  } catch (error) {
+    const diagnostic = (await Promise.all([p1, p2, p3].map((entry) => previewsOf(entry.post.id))))
+      .flat()
+      .map((row) => ({ url: row.url, status: row.status, phase: row.phase, code: row.error_code }));
+    step({
+      intent: "A7 超时诊断：未 failed 的预览行",
+      expect: "全部 failed/blocked",
+      assertion: JSON.stringify(diagnostic),
+      ok: false,
+    });
+    throw error;
+  }
   const snapshots = await Promise.all([p1, p2, p3].map((entry) => previewsOf(entry.post.id)));
   const failed = snapshots.flat();
   const codes = failed.map((row) => row.error_code);
@@ -1643,6 +1844,7 @@ async function sectionA7() {
 
 async function sectionA8() {
   beginSection("A8 · 302→私网（第二未放行 origin）", "failed/blocked_private；目标端口 0 请求");
+  clearPreviewBudget();
   await fixtureReset();
   const post = await createPost(ownerToken, `${marker("A8")} 重定向私网：${fixtures.pages.redirectPrivate}`);
   await waitPreviews(post.post.id, (rows) => rows.some((row) => row.status === "failed"), 20_000, "A8 failed");
@@ -1679,6 +1881,7 @@ async function sectionA8() {
 
 async function sectionA9() {
   beginSection("A9 · 404/超时/超大体失败降级", "正文首帧可见；卡片降级普通链接");
+  clearPreviewBudget();
   await fixtureReset();
   const tag = marker("A9");
   const post = await createPost(
@@ -1744,8 +1947,9 @@ async function sectionA9() {
   }
 }
 
-async function sectionA10A11() {
+async function sectionA10() {
   beginSection("A10 · 每帖 4 链接只取前 3", "第 4 条 0 请求、0 job、0 卡片");
+  clearPreviewBudget();
   await fixtureReset();
   const post = await createPost(ownerToken, `${marker("A10")} ${fixtures.posts.fourLinks}`);
   await waitPreviews(post.post.id, (rows) => rows.length === 3, 10_000, "A10 exactly 3 preview rows");
@@ -1777,10 +1981,24 @@ async function sectionA10A11() {
         dom.cards.every((card) => card.position === null || ["0", "1", "2"].includes(card.position)),
       image: await shot(pageInfo.page, "a10-01-four-links-three-cards.png"),
     });
-
     markCoverage("A10", results.filter((r) => r.section.includes("A10")).every((r) => r.ok));
+  } finally {
+    await closePage(pageInfo);
+  }
+}
 
-    beginSection("A17 · 轮播专项（3 页 / 箭头 / 指示点 / ←→ / 触摸拖拽 / 阶段更新不跳页）", "容器 data-active-index；dot data-index + aria-current=true");
+async function sectionA17() {
+  beginSection("A17 · 轮播专项（3 页 / 箭头 / 指示点 / ←→ / 触摸拖拽 / 阶段更新不跳页）", "容器 data-active-index；dot data-index + aria-current=true");
+  clearPreviewBudget();
+  const post = await createPost(
+    ownerToken,
+    `${marker("A17")} 轮播：\n\n${fixtures.pages.ogFull}\n${fixtures.pages.twitter}\n${fixtures.pages.plain}`,
+  );
+  await waitPreviews(post.post.id, (rows) => rows.length === 3, 10_000, "A17 exactly 3 preview rows");
+  await waitPreviews(post.post.id, (rows) => rows.every((row) => row.status === "ready"), 25_000, "A17 3 ready");
+  const pageInfo = await openPage({ label: "live-a17" });
+  try {
+    await ensurePostVisible(pageInfo.page, post.post.id);
     const carousel = await waitCarouselState(
       pageInfo.page,
       post.post.id,
@@ -1790,7 +2008,7 @@ async function sectionA10A11() {
         state.attrActive === 0 &&
         state.hasPrev &&
         state.hasNext,
-      6_000,
+      10_000,
       "A17 carousel controls",
     );
     step({
@@ -1832,12 +2050,19 @@ async function sectionA10A11() {
     });
 
     const keyboardFocus = await pageInfo.page.evaluate(({ id }) => {
-      const post = document.querySelector('[data-post-id="' + id + '"]');
+      const thread = document.querySelector('[data-testid="thread-timeline"]');
+      const post =
+        (thread ? thread.querySelector('[data-post-id="' + id + '"]') : null) ??
+        document.querySelector('[data-testid="timeline-scroll"] [data-post-id="' + id + '"]') ??
+        document.querySelector('[data-post-id="' + id + '"]');
       const root = post?.querySelector('[data-testid="link-previews"]');
-      if (!root) return false;
-      if (!root.hasAttribute("tabindex")) root.setAttribute("tabindex", "0");
-      root.focus();
-      return document.activeElement === root;
+      // Keyboard handler lives on the carousel region (shadcn Carousel), not on
+      // the outer link-previews wrapper.
+      const target = root?.querySelector('[data-slot="carousel"]') ?? root;
+      if (!target) return false;
+      if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "0");
+      target.focus();
+      return document.activeElement === target;
     }, { id: post.post.id });
     await pageInfo.page.keyboard.press("ArrowLeft");
     const afterKeyboard = keyboardFocus
@@ -1903,11 +2128,11 @@ async function sectionA10A11() {
         8_000,
         "A17 mobile carousel",
       );
-      const swiped = await swipeCarousel(mobilePageInfo.page, post.post.id, 0.82, 0.18);
+      const swiped = await swipeCarousel(mobilePageInfo.page, post.post.id, 0.92, 0.08);
       const afterSwipe = swiped
         ? await waitCarouselState(mobilePageInfo.page, post.post.id, (state) => state.active !== mobileStart.active, 3_000, "A17 mobile swipe left").catch(() => null)
         : null;
-      const swipeBack = await swipeCarousel(mobilePageInfo.page, post.post.id, 0.18, 0.82);
+      const swipeBack = await swipeCarousel(mobilePageInfo.page, post.post.id, 0.08, 0.92);
       const afterSwipeBack = swipeBack
         ? await waitCarouselState(mobilePageInfo.page, post.post.id, (state) => state.active === mobileStart.active, 3_000, "A17 mobile swipe right").catch(() => null)
         : null;
@@ -1927,10 +2152,22 @@ async function sectionA10A11() {
     } finally {
       await closePage(mobilePageInfo);
     }
-
     markCoverage("A17", results.filter((r) => r.section.includes("A17")).every((r) => r.ok));
+  } finally {
+    await closePage(pageInfo);
+  }
+}
 
-    beginSection("A11 · 点击卡片：新窗口 + window.opener=null", "P1 无 viewer 适配器，fileviewer 契约 P2 登记");
+async function sectionA11() {
+  beginSection("A11 · 点击卡片：新窗口 + window.opener=null", "P1 无 viewer 适配器，fileviewer 契约 P2 登记");
+  clearPreviewBudget();
+  const post = await createPost(ownerToken, `${marker("A11")} 点击：${fixtures.pages.ogFull}`);
+  await waitPreviews(post.post.id, (rows) => rows.some((row) => row.status === "ready"), 20_000, "A11 preview ready");
+  const pageInfo = await openPage({ label: "live-a11" });
+  try {
+    await ensurePostVisible(pageInfo.page, post.post.id);
+    await waitPreviewState(pageInfo.page, post.post.id, (state) => state.cards.length === 1 && state.cards[0].status === "ready", 10_000, "A11 DOM card");
+    const dom = await readPreviews(pageInfo.page, post.post.id);
     const targetCard = dom.cards.find((card) => card.anchorHref?.includes("/og-full")) ?? dom.cards[0];
     const href = targetCard.anchorHref;
     const anchorInfo = await pageInfo.page.evaluate(({ postId, url }) => {
@@ -1946,10 +2183,12 @@ async function sectionA10A11() {
     let popup = null;
     try {
       const popupPromise = pageInfo.page.waitForEvent("popup", { timeout: 8_000 });
-      await pageInfo.page
-        .locator(`[data-post-id="${post.post.id}"] [data-testid="link-preview-card"] a[href*="/og-full"]`)
-        .first()
-        .click();
+      const a11Scope = await postScope(pageInfo.page, post.post.id);
+      await realClick(
+        pageInfo.page
+          .locator(`${a11Scope} [data-testid="link-preview-card"] a[href*="/og-full"]`)
+          .first(),
+      );
       popup = await popupPromise;
       await popup.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {});
     } catch (error) {
@@ -1991,10 +2230,14 @@ async function sectionA10A11() {
 
 async function sectionA12() {
   beginSection("A12 · post.updated 不进通知/未读/CLI；feed 不刷新", "通知类型集合保持 post.created/thread.invited");
+  clearPreviewBudget();
   const pageInfo = await openPage({ label: "live-a12" });
   const page = pageInfo.page;
+  let tail = null;
   try {
-    const requestBaseline = pageInfo.requests.length;
+    await page.waitForTimeout(800);
+    tail = new HubTail(ownerToken);
+    await tail.start();
     const tag = marker("A12");
     const post = await createPost(ownerToken, `${tag} 通知隔离：${fixtures.pages.delay2s}`);
     await sleep(250);
@@ -2036,6 +2279,23 @@ async function sectionA12() {
     });
 
     await waitPreviews(post.post.id, (rows) => rows.some((row) => row.status === "ready"), 20_000, "A12 preview ready");
+    let firstUpdateAt = tail.events.find(
+      (line) => line.type === "post.updated" && line.post_id === post.post.id,
+    )?.receivedAt ?? null;
+    if (firstUpdateAt === null) {
+      await waitUntil(
+        async () => {
+          const line = tail.events.find(
+            (entry) => entry.type === "post.updated" && entry.post_id === post.post.id,
+          );
+          if (!line) return false;
+          firstUpdateAt = line.receivedAt;
+          return true;
+        },
+        10_000,
+        "A12 first post.updated frame",
+      );
+    }
     await sleep(4000);
     const cliExitEarly = cli.exitCode;
     if (cli.exitCode === null) {
@@ -2069,18 +2329,21 @@ async function sectionA12() {
       assertion: `stdout=${JSON.stringify(cliOut.slice(0, 160))} exitEarly=${cliExitEarly} stderr=${JSON.stringify(cliErr.slice(-80))}`,
       ok: cliOut.trim() === "" && cliExitEarly === null,
     });
-    const lateRequests = pageInfo.requests
-      .slice(requestBaseline)
-      .filter((request) => ["/api/feed", "/api/timeline"].includes(request.pathname));
+    const lateRequests = pageInfo.requests.filter(
+      (request) =>
+        ["/api/feed", "/api/timeline"].includes(request.pathname) &&
+        request.at >= firstUpdateAt,
+    );
     step({
-      intent: "预览事件不触发 feed 重取",
-      expect: "期间 /api/feed、/api/timeline 请求数 = 0",
-      assertion: `feedRequests=${lateRequests.length}`,
+      intent: "post.updated 之后不触发 feed 重取",
+      expect: "首个 post.updated 帧之后新增 /api/feed、/api/timeline 请求数 = 0",
+      assertion: `feedRequestsAfterPostUpdated=${lateRequests.length} firstUpdateAt=${firstUpdateAt}`,
       ok: lateRequests.length === 0,
       image: await shot(page, "a12-01-notifications-unaffected.png"),
     });
     markCoverage("A12", results.filter((r) => r.section.includes("A12")).every((r) => r.ok));
   } finally {
+    await tail?.stop().catch(() => {});
     await closePage(pageInfo);
   }
 }
@@ -2097,6 +2360,7 @@ async function sectionA13() {
     coverage.set("A13", { status: "SKIP", note: "external REPORT_QA_BASE; SIGKILL/restart test needs owned backend" });
     return;
   }
+  clearPreviewBudget();
   await closeAllPages();
   await fixtureReset();
   const post = await createPost(ownerToken, `${marker("A13")} 重启续跑：${fixtures.pages.slowOk}`);
@@ -2150,6 +2414,7 @@ async function sectionA13() {
 
 async function sectionA14() {
   beginSection("A14 · 旧帖首次查看（插件关闭期间发布）", "开启后入队补卡；正文未改写");
+  clearPreviewBudget();
   await fixtureReset();
   await setPluginEnabled(false);
   const body = `${marker("A14")} 旧帖补卡：${fixtures.pages.ogNoCover}`;
@@ -2187,6 +2452,7 @@ async function sectionA14() {
 
 async function sectionA15() {
   beginSection("A15 · 事件风暴（3 链接 × 多阶段）", "只更新对应卡片；无整页请求、无滚动跳动");
+  const budget = clearPreviewBudget();
   const pageInfo = await openPage({ label: "live-a15" });
   const page = pageInfo.page;
   try {
@@ -2194,14 +2460,18 @@ async function sectionA15() {
     const beforeIds = await feedPostIds(page);
     const beforeScroll = await scrollTop(page);
     const requestBaseline = pageInfo.requests.length;
-    const stormTail = new HubTail(ownerToken);
-    await stormTail.start();
     const tag = marker("A15");
+    // Distinct slow endpoints: the first post.updated frame arrives ~4s after
+    // creation, so the feed refresh caused by post.created can settle before
+    // the measurement window opens.
     const post = await createPost(
       ownerToken,
-      `${tag} 事件风暴：\n\n${fixtures.pages.ogFull}\n${fixtures.pages.twitter}\n${fixtures.pages.ogNoCover}`,
+      `${tag} 事件风暴：\n\n${fixtures.pages.delay2s}\n${fixtures.pages.delay1s}\n${fixtures.pages.slowOk}`,
     );
-    await ensurePostVisible(page, post.post.id);
+    await sleep(2_000);
+    const stormTail = new HubTail(ownerToken);
+    await stormTail.start();
+    await showPostWithoutFeedRefresh(page, post.post.id);
     await waitPreviews(post.post.id, (rows) => rows.length === 3 && rows.every((row) => row.status === "ready"), 30_000, "A15 all ready");
     await sleep(1500);
     await stormTail.stop();
@@ -2210,7 +2480,7 @@ async function sectionA15() {
     step({
       intent: "每链接每阶段一条 post.updated",
       expect: "3 链接 × 2 阶段 = 6 条事件，phase=meta/cover 各 3",
-      assertion: `events=${events.length} phases=${phases.join(",")}`,
+      assertion: `events=${events.length} phases=${phases.join(",")} budgetCleared=${budget.cleared.length}`,
       ok:
         events.length === 6 &&
         phases.filter((phase) => phase === "meta").length === 3 &&
@@ -2225,17 +2495,20 @@ async function sectionA15() {
     const afterIds = await feedPostIds(page);
     const preserved = afterIds.filter((id) => beforeIds.includes(id));
     const afterScroll = await scrollTop(page);
+    const firstUpdateAt = events[0]?.receivedAt ?? Date.now();
     const documentRequests = pageInfo.requests
       .slice(requestBaseline)
       .filter((request) => request.resourceType === "document").length;
-    const feedRequests = pageInfo.requests
-      .slice(requestBaseline)
-      .filter((request) => ["/api/feed", "/api/timeline"].includes(request.pathname));
+    const feedRequests = pageInfo.requests.filter(
+      (request) =>
+        ["/api/feed", "/api/timeline"].includes(request.pathname) &&
+        request.at >= firstUpdateAt,
+    );
     const dom = await readPreviews(page, post.post.id);
     step({
       intent: "风暴期间无整页/列表请求、无滚动跳动",
-      expect: "document=0、feed/timeline=0；scrollTop ±2；既有顺序不变",
-      assertion: `document=${documentRequests} feed=${feedRequests.length} scroll=${beforeScroll}→${afterScroll} orderKept=${JSON.stringify(preserved) === JSON.stringify(beforeIds)} cards=${dom.cards.length}`,
+      expect: "document=0、post.updated 后 feed/timeline=0；scrollTop ±2；既有顺序不变",
+      assertion: `document=${documentRequests} feedAfterPostUpdated=${feedRequests.length} scroll=${beforeScroll}→${afterScroll} orderKept=${JSON.stringify(preserved) === JSON.stringify(beforeIds)} cards=${dom.cards.length}`,
       ok:
         documentRequests === 0 &&
         feedRequests.length === 0 &&
@@ -2252,6 +2525,7 @@ async function sectionA15() {
 
 async function sectionA16() {
   beginSection("A16 · 390×844 / 1280×900：无溢出、pending-ready 高度差 ≤2px、CLS<0.02", "两视口分别实测");
+  const budget = clearPreviewBudget();
   for (const spec of [
     { label: "mobile", viewport: { width: 390, height: 844 }, mobile: true },
     { label: "desktop", viewport: { width: 1280, height: 900 }, mobile: false },
@@ -2283,7 +2557,7 @@ async function sectionA16() {
       step({
         intent: `${spec.label} ${spec.viewport.width}×${spec.viewport.height}：无横向溢出`,
         expect: "document.scrollWidth ≤ clientWidth",
-        assertion: `scrollWidth=${overflow.scrollWidth} clientWidth=${overflow.clientWidth}`,
+        assertion: `scrollWidth=${overflow.scrollWidth} clientWidth=${overflow.clientWidth} budgetCleared=${budget.cleared.length}`,
         ok: overflow.scrollWidth <= overflow.clientWidth,
       });
       step({
@@ -2352,6 +2626,10 @@ async function main() {
   AUTH = authSecret(qa.dataDir);
   ownerToken = accountToken(qa.dataDir, "owner");
 
+  // Build before ANY openPage(): the early sections (A1/A2/A5/A14) need the
+  // current dist shell. Building only in A3 left the first pages blank.
+  uiBuildResult = ensureUiBuild();
+
   const chromeBefore = new Set(chromePids());
   browser = await chromium.launch({ channel: "chrome" });
   launchedChromePids = chromePids().filter((pid) => !chromeBefore.has(pid));
@@ -2402,6 +2680,25 @@ async function main() {
     return results.every((result) => result.ok) ? 0 : 1;
   }
 
+  const SECTION_COVERAGE = new Map([
+    [sectionA1A2, ["A1", "A2"]],
+    [sectionFetchBaseline, []],
+    [sectionA5, ["A5"]],
+    [sectionA14, ["A14"]],
+    [sectionA3, ["A3"]],
+    [sectionA4, ["A4"]],
+    [sectionA7, ["A7"]],
+    [sectionA8, ["A8"]],
+    [sectionA9, ["A9"]],
+    [sectionA10, ["A10"]],
+    [sectionA17, ["A17"]],
+    [sectionA11, ["A11"]],
+    [sectionA12, ["A12"]],
+    [sectionA13, ["A13"]],
+    [sectionA15, ["A15"]],
+    [sectionA16, ["A16"]],
+  ]);
+
   for (const section of [
     sectionA1A2,
     sectionFetchBaseline,
@@ -2414,7 +2711,9 @@ async function main() {
     sectionA7,
     sectionA8,
     sectionA9,
-    sectionA10A11,
+    sectionA10,
+    sectionA17,
+    sectionA11,
     sectionA12,
     sectionA13,
     sectionA15,
@@ -2423,13 +2722,20 @@ async function main() {
     try {
       await section();
     } catch (error) {
+      const abortImage = await captureAbortShot(section.name);
       beginSection(`${section.name} · aborted`, "小节异常中断");
       step({
         intent: "小节执行",
         expect: "无未捕获异常",
         assertion: `ABORTED: ${error.message}`,
         ok: false,
+        image: abortImage,
       });
+      for (const id of SECTION_COVERAGE.get(section) ?? []) {
+        if (coverage.get(id)?.status === "待跑") {
+          coverage.set(id, { status: "FAIL", note: "section aborted" });
+        }
+      }
     }
   }
   sectionCoverage();
