@@ -183,12 +183,6 @@ export interface PostView extends Post {
   read_at?: number | null;
 }
 
-/** `GET /api/reads` 的一行：该账号存在的逐帖已读记录（账号私有）。 */
-export interface ReadRow {
-  post_id: string;
-  read_at: number;
-}
-
 export interface ThreadNode extends PostView {
   depth: number;
   is_spine: boolean;

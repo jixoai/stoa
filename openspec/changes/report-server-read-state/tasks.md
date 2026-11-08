@@ -11,11 +11,12 @@
 
 ## P0. 前置确认
 
-- [ ] P0-1. 确认依赖就绪：`report-read-dwell` 在 `openspec/changes/archive/` 且
+- [x] P0-1. 确认依赖就绪：`report-read-dwell` 在 `openspec/changes/archive/` 且
   `ThreadPage.tsx` 无「进入即已读」；`report-thread-nesting` 已合入；`report-notification-stacks`
   已合入或明确排在本 change 之前。
   - 判据：上述路径/文件存在性检查通过；`git log --oneline -5` 记录基线 commit。
   - 证据：archive 目录清单 + `rg "markPostRead\\(postId\\)" src/ui` 无路由级残留 + 基线 hash。
+    说明：`report-notification-stacks` 尚未合入；服务端切片先行（不改 UI），前端接线在其合入后 rebase。
 
 - [ ] P0-2. 复现基线：全新浏览器上下文登录同一账号，服务端已读为空 ⇒ 角标 ≥ 既有未读；
   用 `localStorage` 手工注入 3 条已读后刷新，角标不变（证明服务端未知情）。
@@ -23,9 +24,9 @@
     「另一台设备/隐私窗口」场景 before 为未读。
   - 证据：`scripts/qa/read-state.mjs --before` 输出 + 截图。
 
-- [ ] P0-3. Owner 拍板 design §15 两项（旧 read-set 上传是否 P1；`read_at` 首读 vs 最近读）。
+- [x] P0-3. Owner 拍板 design §15 两项（旧 read-set 上传是否 P1；`read_at` 首读 vs 最近读）。
   - 判据：决策写回 design §0/§15 与 tasks 勾选项；未决则 P1-13/P2-1 按推荐值（P1 上传、首读）执行并标注。
-  - 证据：本文件与 design.md 的修订 diff。
+  - 证据：已按 design §15「已定决策」执行——旧本地 read-set 上传提为 P1（前端 P1-6）、`read_at` 用首读、`PostView.read` 待前端透传后改必填。
 
 ## P1. 服务端（schema + store + API）
 

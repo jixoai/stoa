@@ -480,10 +480,12 @@ report-event-hub ────┘                                                
 - 冲突热点（按概率）：`notifications.tsx` > `NotificationsPage.tsx` > `store.ts` >
   `static-api.ts` > `protocol.ts`。
 
-## 15. 待 Owner 拍板（≤2）
+## 15. 已定决策（Manager 2026-11-09，Owner 授权自主决策）
 
-1. **升级过渡**：旧本地 read-set 是否在首次登录一次性上传（P2-1 提为 P1）？
-   推荐**提为 P1**——否则升级当天服务端读行为空，当前设备也会先看到 30+ 未读（正是本次
-   反馈的现象），下一轮停留才逐步消掉。
-2. **`read_at` 语义**：保留**首次**已读时间（`DO NOTHING`，严格幂等），还是每次重读刷新为
-   最近一次（`DO UPDATE`，可支撑未来「最近阅读」排序）？推荐**首次**（本 change 无排序需求）。
+1. **升级过渡**：旧本地 read-set **提为 P1**——首次登录一次性批量上传（`POST /api/reads/batch`，
+   服务端 `DO NOTHING` 去重），避免升级当天「服务端为空 → 先在当前设备看到 30+ 未读」。
+   由前端 P1-6 实现；未上传前本地缓存仍作为 UI 兜底。
+2. **`read_at` 语义**：保留**首次**已读时间（`DO NOTHING`，严格幂等）；本 change 无「最近阅读」
+   排序需求；未来若需要，另加 `last_read_at` 列，不改本列含义。
+3. **`PostView.read` 类型**：服务端运行时恒返回；TS 暂为可选，待前端 P1-6 完成
+   `static-api.ts` 透传后改为必填（前端任务内完成）。

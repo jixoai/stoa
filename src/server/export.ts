@@ -65,6 +65,9 @@ export interface SnapshotQuoted extends Omit<QuotedView, "media"> {
 export interface SnapshotPost extends Omit<PostView, "media" | "quoted"> {
   media: SnapshotMedia[];
   quoted: SnapshotQuoted | null;
+  /** 导出时 viewer 的逐帖已读快照；静态壳只读展示，不写回任何服务端。 */
+  read?: boolean;
+  read_at?: number | null;
 }
 
 export interface SnapshotAccount {

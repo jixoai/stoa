@@ -114,7 +114,7 @@ function optionalInt(c: Context, name: string): number | null {
 
 /** `post_id` 校验（/api/reads 与 batch 共用）：非空字符串且 ≤128 字符。 */
 function readPostId(value: unknown, field = "post_id"): string {
-  if (typeof value !== "string" || value.length === 0) {
+  if (typeof value !== "string" || value.trim().length === 0) {
     fail("BAD_REQUEST", `${field} must be a non-empty string`);
   }
   if (value.length > READ_POST_ID_MAX_CHARS) {
@@ -908,6 +908,7 @@ export function createApp(deps: AppDeps): Hono {
     const raw = body.post_ids;
     if (!Array.isArray(raw)) fail("BAD_REQUEST", "post_ids must be an array");
     if (raw.length === 0) fail("BAD_REQUEST", "post_ids must not be empty");
+    if (raw.length > 1000) fail("BAD_REQUEST", "post_ids exceeds raw request limit");
     const ids = raw.map((id) => readPostId(id, "post_ids[]"));
     const unique = [...new Set(ids)];
     if (unique.length > READS_BATCH_LIMIT) {
@@ -928,6 +929,9 @@ export function createApp(deps: AppDeps): Hono {
     if (raw === undefined || raw.trim() === "") fail("BAD_REQUEST", "ids is required");
     const ids = raw.split(",").map((part) => part.trim());
     if (ids.some((id) => id === "")) fail("BAD_REQUEST", "ids must not contain empty segments");
+    if (ids.length > READS_QUERY_LIMIT) {
+      fail("BAD_REQUEST", `ids exceeds ${READS_QUERY_LIMIT} ids`);
+    }
     for (const id of ids) readPostId(id, "ids[]");
     const unique = [...new Set(ids)];
     if (unique.length > READS_QUERY_LIMIT) {

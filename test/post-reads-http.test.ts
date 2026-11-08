@@ -380,4 +380,26 @@ describe("reads API", () => {
       h.close();
     }
   });
+
+  test("blank ids and oversized raw arrays are rejected (defensive limits)", async () => {
+    const h = buildApp({ mode: "open" });
+    try {
+      const blank = await h.app.request("/api/reads", {
+        method: "POST",
+        headers: as("owner"),
+        body: JSON.stringify({ post_id: "   " }),
+      });
+      expect(blank.status).toBe(400);
+      const huge = await h.app.request("/api/reads/batch", {
+        method: "POST",
+        headers: as("owner"),
+        body: JSON.stringify({ post_ids: Array.from({ length: 1001 }, () => "x") }),
+      });
+      expect(huge.status).toBe(400);
+      const longIds = Array.from({ length: 201 }, (_, index) => `id-${index}`).join(",");
+      expect((await h.app.request(`/api/reads?ids=${longIds}`)).status).toBe(400);
+    } finally {
+      h.close();
+    }
+  });
 });

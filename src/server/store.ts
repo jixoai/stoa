@@ -2177,8 +2177,9 @@ export class Store {
 
   /**
    * Unread notifications for the account cursor: visible + not self + only
-   * `NOTIFICATION_TYPES` + live post. Shares the exact predicate with
-   * `unreadByTarget` and `eventLines` (same alias, same join).
+   * `NOTIFICATION_TYPES` + live post. Shares the cursor/visibility/type
+   * predicate with `eventLines`, and additionally excludes posts already in
+   * `post_reads` (server-side per-post read state).
    */
   private unreadClause(accountId: string, cursor: number): { where: string; params: Bindings } {
     const account = this.requireActiveAccount(accountId);
