@@ -7,6 +7,11 @@ export const PROTOCOL_VERSION = 1;
 export const PORT_MIN = 13680;
 export const PORT_MAX = 13699;
 
+/** 服务端按帖已读的输入上限（report-server-read-state design §4.5）。 */
+export const READS_BATCH_LIMIT = 100;
+export const READS_QUERY_LIMIT = 200;
+export const READ_POST_ID_MAX_CHARS = 128;
+
 export const CLI_COMMANDS = [
   "capabilities",
   "init",
@@ -65,7 +70,16 @@ export const API_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/drafts/:id/commit" },
   { method: "DELETE", path: "/api/drafts/:id" },
   { method: "GET", path: "/api/notifications" },
+  { method: "GET", path: "/api/notifications/history" },
   { method: "POST", path: "/api/notifications/ack" },
+  { method: "GET", path: "/api/bookmarks/ids" },
+  { method: "GET", path: "/api/bookmarks" },
+  { method: "PUT", path: "/api/bookmarks/:id" },
+  { method: "DELETE", path: "/api/bookmarks/:id" },
+  // 服务端按帖已读（report-server-read-state）
+  { method: "POST", path: "/api/reads" },
+  { method: "POST", path: "/api/reads/batch" },
+  { method: "GET", path: "/api/reads" },
   { method: "GET", path: "/api/cursor" },
   { method: "GET", path: "/api/status" },
   { method: "GET", path: "/api/plugins" },
@@ -100,6 +114,8 @@ export interface Capabilities {
     preview_fields: boolean;
     /** 预览多阶段更新推送（post.updated 事件） */
     preview_events: boolean;
+    /** 服务端按帖已读（`post_reads` + /api/reads 三端点；PostView.read/read_at） */
+    post_reads: boolean;
   };
   limits: {
     body_chars: number;
@@ -108,6 +124,10 @@ export interface Capabilities {
     batch_items: number;
     thread_depth: number;
     port_range: [number, number];
+    /** `POST /api/reads/batch` 单次最大 id 数（去重后） */
+    reads_batch: number;
+    /** `GET /api/reads?ids=` 单次最大 id 数 */
+    reads_query: number;
   };
 }
 
@@ -134,6 +154,7 @@ export function capabilities(): Capabilities {
       discover: true,
       preview_fields: true,
       preview_events: true,
+      post_reads: true,
     },
     limits: {
       body_chars: 200_000,
@@ -142,6 +163,8 @@ export function capabilities(): Capabilities {
       batch_items: 500,
       thread_depth: 6,
       port_range: [PORT_MIN, PORT_MAX],
+      reads_batch: READS_BATCH_LIMIT,
+      reads_query: READS_QUERY_LIMIT,
     },
   };
 }

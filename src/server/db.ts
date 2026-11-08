@@ -46,7 +46,7 @@ export function run(
   return { changes: Number(res.changes), lastInsertRowid: Number(res.lastInsertRowid) };
 }
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 function hasColumn(db: Database, table: string, column: string): boolean {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -191,6 +191,16 @@ export function migrate(db: Database): void {
       PRIMARY KEY (follower_id, followee_id)
     );
     CREATE INDEX IF NOT EXISTS idx_follows_followee ON follows(followee_id);
+
+    -- v6: 服务端按帖已读（report-server-read-state design §3.1）。
+    CREATE TABLE IF NOT EXISTS post_reads (
+      account_id TEXT NOT NULL,
+      post_id    TEXT NOT NULL,
+      read_at    INTEGER NOT NULL,
+      PRIMARY KEY (account_id, post_id)
+    );
+    -- 删帖/清理/统计按 post_id 反查（不参与读路径的覆盖判断）。
+    CREATE INDEX IF NOT EXISTS idx_post_reads_post ON post_reads(post_id);
 
     -- v5: 帖子持久化预览字段（report-link-preview design §3.1，schema 逐字）。
     CREATE TABLE IF NOT EXISTS post_previews (

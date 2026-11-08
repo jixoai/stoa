@@ -225,6 +225,8 @@ export class Store {
   private readonly listeners = new Set<() => void>();
   /** sqlite_master 探测缓存：只读导出的旧 v4 库没有预览表。 */
   private previewTableCache: boolean | null = null;
+  /** sqlite_master 探测缓存：只读导出的旧 v5 库没有 post_reads 表。 */
+  private readTableCache: boolean | null = null;
   /** 单次 commitOps 内预算限流计数（R4：按批次聚合日志）。 */
   private previewBudgetLimited: { account_budget: number; global_budget: number } = {
     account_budget: 0,
@@ -460,6 +462,7 @@ export class Store {
       );
       run(this.db, "DELETE FROM cursors WHERE account_id = ?", accountId);
       run(this.db, "DELETE FROM participants WHERE account_id = ?", accountId);
+      run(this.db, "DELETE FROM post_reads WHERE account_id = ?", accountId);
     });
     tx();
     this.notifyChange();
@@ -598,6 +601,145 @@ export class Store {
       now,
     );
     return this.getCursor(accountId);
+  }
+
+  // ── per-post reads（report-server-read-state）──────────────────────────────
+  /**
+   * 只读导出兼容：只读打开的旧 v5 库没有 `post_reads` 表（export 不跑
+   * migrate）。探测一次并缓存，缺失时读路径降级为 `read=false` / 纯游标。
+   */
+  readTablesAvailable(): boolean {
+    if (this.readTableCache !== null) return this.readTableCache;
+    const row = get<{ name: string }>(
+      this.db,
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'post_reads'",
+    );
+    this.readTableCache = row !== null;
+    return this.readTableCache;
+  }
+
+  /**
+   * 单帖幂等写已读：`read_at` 记首次时刻（`DO NOTHING`），重复写返回既有时间。
+   * 未知帖与对该账号不可见的帖统一 404（不泄露存在性）；软删帖允许写（对未读
+   * 与高亮无效果，见 design §2.2/§11）。
+   */
+  markPostRead(accountId: string, postId: string): { created: boolean; read_at: number } {
+    this.requireActiveAccount(accountId);
+    if (!this.readTablesAvailable()) {
+      fail("UNAVAILABLE", "post_reads table is missing (read-only legacy database)");
+    }
+    const post = get<{ id: string; root_id: string }>(
+      this.db,
+      "SELECT id, root_id FROM posts WHERE id = ?",
+      postId,
+    );
+    if (!post || !this.canViewRoot(accountId, post.root_id)) {
+      fail("NOT_FOUND", `post "${postId}" not found or not visible`);
+    }
+    const now = this.clock();
+    const inserted = run(
+      this.db,
+      `INSERT INTO post_reads(account_id, post_id, read_at) VALUES (?, ?, ?)
+       ON CONFLICT(account_id, post_id) DO NOTHING`,
+      accountId,
+      postId,
+      now,
+    );
+    const stored = get<{ read_at: number }>(
+      this.db,
+      "SELECT read_at FROM post_reads WHERE account_id = ? AND post_id = ?",
+      accountId,
+      postId,
+    );
+    if (!stored) fail("INTERNAL", "post_reads row did not persist");
+    return { created: inserted.changes > 0, read_at: stored.read_at };
+  }
+
+  /**
+   * 批量幂等写已读（单事务）。未知/不可见 id 静默跳过并回报在 `skipped`
+   * （离线队列可能含已删帖，不能因一条坏 id 卡死整队）；`read_at` 为本次
+   * 事务统一时刻（便于客户端对账）。`stored` 为可见 id 数（去重后），因此
+   * `stored + skipped.length === 去重后输入数`。
+   */
+  markPostReads(
+    accountId: string,
+    postIds: readonly string[],
+  ): { stored: number; skipped: string[]; read_at: number } {
+    const account = this.requireActiveAccount(accountId);
+    if (!this.readTablesAvailable()) {
+      fail("UNAVAILABLE", "post_reads table is missing (read-only legacy database)");
+    }
+    const unique = [...new Set(postIds)];
+    const now = this.clock();
+    const tx = this.db.transaction((): { stored: number; skipped: string[]; read_at: number } => {
+      const rootById = new Map<string, string>();
+      for (const group of chunks(unique)) {
+        const rows = all<{ id: string; root_id: string }>(
+          this.db,
+          `SELECT id, root_id FROM posts WHERE id IN (${placeholders(group.length)})`,
+          ...group,
+        );
+        for (const row of rows) rootById.set(row.id, row.root_id);
+      }
+
+      const allowed = new Set<string>();
+      if (isGlobalRole(account.role)) {
+        for (const id of rootById.keys()) allowed.add(id);
+      } else {
+        const roots = [...new Set(rootById.values())];
+        const visibleRoots = new Set<string>();
+        for (const group of chunks(roots)) {
+          const rows = all<{ root_id: string }>(
+            this.db,
+            `SELECT root_id FROM participants
+             WHERE account_id = ? AND root_id IN (${placeholders(group.length)})`,
+            accountId,
+            ...group,
+          );
+          for (const row of rows) visibleRoots.add(row.root_id);
+        }
+        for (const [id, rootId] of rootById) {
+          if (visibleRoots.has(rootId)) allowed.add(id);
+        }
+      }
+
+      if (allowed.size > 0) {
+        const insert = this.db.query(
+          `INSERT INTO post_reads(account_id, post_id, read_at) VALUES (?, ?, ?)
+           ON CONFLICT(account_id, post_id) DO NOTHING`,
+        );
+        for (const id of allowed) insert.run(accountId, id, now);
+      }
+
+      return {
+        stored: allowed.size,
+        skipped: unique.filter((id) => !allowed.has(id)),
+        read_at: now,
+      };
+    });
+    return tx();
+  }
+
+  /**
+   * 该账号已存在的逐帖读行（`Map<post_id, read_at>`）；id 按 400 分组查询，
+   * 不逐帖查询。未知/不可见 id 静默省略（读行本身即该账号的私有历史）。
+   */
+  readStatesFor(accountId: string, postIds: readonly string[]): Map<string, number> {
+    this.requireActiveAccount(accountId);
+    const out = new Map<string, number>();
+    if (!this.readTablesAvailable()) return out;
+    const unique = [...new Set(postIds)];
+    for (const group of chunks(unique)) {
+      const rows = all<{ post_id: string; read_at: number }>(
+        this.db,
+        `SELECT post_id, read_at FROM post_reads
+         WHERE account_id = ? AND post_id IN (${placeholders(group.length)})`,
+        accountId,
+        ...group,
+      );
+      for (const row of rows) out.set(row.post_id, row.read_at);
+    }
+    return out;
   }
 
   // ── drafts ──────────────────────────────────────────────────────────────────
@@ -1183,6 +1325,9 @@ export class Store {
       }
     }
 
+    // 按帖已读（v6）：1 条查询/400 id 组，页内无 N+1（design §10）。
+    const readStates = this.hydrateReadStates(viewer, posts);
+
     return posts.map((row) => {
       const post = toPost(row);
       const deleted = post.deleted_at !== null;
@@ -1208,6 +1353,7 @@ export class Store {
           };
         }
       }
+      const readState = readStates.get(post.id) ?? { read: false, read_at: null };
       return {
         ...post,
         body_md: deleted ? "" : post.body_md,
@@ -1217,8 +1363,55 @@ export class Store {
         quoted: deleted ? null : quoted,
         quoted_visible: deleted ? false : quotedIsVisible,
         previews: deleted ? [] : previewsByPost.get(post.id) ?? [],
+        read: readState.read,
+        read_at: readState.read_at,
       };
     });
+  }
+
+  /**
+   * 按帖已读投影（`read`/`read_at`），供 `hydratePosts` 批量填充。
+   *
+   * - 一次查询/400 id 组：`posts p LEFT JOIN post_reads r LEFT JOIN cursors c`
+   *   同时拿到逐帖读行与账号游标，页内无 N+1，也不额外多一条游标查询；
+   * - `read = read_at IS NOT NULL OR seq <= cursor`；仅游标覆盖的帖子
+   *   `read_at=null`（design §2.1）；
+   * - 旧 v5 只读库缺 `post_reads` 表 → 纯游标降级 + `read_at=null`，不抛错。
+   */
+  private hydrateReadStates(
+    viewer: Viewer,
+    posts: PostRow[],
+  ): Map<string, { read: boolean; read_at: number | null }> {
+    const states = new Map<string, { read: boolean; read_at: number | null }>();
+    if (posts.length === 0) return states;
+    if (!this.readTablesAvailable()) {
+      const cursor = this.getCursor(viewer.id);
+      for (const post of posts) {
+        states.set(post.id, { read: post.seq <= cursor, read_at: null });
+      }
+      return states;
+    }
+    for (const group of chunks(posts.map((post) => post.id))) {
+      const rows = all<{ id: string; read_at: number | null; covered: number }>(
+        this.db,
+        `SELECT p.id AS id, r.read_at AS read_at,
+                (p.seq <= COALESCE(c.seq, 0)) AS covered
+         FROM posts p
+         LEFT JOIN post_reads r ON r.account_id = ? AND r.post_id = p.id
+         LEFT JOIN cursors c ON c.account_id = ?
+         WHERE p.id IN (${placeholders(group.length)})`,
+        viewer.id,
+        viewer.id,
+        ...group,
+      );
+      for (const row of rows) {
+        states.set(row.id, {
+          read: row.read_at !== null || row.covered === 1,
+          read_at: row.read_at,
+        });
+      }
+    }
+    return states;
   }
 
   getPostView(postId: string, viewer: Viewer): PostView | null {
@@ -1990,20 +2183,28 @@ export class Store {
   private unreadClause(accountId: string, cursor: number): { where: string; params: Bindings } {
     const account = this.requireActiveAccount(accountId);
     const vis = visibleRootsClause(account.role, accountId, "e");
-    const where = [
+    const clauses = [
       "e.seq > ?",
       "e.actor != ?",
       `e.type IN (${placeholders(NOTIFICATION_TYPES.length)})`,
       "p.deleted_at IS NULL",
-      vis.sql,
-    ].join(" AND ");
+    ];
     const params: Bindings = [
       cursor,
       accountId,
       ...([...NOTIFICATION_TYPES] as Bindings),
-      ...(vis.params as Bindings),
     ];
-    return { where, params };
+    // v6：逐帖已读的 target 整体不计未读。`e.post_id IS NULL` 的事件退化为
+    // 纯游标（`pr.post_id = NULL` 不匹配 ⇒ NOT EXISTS 为真），不会误扣 root。
+    if (this.readTablesAvailable()) {
+      clauses.push(
+        "NOT EXISTS (SELECT 1 FROM post_reads pr WHERE pr.account_id = ? AND pr.post_id = e.post_id)",
+      );
+      params.push(accountId);
+    }
+    clauses.push(vis.sql);
+    params.push(...(vis.params as Bindings));
+    return { where: clauses.join(" AND "), params };
   }
 
   unreadCount(accountId: string, cursorOverride?: number | null): number {
@@ -2103,9 +2304,9 @@ export class Store {
 
   /**
    * 通知历史（「始终可见列表」的服务端分页）：该账号可见的事件，按 seq 倒序，
-   * `read` = 事件 seq ≤ 该账号游标。与 `notificationLines` 同口径：REST 排除本人
-   * 事件、可见性走 `visibleRootsClause`。纯读接口：不推进游标、不改 schema——
-   * 游标推进仍只由「全部已读」的 ack 承担。
+   * `read` = `post_reads` 命中该帖 **或** 事件 seq ≤ 该账号游标。与
+   * `notificationLines` 同口径：REST 排除本人事件、可见性走 `visibleRootsClause`。
+   * 纯读接口：不推进游标、不改 schema——游标推进仍只由「全部已读」的 ack 承担。
    */
   notificationHistory(
     accountId: string,
@@ -2139,6 +2340,27 @@ export class Store {
       limit + 1,
     );
     const page = rows.slice(0, limit);
+    // 逐帖已读（v6）：整页一次批量查询（≤100 id），不逐行查询。
+    const readPostIds = new Set<string>();
+    if (this.readTablesAvailable()) {
+      const ids = [
+        ...new Set(
+          page
+            .map((event) => event.post_id)
+            .filter((id): id is string => typeof id === "string" && id.length > 0),
+        ),
+      ];
+      for (const group of chunks(ids)) {
+        const reads = all<{ post_id: string }>(
+          this.db,
+          `SELECT post_id FROM post_reads
+           WHERE account_id = ? AND post_id IN (${placeholders(group.length)})`,
+          accountId,
+          ...group,
+        );
+        for (const row of reads) readPostIds.add(row.post_id);
+      }
+    }
     const events = page.map((event) => {
       let payload: unknown = {};
       try {
@@ -2155,7 +2377,9 @@ export class Store {
         batch_id: event.batch_id,
         created_at: event.created_at,
         payload,
-        read: event.seq <= cursor,
+        read:
+          event.seq <= cursor ||
+          (event.post_id !== null && readPostIds.has(event.post_id)),
       };
     });
     const hasMore = rows.length > limit;

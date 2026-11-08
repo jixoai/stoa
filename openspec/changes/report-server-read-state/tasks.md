@@ -29,7 +29,7 @@
 
 ## P1. 服务端（schema + store + API）
 
-- [ ] P1-1. schema v6：`post_reads` 表 + `idx_post_reads_post`；`SCHEMA_VERSION` 5→6；
+- [x] P1-1. schema v6：`post_reads` 表 + `idx_post_reads_post`；`SCHEMA_VERSION` 5→6；
   `removeAccount` 事务内清理；`readTablesAvailable()` 探测（仿 `previewTablesAvailable`）。
   - 判据：`test/post-reads-schema.test.ts` 全绿，覆盖：
     ① 空目录 `migrate()` 后表/索引存在、`meta.schema_version='6'`；
@@ -41,7 +41,7 @@
     ⑥ 既有 `test/social.test.ts:161` 的 `schema_version` 期望由 `"5"` 改为 `"6"`。
   - 证据：`bun test test/post-reads-schema.test.ts` + `SCHEMA_VERSION` 行号。
 
-- [ ] P1-2. store 读态方法：`markPostRead(accountId, postId)`（单帖）、
+- [x] P1-2. store 读态方法：`markPostRead(accountId, postId)`（单帖）、
   `markPostReads(accountId, postIds)`（批量、单事务、去重）、`readStatesFor(accountId, postIds)`
   （一条查询/400 组）；未知/不可见帖语义见 design §4.1/§4.2。
   - 判据：`test/post-reads-store.test.ts` 覆盖：
@@ -52,7 +52,7 @@
     ⑤ `readStatesFor` 返回 Map 且 id 分组 400 边界正确（401 个 id 两条查询）。
   - 证据：`bun test test/post-reads-store.test.ts` + 用例名清单。
 
-- [ ] P1-3. `hydratePosts` 批量读态：viewer 的 `post_reads` join（`chunks` 400，1 条/组）+
+- [x] P1-3. `hydratePosts` 批量读态：viewer 的 `post_reads` join（`chunks` 400，1 条/组）+
   `seq <= cursor` 兜底；`PostView` 增 `read/read_at`（`src/core/types.ts`）；
   旧库缺表时全 `false`；`export` 快照自动带字段。
   - 判据：`test/post-reads-hydrate.test.ts`：
@@ -64,7 +64,7 @@
     ⑥ `/api/thread` 的 `ThreadNode` 继承 `read/read_at`。
   - 证据：`bun test test/post-reads-hydrate.test.ts` + 查询计数断言输出。
 
-- [ ] P1-4. 未读语义：`unreadClause` 加 `NOT EXISTS(post_reads(a, e.post_id))`；
+- [x] P1-4. 未读语义：`unreadClause` 加 `NOT EXISTS(post_reads(a, e.post_id))`；
   `unreadCount`/`unreadByTarget` 共用；`notificationHistory` 行 `read` 改为
   `post_reads 命中 OR seq <= cursor`（页内一次性批量 join，不逐行）。
   - 判据：`test/post-reads-unread.test.ts`：
@@ -76,7 +76,7 @@
     ⑥ `cursor` 覆盖的事件 `read=true`（旧行为保留）。
   - 证据：`bun test test/post-reads-unread.test.ts test/event-hub.test.ts test/notifications.test.ts`。
 
-- [ ] P1-5. HTTP 路由：`POST /api/reads`、`POST /api/reads/batch`、`GET /api/reads?ids=`；
+- [x] P1-5. HTTP 路由：`POST /api/reads`、`POST /api/reads/batch`、`GET /api/reads?ids=`；
   参数校验（长度/类型/上限）、鉴权、batch 事务；capabilities 增
   `features.post_reads`、`limits.reads_batch/reads_query`；`API_ROUTES` 登记（含补漏
   bookmarks/history 既有路由）。

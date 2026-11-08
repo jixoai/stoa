@@ -158,7 +158,7 @@ describe("P9 social model (store)", () => {
               value: string;
             }
           ).value,
-        ).toBe("5");
+        ).toBe("6");
       } finally {
         db.close();
       }

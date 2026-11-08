@@ -174,6 +174,19 @@ export interface PostView extends Post {
   quoted_visible: boolean;
   /** 持久化预览字段（0..3，第一条为主卡）；无链接帖为 []。 */
   previews: PreviewLink[];
+  /**
+   * 该账号是否已读该帖（`post_reads` 命中 **或** `seq ≤ 账号游标`）。
+   * 服务端读接口总是返回该字段；旧静态快照/旧客户端缺省按 `read=false` 处理。
+   */
+  read?: boolean;
+  /** 逐帖已读时间；仅 `post_reads` 行有值，仅被游标覆盖时为 null。 */
+  read_at?: number | null;
+}
+
+/** `GET /api/reads` 的一行：该账号存在的逐帖已读记录（账号私有）。 */
+export interface ReadRow {
+  post_id: string;
+  read_at: number;
 }
 
 export interface ThreadNode extends PostView {
@@ -312,7 +325,7 @@ export interface NotificationSnapshot {
   role: Role;
 }
 
-/** 历史列表的一行：事件 + 服务端游标口径的已读标记（seq ≤ cursor）。 */
+/** 历史列表的一行：事件 + 服务端已读标记（`post_reads` 命中或 seq ≤ cursor）。 */
 export interface NotificationHistoryLine extends NotificationEventLine {
   read: boolean;
 }

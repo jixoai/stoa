@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { errorMessage, fail, ReportError } from "../core/errors.ts";
-import { capabilities } from "../core/protocol.ts";
+import { capabilities, READ_POST_ID_MAX_CHARS, READS_BATCH_LIMIT, READS_QUERY_LIMIT } from "../core/protocol.ts";
 import { parseLimit, parseTime } from "../core/pagination.ts";
 import { validateWriteOp, assertBody, MAX_MEDIA_BYTES, MEDIA_TYPES, ALLOWED_EXTS, EXT_CONTENT_TYPE } from "../core/validation.ts";
 import type { Account, NotificationLine, Role, WriteOp } from "../core/types.ts";
@@ -110,6 +110,17 @@ function optionalInt(c: Context, name: string): number | null {
   const n = Number(raw);
   if (!Number.isInteger(n) || n < 0) fail("BAD_REQUEST", `${name} must be a non-negative integer`);
   return n;
+}
+
+/** `post_id` 校验（/api/reads 与 batch 共用）：非空字符串且 ≤128 字符。 */
+function readPostId(value: unknown, field = "post_id"): string {
+  if (typeof value !== "string" || value.length === 0) {
+    fail("BAD_REQUEST", `${field} must be a non-empty string`);
+  }
+  if (value.length > READ_POST_ID_MAX_CHARS) {
+    fail("BAD_REQUEST", `${field} exceeds ${READ_POST_ID_MAX_CHARS} characters`);
+  }
+  return value;
 }
 
 /** Strict seq parser for SSE resume params; invalid values are treated as absent. */
@@ -832,7 +843,8 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
-  // 历史列表（始终可见）：已读/未读一并返回，read 由账号游标判定；纯读，不推进游标。
+  // 历史列表（始终可见）：已读/未读一并返回，read = post_reads 命中或 seq ≤ 游标；
+  // 纯读，不推进游标。
   app.get("/api/notifications/history", (c) => {
     const account = identity(c, deps);
     const limit = optionalInt(c, "limit");
@@ -870,6 +882,62 @@ export function createApp(deps: AppDeps): Hono {
   app.get("/api/cursor", (c) => {
     const account = identity(c, deps);
     return c.json({ ok: true, account: account.id, cursor: deps.store.getCursor(account.id) });
+  });
+
+  // ── reads（服务端按帖已读；账号私有，不提供作者侧「谁看过」）────────────────
+  app.post("/api/reads", async (c) => {
+    const account = identity(c, deps);
+    const body = await readJson(c);
+    const postId = readPostId(body.post_id);
+    const result = deps.store.markPostRead(account.id, postId);
+    return c.json(
+      {
+        ok: true,
+        post_id: postId,
+        read: true,
+        read_at: result.read_at,
+        created: result.created,
+      },
+      result.created ? 201 : 200,
+    );
+  });
+
+  app.post("/api/reads/batch", async (c) => {
+    const account = identity(c, deps);
+    const body = await readJson(c);
+    const raw = body.post_ids;
+    if (!Array.isArray(raw)) fail("BAD_REQUEST", "post_ids must be an array");
+    if (raw.length === 0) fail("BAD_REQUEST", "post_ids must not be empty");
+    const ids = raw.map((id) => readPostId(id, "post_ids[]"));
+    const unique = [...new Set(ids)];
+    if (unique.length > READS_BATCH_LIMIT) {
+      fail("BAD_REQUEST", `post_ids exceeds ${READS_BATCH_LIMIT} unique ids`);
+    }
+    const result = deps.store.markPostReads(account.id, unique);
+    return c.json({
+      ok: true,
+      stored: result.stored,
+      skipped: result.skipped,
+      read_at: result.read_at,
+    });
+  });
+
+  app.get("/api/reads", (c) => {
+    const account = identity(c, deps);
+    const raw = c.req.query("ids");
+    if (raw === undefined || raw.trim() === "") fail("BAD_REQUEST", "ids is required");
+    const ids = raw.split(",").map((part) => part.trim());
+    if (ids.some((id) => id === "")) fail("BAD_REQUEST", "ids must not contain empty segments");
+    for (const id of ids) readPostId(id, "ids[]");
+    const unique = [...new Set(ids)];
+    if (unique.length > READS_QUERY_LIMIT) {
+      fail("BAD_REQUEST", `ids exceeds ${READS_QUERY_LIMIT} unique ids`);
+    }
+    const states = deps.store.readStatesFor(account.id, unique);
+    const reads = unique
+      .filter((id) => states.has(id))
+      .map((post_id) => ({ post_id, read_at: states.get(post_id)! }));
+    return c.json({ ok: true, reads });
   });
 
   // ── plugins（report-link-preview P1-12：仅内置 link-preview）─────────────────
