@@ -64,3 +64,10 @@
   hash / `history.back()` / 通知进入三条无 pointer 预取路径。
   - 判据：before P3 三条均 FAIL（pill 文本="2 条新回复"）；after 三条 PASS（新回复可见 + 0 胶囊）；
     既有 140 条 timeline E2E 不回归。
+- [x] P1-15. 收口（最终复核）：rebase 到 main 6073518（含 link-preview）后修
+  `ThreadNode` 夹具 `previews: []`；E2E 补「真 seed」路径（无线程缓存、B1 hash 直达、
+  route 挂起初始/静默 load 后先静默放行），用 MutationObserver 断言全程无胶囊；`READ_SCOPE`
+  文本收窄到 `thread-scroll` 容器。
+  - 判据：`bun test` 322 pass / 0 fail（38 files）；`bun run check` / `typecheck:ui` 绿；
+    thread-scope 66/66（before 34/66）；timeline 140/140；移除 `freshRef.current &&` 后
+    P4 两视口 FAIL（64/66），恢复后 66/66。

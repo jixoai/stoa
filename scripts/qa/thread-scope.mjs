@@ -31,6 +31,8 @@
  *   P2 祖先逃生：深链页点 B1 → B1 子树；再点 root → 兄弟分支可见
  *   P3 无 pointer 预取的陈旧缓存导航（hash / history.back / 通知进入）：
  *      进入页面直接显示新回复，不出现点击后无变化的幻影胶囊
+ *   P4 真 seed（无任何线程缓存）：B1 hash 直达 + seed 期间静默结果先到 →
+ *      全程无胶囊（MutationObserver）、新回复直接可见
  *   E1 两个页面 0 console error / pageerror
  *
  * Screenshots + report.json: <--shot-dir>（默认 src/ui/.qa/thread-scope）
@@ -237,7 +239,8 @@ const READ_SCOPE = () => {
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
     },
-    bodyText: document.body.innerText,
+    // 只取线程滚动容器内文本：通知页等残留 DOM 不得干扰断言。
+    scopeText: container.innerText,
   };
 };
 
@@ -315,7 +318,7 @@ async function runViewport(browser, spec) {
     scope.postIds.includes(sibling.id),
   ).map((sibling) => sibling.id);
   const siblingTextHits = SIBLINGS.filter((sibling) =>
-    scope.bodyText.includes(sibling.text),
+    scope.scopeText.includes(sibling.text),
   ).map((sibling) => sibling.text);
   check(
     label,
@@ -401,7 +404,7 @@ async function runViewport(browser, spec) {
     sameIds(rootIds, expectedSorted),
     `actual=[${rootIds.join(",")}] expected=[${expectedSorted.join(",")}]`,
   );
-  const rootTextHits = SIBLINGS.filter((sibling) => rootScope.bodyText.includes(sibling.text));
+  const rootTextHits = SIBLINGS.filter((sibling) => rootScope.scopeText.includes(sibling.text));
   check(
     label,
     "R1 root 页兄弟分支文本仍全部可见",
@@ -459,7 +462,7 @@ async function runViewport(browser, spec) {
     "P1 兄弟分支新回复：DOM 行集合不变（仍是作用域 4 行）",
     sameIds(siblingScope.postIds, deepPillIds) &&
       !siblingScope.postIds.includes(siblingNew) &&
-      !siblingScope.bodyText.includes(`PILL-${label}-S2`),
+      !siblingScope.scopeText.includes(`PILL-${label}-S2`),
     `actual=[${siblingScope.postIds.join(",")}]`,
   );
   shots.sibling = await shot(4, "sibling-reply-no-pill");
@@ -493,8 +496,8 @@ async function runViewport(browser, spec) {
     label,
     "P1 点击胶囊：新帖进入 DOM，兄弟分支新回复仍不出现",
     merged.postIds.includes(focalNew) &&
-      merged.bodyText.includes(`PILL-${label}-R1A`) &&
-      !merged.bodyText.includes(`PILL-${label}-S2`),
+      merged.scopeText.includes(`PILL-${label}-R1A`) &&
+      !merged.scopeText.includes(`PILL-${label}-S2`),
     `newVisible=${merged.postIds.includes(focalNew)} rows=[${merged.postIds.join(",")}]`,
   );
 
@@ -517,8 +520,8 @@ async function runViewport(browser, spec) {
   check(
     label,
     "P2 B1 详情含 focal 子树（新回复可见），不含 root 兄弟分支",
-    b1Scope.bodyText.includes(`PILL-${label}-R1A`) &&
-      !b1Scope.bodyText.includes(`PILL-${label}-S2`) &&
+    b1Scope.scopeText.includes(`PILL-${label}-R1A`) &&
+      !b1Scope.scopeText.includes(`PILL-${label}-S2`) &&
       !b1Scope.postIds.includes(P.sibling),
     `rows=[${b1Scope.postIds.join(",")}]`,
   );
@@ -539,7 +542,7 @@ async function runViewport(browser, spec) {
   check(
     label,
     "P2 祖先逃生：root 详情兄弟分支全部可见",
-    escapeScope.bodyText.includes(`PILL-${label}-S2`) &&
+    escapeScope.scopeText.includes(`PILL-${label}-S2`) &&
       escapeScope.postIds.includes(P.sibling),
     `rows=${escapeScope.postIds.length} sibling=${escapeScope.postIds.includes(P.sibling)}`,
   );
@@ -653,10 +656,122 @@ async function runViewport(browser, spec) {
       Boolean(nScope) &&
         nScope.postIds.includes(nFocalNew) &&
         !nScope.postIds.includes(nSiblingNew) &&
-        !nScope.bodyText.includes(`${N.tag}-S2`),
+        !nScope.scopeText.includes(`${N.tag}-S2`),
       `rows=[${nScope?.postIds.join(",") ?? ""}]`,
     );
     shots.staleNotification = await shot(9, "stale-cache-notification-no-pill");
+  }
+
+  // ── P4 真 seed：B1 无任何线程缓存，只有单帖 seed，hash 直达 ─────────────────
+  // 复核变异证明 `freshRef` 对该路径承重：seed 窗口里静默结果先到 → 若无 freshRef
+  // 门槛，会把 seed→完整线程误算成 N 条新回复（瞬时幻影胶囊，随后被初始 load 清掉）。
+  // 这里用 MutationObserver 记录「曾经出现过」，并用 route 挂起两种 load 后再按
+  // 「先静默、后初始」顺序放行，确定性复现该竞态。
+  {
+    const S = await createStaleFixture(label, "S");
+    await gotoHash(page, `#/p/${S.root}`, 1800);
+    const sRootReady = await waitThreadSoft(page, { ancestors: 0, replies: 4 });
+    await page.evaluate(() => {
+      const state = { seen: false };
+      window.__pillMonitor = state;
+      const scan = (records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (!(node instanceof HTMLElement)) continue;
+            if (
+              node.matches('[data-testid="new-replies-pill"]') ||
+              node.querySelector('[data-testid="new-replies-pill"]')
+            ) {
+              state.seen = true;
+            }
+          }
+        }
+      };
+      state.observer = new MutationObserver(scan);
+      state.observer.observe(document.body, { childList: true, subtree: true });
+      if (document.querySelector('[data-testid="new-replies-pill"]')) state.seen = true;
+    });
+    const held = [];
+    const releaseHeld = (item) => {
+      if (!item || item.released) return;
+      item.released = true;
+      item.release();
+    };
+    await page.route("**/api/thread/**", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      const item = { route, release: null, released: false };
+      await new Promise((release) => {
+        item.release = release;
+        held.push(item);
+      });
+      await route.continue().catch(() => {});
+    });
+    // hash 直达 B1：threadIndex 无 b1 条目（无 pointer 预取），postIndex 有单帖 seed。
+    await gotoHash(page, `#/p/${S.b1}`, 500);
+    await page
+      .waitForFunction(
+        (id) =>
+          document
+            .querySelector('[data-timeline-row="focal"]')
+            ?.getAttribute("data-post-id") === id,
+        S.b1,
+        { timeout: 5000 },
+      )
+      .catch(() => {});
+    const seedWindow = await page.evaluate(() => ({
+      focal: document.querySelectorAll('[data-timeline-row="focal"]').length,
+      ancestors: document.querySelectorAll('[data-timeline-row="ancestor"]').length,
+      replies: document.querySelectorAll('[data-timeline-row="reply"]').length,
+      focalPostId: document
+        .querySelector('[data-timeline-row="focal"]')
+        ?.getAttribute("data-post-id"),
+    }));
+    check(
+      label,
+      "P4 前提：B1 首次 hash 直达只有单帖 seed（0 祖先/0 回复、无线程缓存）",
+      sRootReady &&
+        seedWindow.focal === 1 &&
+        seedWindow.ancestors === 0 &&
+        seedWindow.replies === 0 &&
+        seedWindow.focalPostId === S.b1,
+      `focal=${seedWindow.focal} ancestors=${seedWindow.ancestors} replies=${seedWindow.replies} id=${seedWindow.focalPostId}`,
+    );
+    // seed 窗口内产生同 root 新回复 → 触发静默补拉；初始 load 仍被 route 挂起。
+    const seedNew = await createReply(managerToken, S.r1, `${S.tag}-R1A 真 seed 期间的新回复。`);
+    const deadline = Date.now() + 8000;
+    while (held.length < 2 && Date.now() < deadline) await wait(page, 50);
+    await wait(page, 400);
+    const heldCount = held.length;
+    // 先放行静默结果（held[0] 是页面初始 load）：无 freshRef 门槛时这里会算出幻影胶囊。
+    for (let index = 1; index < held.length; index += 1) releaseHeld(held[index]);
+    await wait(page, 900);
+    const seenDuringSeed = await page.evaluate(() => Boolean(window.__pillMonitor?.seen));
+    // 再放行初始 load（此时服务端才取数，含新回复）；清理可能新挂起的请求。
+    for (const item of held) releaseHeld(item);
+    await wait(page, 200);
+    for (const item of held) releaseHeld(item);
+    await page.unroute("**/api/thread/**");
+    const seedReady = await waitThreadSoft(page, { ancestors: 1, replies: 3 });
+    await wait(page, 500);
+    const seedScope = await page.evaluate(READ_SCOPE);
+    const seedPill = await pillState(page);
+    const seenEver = await page.evaluate(() => Boolean(window.__pillMonitor?.seen));
+    check(
+      label,
+      "P4 真 seed B1 hash 直达：全程无胶囊（MutationObserver 记录）",
+      heldCount >= 2 && !seenDuringSeed && !seenEver && seedPill.count === 0,
+      `held=${heldCount} seenDuringSeed=${seenDuringSeed} seenEver=${seenEver} pill=${seedPill.count} text="${seedPill.text}"`,
+    );
+    check(
+      label,
+      "P4 真 seed B1 hash 直达：新回复进入 DOM（seed→完整线程直接提交）",
+      seedReady && Boolean(seedScope) && seedScope.postIds.includes(seedNew),
+      `rows=[${seedScope?.postIds.join(",") ?? ""}]`,
+    );
+    shots.seed = await shot(10, "seed-b1-hash-no-pill");
   }
 
   check(

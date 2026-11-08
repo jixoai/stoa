@@ -45,6 +45,7 @@ function node(
     deleted_at: null,
     author_account: null,
     media: [],
+    previews: [],
     reply_count: 0,
     quoted: null,
     quoted_visible: false,

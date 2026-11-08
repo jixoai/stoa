@@ -83,6 +83,9 @@
 
 E2E P3（无 pointer 预取）：hash 导航、`history.back()`、通知页点击旧通知行三条路径进入陈旧
 缓存线程，断言「新回复可见 + 0 胶囊」；P2 的 pointer 点击路径仍保留（祖先逃生语义）。
+E2E P4（真 seed）：B1 无任何线程缓存，只能由 `postIndex` 合成单帖 seed；用 `page.route` 同时
+挂起初始 load 与静默补拉，再按「先静默、后初始」放行，配合 MutationObserver 断言全程
+（含瞬时）无胶囊；该用例对 `freshRef` 门槛做变异验证（移除门槛 → 2 条断言红）。
 
 ## 4.1 新回复胶囊的作用域差集（审查 P1）
 
