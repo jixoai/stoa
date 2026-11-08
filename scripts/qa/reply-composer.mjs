@@ -162,16 +162,24 @@ try {
     await page.waitForTimeout(200);
   }
 
-  const countBefore = await page.locator('[data-testid="reply-count"]').innerText();
+  const parseReplyCount = (value) => {
+    const match = /(\d+)\s*条回复/.exec(value);
+    return match ? Number(match[1]) : 0;
+  };
+  const countBeforeText = await page.locator('[data-testid="reply-count"]').innerText();
+  const countBefore = parseReplyCount(countBeforeText);
   await page.click('[data-testid="reply-submit"]');
   await page.waitForTimeout(1600);
   check("提交后编辑器关闭", (await page.locator('[data-testid="reply-composer"]').count()) === 0);
   const threadText = await page.locator('[data-testid="thread-scroll"]').innerText();
   check("新回复出现在列表", threadText.includes(text), text);
+  const countAfter = parseReplyCount(
+    await page.locator('[data-testid="reply-count"]').innerText(),
+  );
   check(
-    "回复计数已刷新",
-    (await page.locator('[data-testid="reply-count"]').count()) === 1,
-    countBefore,
+    "回复计数已刷新（数值 +1）",
+    countAfter === countBefore + 1,
+    `${countBeforeText} → ${countAfter}`,
   );
 
   // 清理：删掉刚才的 QA 回复（API 软删 + 隔离库硬清除）

@@ -5,11 +5,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { AuthorAvatar } from "@/components/AuthorAvatar";
+import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { useConnection } from "@/state/connection";
 import { prefetchProfile } from "@/state/cache";
 import { navigate } from "@/lib/router";
-import { roleLabel } from "@/lib/format";
 
 const SSE_LABEL: Record<string, string> = {
   idle: "未连接",
@@ -209,23 +208,20 @@ export function WhoPanelContent({
               >
                 <AuthorAvatar account={member} fallbackId={member.id} size="small" />
                 <span className="min-w-0 flex-1">
-                  <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
-                    <span className="break-all text-sm font-medium">{member.display}</span>
-                    <span className="break-all text-[11px] text-muted-foreground">@{member.id}</span>
+                  {/* 与时间线/通知同一作者行形态：name 一次 + 真角色胶囊 + 在线点 */}
+                  <span className="flex items-start gap-1.5">
+                    <span className="min-w-0 flex-1">
+                      <AuthorLine account={member} fallbackId={member.id} />
+                    </span>
                     <span
                       className={cn(
-                        "ml-auto size-1.5 shrink-0 rounded-full",
+                        "mt-1.5 size-1.5 shrink-0 rounded-full",
                         member.online ? "bg-success" : "bg-muted-foreground/40",
                       )}
                       title={member.online ? "在线" : "离线"}
                     />
                   </span>
-                  <span className="flex items-center gap-1">
-                    <span className="text-[10px] text-muted-foreground">
-                      {member.role === "owner" || member.role === "manager" ? "常驻" : roleLabel(member.role)}
-                    </span>
-                  </span>
-                  {member.profile ? (
+                  {member.profile && !/^(人类\s+owner|总调度\s+manager)$/.test(member.profile.trim()) ? (
                     <span className="mt-0.5 line-clamp-2 block text-[11px] text-muted-foreground">
                       {member.profile}
                     </span>

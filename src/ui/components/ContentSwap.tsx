@@ -24,6 +24,16 @@ export interface ContentSwapProps {
   className?: string;
   /** 骨架阶段的最小高度（撑住转场快照，避免半屏空页）。 */
   skeletonMinHeight?: string;
+  /**
+   * 骨架→内容的容器高度过渡（默认 240ms）。
+   *
+   * 线程页把它设为 false：内容必须**以最终高度一次落地**，锚定在同一 layout 帧完成；
+   * 否则容器先被钳在骨架高度，`scrollTop = focalOffset` 被浏览器 clamp，出现
+   * 「先看到上文再跳到 focal」的中间帧（design report-thread-timeline §4.2）。
+   * 骨架淡出照旧；内容侧的 `report-swap-in` 带 4px 位移，会让 focal 在首帧后
+   * 再移动 4px，故该模式下不播。
+   */
+  animateHeight?: boolean;
   testId?: string;
 }
 
@@ -33,6 +43,7 @@ export function ContentSwap({
   children,
   className,
   skeletonMinHeight = "58dvh",
+  animateHeight = true,
   testId,
 }: ContentSwapProps) {
   const [phase, setPhase] = useState<Phase>(ready ? "content" : "skeleton");
@@ -48,19 +59,26 @@ export function ContentSwap({
     if (phase !== "skeleton" || !ready) return;
     if (isViewTransitionRunning()) return;
     const box = boxRef.current;
-    const from = skeletonRef.current?.offsetHeight ?? 0;
-    if (box) {
+    if (box && animateHeight) {
+      const from = skeletonRef.current?.offsetHeight ?? 0;
       box.style.height = `${from}px`;
       box.style.overflow = "hidden";
     }
     setPhase("swap");
-  }, [ready, phase, epoch]);
+  }, [ready, phase, epoch, animateHeight]);
 
   useLayoutEffect(() => {
     if (phase !== "swap") return;
     const box = boxRef.current;
     const content = contentRef.current;
     if (!box || !content) return;
+    if (!animateHeight) {
+      // 高度直落：容器不钉骨架高度、不做 transition，内容以最终高度参与布局（锚定可在同帧完成）。
+      box.style.transition = "none";
+      box.style.height = "";
+      box.style.overflow = "";
+      return;
+    }
     const from = box.offsetHeight;
     const to = content.offsetHeight;
     box.style.transition = "none";
@@ -70,7 +88,7 @@ export function ContentSwap({
       box.style.height = `${to}px`;
     });
     return () => cancelAnimationFrame(raf);
-  }, [phase]);
+  }, [phase, animateHeight]);
 
   useEffect(() => {
     if (phase !== "swap") return;
@@ -104,7 +122,10 @@ export function ContentSwap({
         </div>
       ) : null}
       {phase !== "skeleton" ? (
-        <div ref={contentRef} className={cn(phase === "swap" && "report-swap-in")}>
+        <div
+          ref={contentRef}
+          className={cn(phase === "swap" && animateHeight && "report-swap-in")}
+        >
           {children}
         </div>
       ) : null}

@@ -5,23 +5,20 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type ReactNode,
+  type Ref,
+  type RefObject,
 } from "react";
 import type { PostView, ThreadNode, ThreadView } from "@core/types";
-import {
-  ArrowUpIcon,
-  ChevronDownIcon,
-  ChevronRightIcon,
-} from "lucide-react";
-import { PostCard, type ChainPosition } from "@/components/PostCard";
+import { ArrowUpIcon, ChevronRightIcon } from "lucide-react";
+import { PostCard } from "@/components/PostCard";
 import { ReplyComposer } from "@/components/ReplyComposer";
 import { ContentSwap } from "@/components/ContentSwap";
 import { PostSkeleton, ThreadSkeleton } from "@/components/Skeletons";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PageHeader } from "@/components/PageHeader";
-import { Separator } from "@/components/ui/separator";
 import { useConnection } from "@/state/connection";
 import { useNotifications } from "@/state/notifications";
 import { getCachedThread, getThreadSeed, rememberThread } from "@/state/cache";
@@ -31,174 +28,504 @@ import {
   navigate,
   routeSource,
   useRoute,
+  useTransitionDirection,
   useTransitionEpoch,
 } from "@/lib/router";
 import { fullTime } from "@/lib/format";
+import { loadThreadScrollMemory, saveThreadScrollMemory } from "@/lib/scroll-memory";
 
-type ReplyItem =
-  | {
-      kind: "node";
-      node: ThreadNode;
-      indent: number;
-      selfContinuation: boolean;
-      selfHeader: boolean;
-      chainPosition: ChainPosition;
-      depth: number;
-    }
-  | { kind: "collapse-depth"; key: string; indent: number; count: number }
-  | { kind: "expand-branch"; key: string; indent: number; count: number; parentId: string }
-  | { kind: "read-more"; key: string; indent: number; count: number; nodeId: string }
-  | { kind: "backend-collapse"; key: string; indent: number; count: number; nodeId: string };
+// ── 平铺 timeline planner（design report-thread-timeline §2）────────────────────
+//
+// 一个平面、一条 trunk、一个时间序：祖先链（root → parent）→ focal → 其余节点按
+// `(created_at, seq, id)` 升序平铺。没有任何缩进/深度上限/层级控件；关系由
+// 「回复给 @x」+ 导轨 + 时间顺序表达。
 
-interface ReplyPlan {
-  items: ReplyItem[];
-  replyingTo: Map<string, string>;
+type PostRole = "ancestor" | "focal" | "reply";
+
+interface PostRow {
+  kind: "post";
+  key: string;
+  node: ThreadNode;
+  role: PostRole;
+  /** 连续同作者父子：24px 头像居中于 42px 列、无重复作者行/操作栏。 */
+  compact: boolean;
+  /** 连续自接链首条仍显示作者/时间。 */
+  compactHeader: boolean;
+  /** 父帖不是上一 post 行时的「回复给 @x」（focal 永不为真）。 */
+  replyingTo: string | null;
 }
 
-function buildReplyPlan(
-  focal: ThreadNode,
-  childrenMap: Map<string, ThreadNode[]>,
-  backendCollapsed: Map<string, number>,
-  expandedBranches: Set<string>,
-  maxDepth: number,
-): ReplyPlan {
-  const items: ReplyItem[] = [];
-  const visited = new Set<string>();
-  const replyingTo = new Map<string, string>();
-  const byId = new Map<string, ThreadNode>();
-  for (const list of childrenMap.values()) for (const node of list) byId.set(node.id, node);
+interface SubthreadRow {
+  kind: "subthread";
+  key: string;
+  nodeId: string;
+  count: number;
+}
 
-  const subtreeCount = (roots: ThreadNode[]): number => {
-    let count = 0;
-    const walk = (node: ThreadNode) => {
-      count += 1;
-      for (const child of childrenMap.get(node.id) ?? []) walk(child);
-    };
-    for (const root of roots) walk(root);
-    return count;
-  };
+type PlanRow = PostRow | SubthreadRow;
 
-  const buildGroup = (parent: ThreadNode, allKids: ThreadNode[], parentDepth: number, parentIndent: number) => {
-    const kids = allKids.filter((kid) => !visited.has(kid.id));
-    if (kids.length === 0) {
-      emitMissing(parent, parentIndent);
-      return;
-    }
-    const childIndent = Math.min(72, parentIndent + 24);
+interface TimelinePlan {
+  rows: PlanRow[];
+  replyNodes: ThreadNode[];
+  /** 顶部缺口行要跳转的（上一批）帖子 id；null = 不渲染缺口行。 */
+  gapParentId: string | null;
+  /** 是否有缺口行（深链 focal 的父帖不可解析 / 祖先超过 20 条 UI 阈值）。 */
+  gapVisible: boolean;
+}
 
-    // 自接链：沿同作者续接走一条；整链先于他人分支（design §12.4）
-    const chain: ThreadNode[] = [];
-    let cursor = parent;
-    for (;;) {
-      const next = (childrenMap.get(cursor.id) ?? []).find(
-        (kid) => kid.is_self_continuation && !visited.has(kid.id),
-      );
-      if (!next) break;
-      chain.push(next);
-      visited.add(next.id);
-      cursor = next;
-    }
+function compareNodes(a: ThreadNode, b: ThreadNode): number {
+  if (a.created_at !== b.created_at) return a.created_at - b.created_at;
+  if (a.seq !== b.seq) return a.seq - b.seq;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
 
-    chain.forEach((node, index) => {
-      items.push({
-        kind: "node",
-        node,
-        indent: childIndent,
-        selfContinuation: true,
-        selfHeader: index === 0,
-        chainPosition:
-          chain.length === 1 ? "single" : index === 0 ? "start" : index === chain.length - 1 ? "end" : "middle",
-        depth: parentDepth + 1,
-      });
-    });
+const ANCESTOR_RENDER_LIMIT = 20;
 
-    // 链上每个节点的他人分支：链后渲染，缩进跟随所在分支
-    for (let index = 0; index < chain.length; index += 1) {
-      const chainNode = chain[index]!;
-      const nextChainId = chain[index + 1]?.id;
-      const subKids = (childrenMap.get(chainNode.id) ?? []).filter((kid) => kid.id !== nextChainId);
-      if (subKids.length > 0) buildGroup(chainNode, subKids, parentDepth + 1, childIndent);
-    }
+// 线程 timeline 行几何（design §3；2026-11-08 视觉复核：头像 46 / 正文列 68 / 导轨 x=38）
+const THREAD_AVATAR = 46;
+const THREAD_AVATAR_GAP = 6;      // 16 + 46 + 6 = 正文列 x=68
+const THREAD_PAD_TOP = 12;        // 普通行 pt-3
+const FOCAL_PAD_TOP = 22;         // focal 多 10px：首字到吸顶栏 20→28–30
+const COMPACT_PAD_TOP = 6;        // 紧凑行 py-1.5
+const COMPACT_AVATAR = 24;
 
-    const others = kids.filter((kid) => !chain.some((node) => node.id === kid.id));
-    if (others.length > 0) {
-      // 子分支 >10 条默认收起（Top-level 回复不受影响）
-      if (parentDepth >= 1 && others.length > 10 && !expandedBranches.has(parent.id)) {
-        items.push({
-          kind: "expand-branch",
-          key: `branch-${parent.id}`,
-          indent: childIndent,
-          count: subtreeCount(others),
-          parentId: parent.id,
-        });
-      } else if (parentDepth + 1 > maxDepth) {
-        // 3 级封顶；第 4 级起缩进冻结 +「继续 N 层回复」
-        items.push({
-          kind: "collapse-depth",
-          key: `depth-${parent.id}`,
-          indent: childIndent,
-          count: subtreeCount(others),
-        });
-      } else {
-        for (const other of others) {
-          visited.add(other.id);
-          items.push({
-            kind: "node",
-            node: other,
-            indent: childIndent,
-            selfContinuation: false,
-            selfHeader: false,
-            chainPosition: "none",
-            depth: parentDepth + 1,
-          });
-          buildGroup(other, childrenMap.get(other.id) ?? [], parentDepth + 1, childIndent);
-        }
-      }
-    }
+function buildTimelinePlan(args: {
+  focal: ThreadNode;
+  ancestors: ThreadNode[];
+  nodes: ThreadNode[];
+  nodeMap: Map<string, ThreadNode>;
+  collapsedCounts: Map<string, number>;
+  /** thread.posts 不含 focal（深链超 maxDepth）：focal 是单帖合成。 */
+  deepGap: boolean;
+  /** focal.parent_id 解析不到（posts 里没有）：整页只能显示缺口 + focal。 */
+  unresolvedGap: boolean;
+  /** 完整线程是否已从网络回来；未回来时不得生成「查看该子线程」入口。 */
+  loaded: boolean;
+}): TimelinePlan {
+  const { focal, ancestors, nodes, nodeMap, collapsedCounts, deepGap, unresolvedGap, loaded } = args;
+  const ancestorSet = new Set(ancestors.map((node) => node.id));
 
-    emitMissing(parent, childIndent);
-    const backendCount = backendCollapsed.get(parent.id);
-    if (backendCount && backendCount > 0) {
-      items.push({
-        kind: "backend-collapse",
-        key: `backend-${parent.id}`,
-        indent: childIndent,
-        count: backendCount,
-        nodeId: parent.id,
-      });
-    }
-  };
-
-  const emitMissing = (parent: ThreadNode, indent: number) => {
-    const loaded = (childrenMap.get(parent.id) ?? []).length;
-    const missing = parent.child_count - loaded;
-    if (missing > 0) {
-      items.push({
-        kind: "read-more",
-        key: `read-${parent.id}`,
-        indent,
-        count: missing,
-        nodeId: parent.id,
-      });
-    }
-  };
-
-  buildGroup(focal, childrenMap.get(focal.id) ?? [], 0, 0);
-
-  // Replying to：仅当父帖不在视觉邻位且父帖不是 focal
-  let prev = focal.id;
-  for (const item of items) {
-    if (item.kind !== "node") continue;
-    const parentId = item.node.parent_id;
-    if (parentId && parentId !== prev && parentId !== focal.id && !item.selfContinuation) {
-      const parentAuthor = byId.get(parentId)?.author;
-      const to = item.node.reply_to_account_id ?? parentAuthor ?? parentId;
-      replyingTo.set(item.node.id, to);
-    }
-    prev = item.node.id;
+  // 祖先：root → … → parent；>20 条只渲染最近 20 条，顶部补缺口行（§5.1）。
+  // 缺口行跳到「被丢弃的最后一条祖先」（= 最近可见祖先的上一帖），不是它的 parent。
+  const ordered = ancestors.slice().reverse();
+  let visible = ordered;
+  let gapVisible = false;
+  let gapParentId: string | null = null;
+  if (ordered.length > ANCESTOR_RENDER_LIMIT) {
+    const dropped = ordered.slice(0, ordered.length - ANCESTOR_RENDER_LIMIT);
+    visible = ordered.slice(-ANCESTOR_RENDER_LIMIT);
+    gapVisible = true;
+    gapParentId = dropped[dropped.length - 1]?.id ?? null;
+  }
+  if (unresolvedGap) {
+    // focal 的父帖都没随本页返回：让缺口行指向父帖详情（点进去继续上级上下文）。
+    gapVisible = true;
+    gapParentId = focal.parent_id;
   }
 
-  return { items, replyingTo };
+  const loadedDirect = new Map<string, number>();
+  for (const node of nodes) {
+    if (!node.parent_id) continue;
+    loadedDirect.set(node.parent_id, (loadedDirect.get(node.parent_id) ?? 0) + 1);
+  }
+
+  // 子线程入口数量：后端折叠优先，否则是「已知子节点里没随本页返回的部分」。
+  const unloadedCount = (node: ThreadNode): number => {
+    const collapsed = collapsedCounts.get(node.id) ?? 0;
+    if (collapsed > 0) return collapsed;
+    const loadedChildren = loadedDirect.get(node.id) ?? 0;
+    return Math.max(0, node.child_count - loadedChildren);
+  };
+
+  const rows: PlanRow[] = [];
+  const pushNode = (row: PostRow) => {
+    rows.push(row);
+    // 种子/骨架阶段 child_count 还不可信（seed 把它当 reply_count），不生成入口。
+    if (!loaded) return;
+    // 深链缺口模式下 focal 就是当前页，入口会指向自己 → 不渲染。
+    if (row.role === "focal" && deepGap) return;
+    const count = unloadedCount(row.node);
+    if (count > 0) {
+      rows.push({ kind: "subthread", key: `sub-${row.node.id}`, nodeId: row.node.id, count });
+    }
+  };
+
+  for (const ancestor of visible) {
+    pushNode({
+      kind: "post",
+      key: `a-${ancestor.id}`,
+      node: ancestor,
+      role: "ancestor",
+      compact: false,
+      compactHeader: false,
+      // 祖先链内部父帖就是上一行（首条可能因为裁剪/缺口没有上文，不标）。
+      replyingTo: null,
+    });
+  }
+
+  pushNode({
+    kind: "post",
+    key: `f-${focal.id}`,
+    node: focal,
+    role: "focal",
+    compact: false,
+    compactHeader: false,
+    replyingTo: null,
+  });
+
+  // 平铺回复：排除 focal 与整条祖先链，按 (created_at, seq, id) 升序。
+  //
+  // 缺口模式（focal.parent_id 解析不到）下 posts 里全是「不可定位的上文」：
+  // 它们既不是 focal 的祖先也不是 focal 的回复，平铺到 focal 下方会把拓扑反过来
+  // （祖先显示成回复）。只保留缺口行说明，不再渲染这些行。
+  const rest = unresolvedGap
+    ? []
+    : nodes.filter((node) => node.id !== focal.id && !ancestorSet.has(node.id));
+  rest.sort(compareNodes);
+
+  const replyNodes: ThreadNode[] = [];
+  let prevPost: ThreadNode | null = focal;
+  for (const node of rest) {
+    const parentId = node.parent_id;
+    const adjacent = parentId !== null && prevPost?.id === parentId;
+    const compact = node.is_self_continuation && adjacent;
+    const compactHeader = compact && !prevPost?.is_self_continuation;
+    const replyingTo =
+      parentId !== null && !adjacent
+        ? (node.reply_to_account_id ?? nodeMap.get(parentId)?.author ?? parentId)
+        : null;
+    pushNode({
+      kind: "post",
+      key: `p-${node.id}`,
+      node,
+      role: "reply",
+      compact,
+      compactHeader,
+      replyingTo,
+    });
+    replyNodes.push(node);
+    prevPost = node;
+  }
+
+  return { rows, replyNodes, gapParentId, gapVisible };
+}
+
+// ── timeline 行 + 主轨（design §3.2）─────────────────────────────────────────
+//
+// 导轨画在行包裹层（不是 PostCard 内部），因此 focal footer / 子线程入口 / 删除占位
+// 都在同一条 trunk 上；头像 `relative z-[1]` 盖住导轨，视觉上是「头像上方一段 +
+// 下方一段」。
+
+type RowKind = "ancestor" | "focal" | "reply" | "subthread" | "context-gap" | "reply-skeleton";
+
+interface TimelineRowProps {
+  kind: RowKind;
+  /** 头像上下缘（CSS px）：普通行 pt-3(12) + 46 头像；focal pt-[22px]；紧凑行 6 + 24。 */
+  avatarTop?: number;
+  avatarBottom?: number;
+  first?: boolean;
+  last?: boolean;
+  postId?: string;
+  testId?: string;
+  /** focal 的上段导轨同时是贴顶 stub（data-testid=thread-rail-stub）。 */
+  stub?: boolean;
+  rowRef?: Ref<HTMLDivElement>;
+  children: ReactNode;
+}
+
+function TimelineRow({
+  kind,
+  avatarTop = 12,
+  avatarBottom = 58,
+  first = false,
+  last = false,
+  postId,
+  testId,
+  stub = false,
+  rowRef,
+  children,
+}: TimelineRowProps) {
+  const control = kind === "subthread" || kind === "context-gap" || kind === "reply-skeleton";
+  const single = first && last;
+  const railPosition = single ? "single" : first ? "first" : last ? "last" : "middle";
+  return (
+    <div
+      ref={rowRef}
+      className="relative"
+      data-timeline-row={kind}
+      data-post-id={postId}
+      data-rail-position={railPosition}
+      data-testid={testId}
+      style={
+        {
+          "--rail-avatar-top": `${avatarTop}px`,
+          "--rail-avatar-bottom": `${avatarBottom}px`,
+        } as CSSProperties
+      }
+    >
+      {control ? (
+        // 控制行（缺口/子线程入口）没有头像可截断：中间行贯穿整行；末行不再画下段，
+        // 否则会留下一截悬空导轨（review 2026-11-08：入口行 y=467 硬切 47px）。
+        single || last ? null : (
+          <span
+            aria-hidden
+            data-testid="thread-rail"
+            data-thread-rail="full"
+            className="pointer-events-none absolute left-[38px] w-0.5 bg-thread-rail"
+            style={{ top: 0, bottom: 0 }}
+          />
+        )
+      ) : (
+        <>
+          {!first ? (
+            <span
+              aria-hidden
+              data-testid={stub ? "thread-rail-stub" : "thread-rail"}
+              data-thread-rail="top"
+              className="pointer-events-none absolute left-[38px] w-0.5 bg-thread-rail"
+              style={{ top: 0, height: avatarTop }}
+            />
+          ) : null}
+          {!last ? (
+            <span
+              aria-hidden
+              data-testid="thread-rail"
+              data-thread-rail="bottom"
+              className="pointer-events-none absolute left-[38px] w-0.5 bg-thread-rail"
+              style={{ top: avatarBottom, bottom: 0 }}
+            />
+          ) : null}
+        </>
+      )}
+      {children}
+    </div>
+  );
+}
+
+// ── 锚定 / 恢复（design §4）─────────────────────────────────────────────────
+
+/** 容器顶边下方第一条 post 行 + 行内偏移（滚动记忆与解锁后的位移补偿共用）。 */
+function readFirstVisible(container: HTMLElement): { id: string; offsetPx: number } | null {
+  const top = container.getBoundingClientRect().top;
+  for (const row of container.querySelectorAll<HTMLElement>(
+    "[data-timeline-row][data-post-id]",
+  )) {
+    if (row.getBoundingClientRect().bottom > top + 1) {
+      return {
+        id: row.getAttribute("data-post-id") ?? "",
+        offsetPx: row.getBoundingClientRect().top - top,
+      };
+    }
+  }
+  return null;
+}
+
+/** focal 行在滚动内容里的 offsetTop。 */
+function focalOffset(container: HTMLElement, row: HTMLElement): number {
+  return row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
+}
+
+/**
+ * 把 focal 行贴到滚动容器顶边（= 吸顶栏下沿），并用 tail spacer 保证这个位置可达。
+ * 全程同步写 scrollTop（无平滑滚动），可在 layout 阶段一次完成。
+ */
+function anchorToFocal(
+  container: HTMLElement,
+  row: HTMLElement,
+  spacer: HTMLElement | null,
+  programmaticTop: { current: number },
+): void {
+  if (spacer) spacer.style.height = "0px";
+  // `container.scrollHeight` 在内容不足一屏时会被浏览器抬到 clientHeight，
+  // 用它算「focal 下方内容」会虚高、导致 spacer 补不够（实测 focal 停在 81px 处）。
+  // 真实内容是滚动容器的直接子块（timeline + spacer + 编辑器入口条）。
+  const contentBox = spacer?.parentElement ?? container.firstElementChild;
+  const contentHeight =
+    contentBox instanceof HTMLElement ? contentBox.offsetHeight : container.scrollHeight;
+  const target0 = focalOffset(container, row);
+  const viewport = container.clientHeight;
+  const rowHeight = row.offsetHeight;
+  const below = Math.max(0, contentHeight - target0 - rowHeight);
+  if (spacer) {
+    const needed = Math.ceil(Math.max(0, viewport - rowHeight - below));
+    spacer.style.height = `${needed}px`;
+  }
+  const max = Math.max(0, container.scrollHeight - viewport);
+  const target = Math.min(Math.round(target0), max);
+  programmaticTop.current = target;
+  container.scrollTop = target;
+  container.dataset.anchor = target < Math.round(target0) ? "clamped" : "ok";
+}
+
+/**
+ * 把 scrollTop 写到目标值；内容不足一屏时先补 tail spacer，否则目标位置不可达
+ * （浏览器会把 scrollTop clamp 到 0，返回恢复/深链都会落空）。
+ */
+function scrollToTarget(
+  container: HTMLElement,
+  spacer: HTMLElement | null,
+  target: number,
+  programmaticTop: { current: number },
+): number {
+  if (spacer) spacer.style.height = "0px";
+  // 补齐到「目标位置可达」：内容高 H、视口 V，则 spacer = target + V - H。
+  const contentBox = spacer?.parentElement ?? container.firstElementChild;
+  const contentHeight =
+    contentBox instanceof HTMLElement ? contentBox.offsetHeight : container.scrollHeight;
+  if (spacer) {
+    const needed = Math.ceil(Math.max(0, target + container.clientHeight - contentHeight));
+    spacer.style.height = `${needed}px`;
+  }
+  const max = Math.max(0, container.scrollHeight - container.clientHeight);
+  const next = Math.min(Math.max(0, target), max);
+  programmaticTop.current = next;
+  container.scrollTop = next;
+  return next;
+}
+
+function restoreThreadScroll(
+  container: HTMLElement,
+  spacer: HTMLElement | null,
+  memory: { anchorId: string | null; offsetPx: number; scrollTop: number },
+  programmaticTop: { current: number },
+  settled: boolean,
+): boolean {
+  if (memory.anchorId) {
+    const row = container.querySelector<HTMLElement>(
+      `[data-timeline-row][data-post-id="${CSS.escape(memory.anchorId)}"]`,
+    );
+    if (row) {
+      const top = row.getBoundingClientRect().top - container.getBoundingClientRect().top;
+      scrollToTarget(container, spacer, container.scrollTop + top - memory.offsetPx, programmaticTop);
+      container.dataset.anchor = "restored";
+      return true;
+    }
+    // 锚点行还没进 DOM（冷缓存）：等内容落地后再试，避免把位置落在错误的高度上。
+    if (!settled) return false;
+  }
+  scrollToTarget(container, spacer, memory.scrollTop, programmaticTop);
+  container.dataset.anchor = "restored";
+  return true;
+}
+
+// ── 初始锚定 / 数据晚到补偿 / 返回恢复（layout 阶段，无平滑滚动）──────────────
+//
+// 这个「锚定哨兵」必须**渲染在 timeline 内容里**：冷缓存时 focal 行要等
+// ContentSwap 从骨架切到内容才挂载（那是 ContentSwap 自己的 state 提交，父组件
+// 不会重渲染），父级 useLayoutEffect 等不到那一帧。挂在内容里则与 focal 同一
+// 次 commit 挂载，layout 阶段即可量高度并写 scrollTop——浏览器还没 paint。
+
+interface ThreadAnchoringProps {
+  containerRef: RefObject<HTMLDivElement | null>;
+  rowRef: RefObject<HTMLDivElement | null>;
+  spacerRef: RefObject<HTMLDivElement | null>;
+  postId: string;
+  /** 只随「布局真的变了」而变；选中态等纯渲染不触发锚定/补偿。 */
+  anchorKey: string;
+  loaded: boolean;
+  lastFirstRef: RefObject<{ id: string; offsetPx: number } | null>;
+  directionRef: RefObject<"forward" | "back" | "fade">;
+  anchorLocked: RefObject<boolean>;
+  anchoredFor: RefObject<string | null>;
+  programmaticTop: RefObject<number>;
+}
+
+function ThreadAnchoring({
+  containerRef,
+  rowRef,
+  spacerRef,
+  postId,
+  anchorKey,
+  loaded,
+  lastFirstRef,
+  directionRef,
+  anchorLocked,
+  anchoredFor,
+  programmaticTop,
+}: ThreadAnchoringProps) {
+  /** 布局仍在收敛（回复行落地/字体/媒体）时的重试次数上限。 */
+  const retries = useRef(0);
+
+  useLayoutEffect(() => {
+    let cancelled = false;
+    let attempts = 0;
+
+    const anchorNow = () => {
+      const current = containerRef.current;
+      const currentRow = rowRef.current;
+      if (!current || !currentRow || !anchorLocked.current) return;
+      anchorToFocal(current, currentRow, spacerRef.current, programmaticTop);
+      // 内容还在长高时第一遍可能被 clamp：下一帧再量一次（同一帧内布局不会变）。
+      if (current.dataset.anchor === "clamped" && retries.current < 3) {
+        retries.current += 1;
+        requestAnimationFrame(anchorNow);
+      }
+    };
+
+    const run = () => {
+      if (cancelled) return;
+      const container = containerRef.current;
+      const row = rowRef.current;
+      // 首次 commit 里祖先 host 的 ref 可能还没挂（React 先跑子布局效应再挂宿主 ref）：
+      // 微任务里重试（仍在 paint 之前），否则这一次锚定会被永久跳过。
+      if ((!container || !row) && attempts < 3) {
+        attempts += 1;
+        queueMicrotask(run);
+        return;
+      }
+      if (!container || !row) return;
+
+      if (anchoredFor.current !== postId) {
+        const memory = directionRef.current === "back" ? loadThreadScrollMemory(postId) : null;
+        if (memory) {
+          if (!restoreThreadScroll(container, spacerRef.current, memory, programmaticTop, loaded)) {
+            return; // 等内容就绪再试
+          }
+          anchoredFor.current = postId;
+          anchorLocked.current = false;
+          lastFirstRef.current = readFirstVisible(container);
+          return;
+        }
+        if (!anchorLocked.current) {
+          anchoredFor.current = postId;
+          return;
+        }
+        anchoredFor.current = postId;
+        anchorNow();
+        lastFirstRef.current = readFirstVisible(container);
+        return;
+      }
+
+      if (anchorLocked.current) {
+        // 种子/骨架 → 完整线程，或回复合并：用户没滚动过就同一 layout 帧重新贴回 focal。
+        anchorNow();
+      } else {
+        // 已解锁：数据更新只做「保持首可见行」补偿（design §4.2.7），绝不拉回 focal。
+        const prev = lastFirstRef.current;
+        if (prev?.id) {
+          const previousRow = container.querySelector<HTMLElement>(
+            `[data-timeline-row][data-post-id="${CSS.escape(prev.id)}"]`,
+          );
+          if (previousRow) {
+            const top =
+              previousRow.getBoundingClientRect().top - container.getBoundingClientRect().top;
+            const delta = top - prev.offsetPx;
+            if (Math.abs(delta) > 2) {
+              programmaticTop.current = container.scrollTop + delta;
+              container.scrollTop = programmaticTop.current;
+            }
+          }
+        }
+      }
+      lastFirstRef.current = readFirstVisible(container);
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [anchorKey]);
+  return null;
 }
 
 export function ThreadPage() {
@@ -212,7 +539,7 @@ export function ThreadPage() {
   const [thread, setThread] = useState<ThreadView | null>(() =>
     postId ? getThreadSeed(postId) : null,
   );
-  /** 完整线程是否已从网络回来（回复区骨架 → 真实回复的开关）。 */
+  /** 完整线程是否已从网络回来（回复骨架 → 真实回复的开关）。 */
   const [loaded, setLoaded] = useState(() => Boolean(postId && getCachedThread(postId)));
   /**
    * 转场进行中到达的网络结果先挂起：转场快照必须与落位后的页面一致，
@@ -243,12 +570,21 @@ export function ThreadPage() {
   const [error, setError] = useState<string | null>(null);
   const [pendingThread, setPendingThread] = useState<ThreadView | null>(null);
   const [newReplyCount, setNewReplyCount] = useState(0);
-  const [extraDepth, setExtraDepth] = useState(0);
-  const [expandedBranches, setExpandedBranches] = useState<Set<string>>(new Set());
-  const [ancestorsExpanded, setAncestorsExpanded] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(-1);
+  /** focal 被服务端截断（深链超 maxDepth）时用单帖接口补出来的焦点帖。 */
+  const [syntheticFocal, setSyntheticFocal] = useState<PostView | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const focalRef = useRef<HTMLDivElement | null>(null);
+  const focalRowRef = useRef<HTMLDivElement | null>(null);
+  const spacerRef = useRef<HTMLDivElement | null>(null);
+  /** 用户首次 wheel/touch/pointer/key 或「非我们写的」scroll 之后解除锚定。 */
+  const anchorLocked = useRef(true);
+  const anchoredFor = useRef<string | null>(null);
+  const programmaticTop = useRef(-1);
+  /** 已解锁时的「首可见行」基线（滚动时与每次 layout 后更新）。 */
+  const lastFirstRef = useRef<{ id: string; offsetPx: number } | null>(null);
+  const direction = useTransitionDirection();
+  const directionRef = useRef(direction);
+  directionRef.current = direction;
   // 打开详情即已读（Owner 2026-11-07）：按帖记录到本端读集合，不管从哪条路径进来
   // （时间线/成员页/搜索/通知）都生效；不推进服务端游标，别的旧帖不受影响。
   const notifications = useNotifications();
@@ -261,7 +597,6 @@ export function ThreadPage() {
   /** 沉浸式回复编辑器：默认收起，点回复入口 / ?reply=1 才展开。 */
   const [replyOpen, setReplyOpen] = useState(false);
   const autoReplyOpened = useRef(false);
-  const anchoredFor = useRef<string | null>(null);
   const refreshTimer = useRef<number | null>(null);
   const threadRef = useRef<ThreadView | null>(null);
   threadRef.current = thread;
@@ -303,10 +638,8 @@ export function ThreadPage() {
     setLoaded(Boolean(postId && getCachedThread(postId)));
     setPendingThread(null);
     setNewReplyCount(0);
-    setExtraDepth(0);
-    setExpandedBranches(new Set());
-    setAncestorsExpanded(false);
     setSelectedIndex(-1);
+    setSyntheticFocal(null);
     void load(false);
   }, [load]);
 
@@ -337,21 +670,50 @@ export function ThreadPage() {
 
   const nodes = useMemo(() => thread?.posts ?? [], [thread]);
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
-  const childrenMap = useMemo(() => {
-    const map = new Map<string, ThreadNode[]>();
-    for (const node of nodes) {
-      if (!node.parent_id) continue;
-      const list = map.get(node.parent_id) ?? [];
-      list.push(node);
-      map.set(node.parent_id, list);
-    }
-    return map;
-  }, [nodes]);
 
-  const focal = useMemo(() => {
-    if (!thread) return null;
-    return nodeMap.get(thread.focal_id ?? postId) ?? nodeMap.get(postId) ?? null;
-  }, [thread, nodeMap, postId]);
+  const focalId = thread?.focal_id ?? postId;
+  const focalInPosts = useMemo(
+    () => Boolean(thread?.posts.some((post) => post.id === focalId)),
+    [thread, focalId],
+  );
+  const focalFromPosts = useMemo(
+    () => nodeMap.get(focalId) ?? nodeMap.get(postId) ?? null,
+    [nodeMap, focalId, postId],
+  );
+
+  // 深链超过 maxDepth：focal 不在 posts 里 → 用现有单帖接口补出焦点帖（不改接口）。
+  useEffect(() => {
+    if (!client || !postId || !thread || focalInPosts) return;
+    let alive = true;
+    void client
+      .post(postId)
+      .then((post) => {
+        if (alive) setSyntheticFocal(post);
+      })
+      .catch((err: unknown) => {
+        if (alive) setError((err as Error).message);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [client, postId, thread, focalInPosts]);
+
+  // 单帖 seed 被完整线程替换、合成 focal 还没回来时，保留上一帧的 focal，
+  // 避免 ContentSwap 已进入 content 却渲染空内容（闪空）。
+  const lastFocalRef = useRef<ThreadNode | null>(null);
+  if (focalFromPosts) lastFocalRef.current = focalFromPosts;
+
+  const focal = useMemo<ThreadNode | null>(() => {
+    if (focalFromPosts) return focalFromPosts;
+    if (!syntheticFocal) return lastFocalRef.current;
+    return {
+      ...syntheticFocal,
+      depth: 0,
+      is_spine: true,
+      is_self_continuation: false,
+      child_count: syntheticFocal.reply_count,
+    };
+  }, [focalFromPosts, syntheticFocal]);
 
   const ancestorChain = useMemo(() => {
     if (!focal) return [];
@@ -366,7 +728,7 @@ export function ThreadPage() {
     return chain;
   }, [focal, nodeMap]);
 
-  const backendCollapsed = useMemo(() => {
+  const collapsedCounts = useMemo(() => {
     const map = new Map<string, number>();
     for (const group of thread?.collapsed ?? []) {
       map.set(group.parent_id, (map.get(group.parent_id) ?? 0) + group.count);
@@ -374,46 +736,127 @@ export function ThreadPage() {
     return map;
   }, [thread?.collapsed]);
 
-  const maxDepth = 3 + extraDepth;
-  const plan = useMemo(() => {
-    if (!focal) return { items: [], replyingTo: new Map<string, string>() } satisfies ReplyPlan;
-    return buildReplyPlan(focal, childrenMap, backendCollapsed, expandedBranches, maxDepth);
-  }, [focal, childrenMap, backendCollapsed, expandedBranches, maxDepth]);
-
-  const replyNodes = useMemo(
-    () => plan.items.filter((item): item is Extract<ReplyItem, { kind: "node" }> => item.kind === "node"),
-    [plan.items],
+  const deepGap = Boolean(thread && focal && !focalInPosts);
+  // focal 不在 posts，且它的父帖也解析不到 → 本页只有「缺口行 + focal」；
+  // 父帖能解析时按正常祖先链渲染，不要伪造「更早的回复未加载」。
+  const unresolvedGap = Boolean(
+    deepGap && focal?.parent_id !== null && !nodeMap.has(focal?.parent_id ?? ""),
   );
+  const plan = useMemo<TimelinePlan>(() => {
+    if (!focal) {
+      return { rows: [], replyNodes: [], gapParentId: null, gapVisible: false };
+    }
+    return buildTimelinePlan({
+      focal,
+      ancestors: ancestorChain,
+      nodes,
+      nodeMap,
+      collapsedCounts,
+      deepGap,
+      unresolvedGap,
+      loaded,
+    });
+  }, [focal, ancestorChain, nodes, nodeMap, collapsedCounts, deepGap, unresolvedGap, loaded]);
 
-  const focalReplyingTo = useMemo(() => {
-    if (!focal || !focal.parent_id || ancestorsExpanded) return null;
-    const parent = nodeMap.get(focal.parent_id);
-    return focal.reply_to_account_id ?? parent?.author ?? null;
-  }, [focal, ancestorsExpanded, nodeMap]);
+  type RenderRow =
+    | { kind: "context-gap"; key: string; parentId: string | null }
+    | PlanRow
+    | { kind: "reply-skeleton"; key: string };
 
-  const replyGroupCount = useMemo(() => {
-    if (!focal) return 0;
-    const direct = childrenMap.get(focal.id) ?? [];
-    const selfChain = direct.filter((node) => node.is_self_continuation);
-    const others = direct.filter((node) => !node.is_self_continuation);
-    return (selfChain.length > 0 ? 1 : 0) + others.length;
-  }, [childrenMap, focal]);
+  const rows = useMemo<RenderRow[]>(() => {
+    const out: RenderRow[] = [];
+    if (plan.gapVisible && (plan.gapParentId || plan.gapVisible)) {
+      out.push({
+        kind: "context-gap",
+        key: "context-gap",
+        parentId: plan.gapParentId,
+      });
+    }
+    out.push(...plan.rows);
+    if (!loaded) {
+      out.push({ kind: "reply-skeleton", key: "reply-skeleton-1" });
+      out.push({ kind: "reply-skeleton", key: "reply-skeleton-2" });
+    }
+    return out;
+  }, [plan.rows, plan.gapParentId, plan.gapVisible, loaded]);
 
-  // focal 锚点：数据到位后滚到视口顶（scroll-margin-top 避开吸顶栏）。
-  // 键包含上文条数：合成线程 → 真实线程补出「N 条上文」时，同步重新贴顶（layout effect，同帧完成不闪）。
-  useLayoutEffect(() => {
-    if (!thread || !focal) return;
-    const key = `${thread.root_id}|${thread.focal_id}|${postId}|${ancestorChain.length}`;
-    if (anchoredFor.current === key) return;
-    anchoredFor.current = key;
-    const el = focalRef.current;
+  /** 只随布局变化的键：锚定/补偿只在它变化时跑，选中态等纯渲染不触发。 */
+  const anchorKey = `${postId}|${ancestorChain.length}|${plan.rows.length}|${loaded ? 1 : 0}|${thread?.as_of_seq ?? 0}`;
+
+
+  // 首次滚动即解锁：wheel/touch/pointer/key，以及「不是我们写进去的」scroll。
+  useEffect(() => {
     const container = containerRef.current;
-    if (!el || !container) return;
-    const offset =
-      el.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop;
-    // 聚焦帖贴到吸顶栏下沿（3.75rem）；顶部内容不足时归零。
-    container.scrollTop = Math.max(0, Math.round(offset - 60));
-  }, [thread, focal, postId, ancestorChain.length]);
+    if (!container) return;
+    const unlock = () => {
+      anchorLocked.current = false;
+    };
+    const onScroll = () => {
+      if (Math.abs(container.scrollTop - programmaticTop.current) > 1) unlock();
+    };
+    container.addEventListener("wheel", unlock, { passive: true });
+    container.addEventListener("touchstart", unlock, { passive: true });
+    container.addEventListener("pointerdown", unlock);
+    container.addEventListener("keydown", unlock);
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      container.removeEventListener("wheel", unlock);
+      container.removeEventListener("touchstart", unlock);
+      container.removeEventListener("pointerdown", unlock);
+      container.removeEventListener("keydown", unlock);
+      container.removeEventListener("scroll", onScroll);
+    };
+  }, [postId]);
+
+  // 窗口尺寸变化：仍未解锁时重算 F / spacer / scrollTop。
+  useEffect(() => {
+    const onResize = () => {
+      const container = containerRef.current;
+      const row = focalRowRef.current;
+      if (!container || !row || !anchorLocked.current) return;
+      anchorToFocal(container, row, spacerRef.current, programmaticTop);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // 滚动位置记忆：首可见行 + 行内偏移（sessionStorage，同一会话返回可恢复）。
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || !postId) return;
+    let frame = 0;
+    const save = () => {
+      // 卸载清理时 DOM 可能已被摘除：此时量出来全是 0，会覆盖掉上一次的好记忆。
+      if (!container.isConnected || container.clientHeight === 0) return;
+      const first = readFirstVisible(container);
+      lastFirstRef.current = first;
+      saveThreadScrollMemory(postId, {
+        anchorId: first?.id ?? null,
+        offsetPx: first?.offsetPx ?? 0,
+        scrollTop: container.scrollTop,
+      });
+    };
+    const onScroll = () => {
+      if (frame !== 0) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        save();
+      });
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") save();
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("pagehide", save);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      window.removeEventListener("pagehide", save);
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (frame !== 0) cancelAnimationFrame(frame);
+      save();
+    };
+  }, [postId]);
 
   // ?reply=1 是明确的回复意图：线程到位后直接展开编辑器（只自动展开一次，
   // 关闭后即便线程刷新也不再弹回）。
@@ -425,7 +868,11 @@ export function ThreadPage() {
   }, [wantReply, focal]);
 
   // 键盘：j/k 移动，Enter 打开该条详情，r 回复
-  const kbNodes = useMemo(() => (focal ? [focal, ...replyNodes.map((item) => item.node)] : []), [focal, replyNodes]);
+  const replyNodes = plan.replyNodes;
+  const kbNodes = useMemo(
+    () => (focal ? [focal, ...replyNodes] : []),
+    [focal, replyNodes],
+  );
   useEffect(() => {
     const isTyping = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
@@ -434,6 +881,14 @@ export function ThreadPage() {
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return;
+      // j/k、PageDown/Space/方向键都会滚动：先解锁锚定，否则重渲染立刻把 scrollTop 写回 focal。
+      if (
+        ["j", "k", "PageDown", "PageUp", "Home", "End", " ", "ArrowDown", "ArrowUp"].includes(
+          event.key,
+        )
+      ) {
+        anchorLocked.current = false;
+      }
       if (event.key === "j" || event.key === "k") {
         if (kbNodes.length === 0) return;
         event.preventDefault();
@@ -474,7 +929,7 @@ export function ThreadPage() {
     setNewReplyCount(0);
   };
 
-  if (error && !thread) {
+  if (error && !focal) {
     return (
       <div className="flex h-full flex-col">
         <ThreadHeader source={source} />
@@ -492,242 +947,223 @@ export function ThreadPage() {
     );
   }
 
+  const lastIndex = rows.length - 1;
+
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <ThreadHeader source={source} />
-      <div ref={containerRef} className="min-h-0 flex-1 overflow-y-auto" data-testid="thread-scroll">
-        <ContentSwap ready={Boolean(focal)} skeleton={<ThreadSkeleton />} testId="thread-swap">
-          {focal ? (
-            <>
-        {ancestorChain.length > 0 || newReplyCount > 0 ? (
-          <div className="sticky top-0 z-20 flex min-h-8 items-center gap-2 border-b border-border/60 bg-background/80 px-2 py-1 backdrop-blur-md">
-            {ancestorChain.length > 0 ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                data-testid="ancestors-toggle"
-                onClick={() => setAncestorsExpanded((value) => !value)}
-              >
-                <ArrowUpIcon data-icon="inline-start" />
-                {ancestorsExpanded ? "收起上文" : `${ancestorChain.length} 条上文`}
-                {ancestorsExpanded ? (
-                  <ChevronDownIcon data-icon="inline-end" />
-                ) : (
-                  <ChevronRightIcon data-icon="inline-end" />
-                )}
-              </Button>
-            ) : (
-              <span />
-            )}
-            {newReplyCount > 0 ? (
-              <Button
-                type="button"
-                data-testid="new-replies-pill"
-                className="ml-auto h-7 rounded-full px-3"
-                onClick={mergePending}
-              >
-                <ArrowUpIcon data-icon="inline-start" />
-                {newReplyCount} 条新回复
-              </Button>
-            ) : null}
-          </div>
-        ) : null}
-
-        <div className="flex flex-col gap-3 p-3">
-          {ancestorsExpanded && ancestorChain.length > 0 ? (
-            <Card className="gap-0 divide-y divide-border/60 p-0">
-              {ancestorChain
-                .slice(0, 3)
-                .reverse()
-                .map((ancestor) => (
-                  <PostCard
-                    key={ancestor.id}
-                    post={ancestor}
-                    variant="ancestor"
-                    onOpen={openPost}
-                    onReply={replyPost}
-                    onQuote={quotePost}
-                  />
-                ))}
-              {ancestorChain.length > 3 ? (
-                <div className="px-4 py-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      const oldest = ancestorChain.slice(0, 3).at(-1);
-                      if (oldest?.parent_id) navigate(`/p/${encodeURIComponent(oldest.parent_id)}`);
-                    }}
-                  >
-                    <ArrowUpIcon data-icon="inline-start" />
-                    继续 {ancestorChain.length - 3} 条上文
-                  </Button>
-                </div>
-              ) : null}
-            </Card>
-          ) : null}
-
-          <Card
-            ref={focalRef}
-            data-testid="focal-card"
-            className="gap-0 p-0"
-            style={{ scrollMarginTop: ancestorChain.length > 0 || newReplyCount > 0 ? 40 : 0 }}
-          >
-            <PostCard
-              post={focal}
-              variant="focal"
-              replyingTo={focalReplyingTo}
-              selected={selectedIndex === 0}
-              onReply={replyPost}
-              onQuote={quotePost}
-            />
-            <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-4 py-2 text-xs text-muted-foreground">
-              <span>{fullTime(focal.created_at)}</span>
-            </div>
-          </Card>
-
-          {staticMode ? (
-            <Card className="gap-0 p-3 text-sm text-muted-foreground" data-testid="reply-readonly">
-              静态归档 · 只读：这条线程以导出时的快照为准，不能回复。
-            </Card>
-          ) : focal.deleted_at === null ? null : (
-            <Card className="gap-0 p-3 text-sm text-muted-foreground" data-testid="reply-unavailable">
-              此帖已删除，不能再回复。
-            </Card>
-          )}
-
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={containerRef}
+          className="h-full overflow-y-auto"
+          style={{ overflowAnchor: "none" }}
+          data-testid="thread-scroll"
+        >
           <ContentSwap
-            ready={loaded}
-            className="flex flex-col gap-3"
-            skeletonMinHeight="0px"
-            testId="reply-swap"
-            skeleton={
-              <>
-                <div className="flex items-center gap-2 px-1 text-sm font-medium">
-                  <Skeleton className="h-4 w-16" />
-                  <Separator className="flex-1" />
-                </div>
-                <div
-                  className="divide-y divide-border/60 rounded-xl border border-border/60 bg-card/40"
-                  data-testid="reply-skeleton"
-                >
-                  <PostSkeleton compact />
-                  <PostSkeleton compact />
-                </div>
-              </>
-            }
+            ready={Boolean(focal)}
+            animateHeight={false}
+            skeleton={<ThreadSkeleton />}
+            testId="thread-swap"
           >
-            <div className="flex items-center gap-2 px-1 text-sm font-medium">
-              <span data-testid="reply-count">{replyGroupCount} 条回复</span>
-              <Separator className="flex-1" />
-            </div>
+            {focal ? (
+              <>
+                <div data-testid="thread-timeline" className="divide-y divide-border/60">
+                  {rows.map((row, index) => {
+                    const first = index === 0;
+                    const last = index === lastIndex;
 
-            {plan.items.length === 0 ? null : (
-            <Card className="gap-0 divide-y divide-border/60 p-0" data-testid="reply-list">
-              {plan.items.map((item) => {
-                if (item.kind === "node") {
-                  return (
-                    <div
-                      key={`node-${item.node.id}`}
-                      className="relative"
-                      style={{ marginLeft: item.indent }}
-                    >
-                      {item.depth > 3 && !item.selfContinuation ? (
-                        <span aria-hidden className="absolute left-0 top-0 bottom-0 w-px bg-border" />
-                      ) : null}
-                      <PostCard
-                        post={item.node}
-                        variant="reply"
-                        selected={selectedIndex === kbNodes.findIndex((node) => node.id === item.node.id)}
-                        selfContinuation={item.selfContinuation}
-                        selfHeader={item.selfHeader}
-                        chainPosition={item.chainPosition}
-                        replyingTo={plan.replyingTo.get(item.node.id) ?? null}
-                        onOpen={openPost}
-                        onReply={replyPost}
-                        onQuote={quotePost}
-                      />
-                    </div>
-                  );
-                }
-                if (item.kind === "read-more") {
-                  return (
-                    <div key={`read-${item.nodeId}`} style={{ marginLeft: item.indent }} className="px-4 py-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        data-testid="read-more-replies"
-                        onClick={() => navigate(`/p/${encodeURIComponent(item.nodeId)}`)}
-                      >
-                        <ChevronRightIcon data-icon="inline-start" />
-                        Read {item.count} more replies
-                      </Button>
-                    </div>
-                  );
-                }
-                if (item.kind === "backend-collapse") {
-                  return (
-                    <div key={`backend-${item.nodeId}`} style={{ marginLeft: item.indent }} className="px-4 py-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => navigate(`/p/${encodeURIComponent(item.nodeId)}`)}
-                      >
-                        <ChevronDownIcon data-icon="inline-start" />
-                        继续 {item.count} 层回复
-                      </Button>
-                    </div>
-                  );
-                }
-                if (item.kind === "expand-branch") {
-                  return (
-                    <div key={item.key} style={{ marginLeft: item.indent }} className="px-4 py-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        data-testid="expand-branch"
-                        onClick={() =>
-                          setExpandedBranches((prev) => {
-                            const next = new Set(prev);
-                            next.add(item.parentId);
-                            return next;
-                          })
+                    if (row.kind === "context-gap") {
+                      return (
+                        <TimelineRow
+                          key={row.key}
+                          kind="context-gap"
+                          first={first}
+                          last={last}
+                          testId="context-gap"
+                        >
+                          <div className="py-3 pl-[68px] pr-4">
+                            <p className="text-sm text-muted-foreground">
+                              更早的回复未加载
+                            </p>
+                            {row.parentId ? (
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                data-testid="context-gap-open"
+                                data-node-id={row.parentId}
+                                className="-ml-2 mt-1 h-8 px-2 text-sm"
+                                onClick={() => navigate(`/p/${encodeURIComponent(row.parentId!)}`)}
+                              >
+                                <ChevronRightIcon data-icon="inline-start" />
+                                查看上一帖
+                              </Button>
+                            ) : null}
+                          </div>
+                        </TimelineRow>
+                      );
+                    }
+
+                    if (row.kind === "subthread") {
+                      return (
+                        <TimelineRow
+                          key={row.key}
+                          kind="subthread"
+                          first={first}
+                          last={last}
+                        >
+                          <div className="py-2 pl-[68px] pr-4">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              data-testid="subthread-entry"
+                              data-node-id={row.nodeId}
+                              className="-ml-2 h-8 gap-1.5 px-2 text-sm text-muted-foreground hover:text-foreground"
+                              onClick={() => navigate(`/p/${encodeURIComponent(row.nodeId)}`)}
+                            >
+                              <ChevronRightIcon data-icon="inline-start" />
+                              查看该子线程 · {row.count} 条回复
+                            </Button>
+                          </div>
+                        </TimelineRow>
+                      );
+                    }
+
+                    if (row.kind === "reply-skeleton") {
+                      return (
+                        <TimelineRow
+                          key={row.key}
+                          kind="reply-skeleton"
+                          first={first}
+                          last={last}
+                        >
+                          <PostSkeleton compact />
+                        </TimelineRow>
+                      );
+                    }
+
+                    const node = row.node;
+                    const isFocal = row.role === "focal";
+                    const kbIndex = isFocal
+                      ? 0
+                      : kbNodes.findIndex((candidate) => candidate.id === node.id);
+                    return (
+                      <TimelineRow
+                        key={row.key}
+                        kind={row.role}
+                        first={first}
+                        last={last}
+                        postId={node.id}
+                        stub={isFocal && !first}
+                        testId={isFocal ? "focal-card-row" : undefined}
+                        avatarTop={
+                          row.compact ? COMPACT_PAD_TOP : isFocal ? FOCAL_PAD_TOP : THREAD_PAD_TOP
                         }
+                        avatarBottom={
+                          row.compact
+                            ? COMPACT_PAD_TOP + COMPACT_AVATAR
+                            : (isFocal ? FOCAL_PAD_TOP : THREAD_PAD_TOP) + THREAD_AVATAR
+                        }
+                        rowRef={isFocal ? focalRowRef : undefined}
                       >
-                        <ChevronDownIcon data-icon="inline-start" />
-                        展开 {item.count} 条回复
-                      </Button>
-                    </div>
-                  );
-                }
-                return (
-                  <div key={item.key} style={{ marginLeft: item.indent }} className="px-4 py-2">
-                    <Button variant="ghost" size="sm" onClick={() => setExtraDepth((depth) => depth + 3)}>
-                      <ChevronDownIcon data-icon="inline-start" />
-                      继续 {item.count} 层回复
+                        <div data-testid={isFocal ? "focal-card" : undefined}>
+                          <PostCard
+                            post={node}
+                            variant={isFocal ? "focal" : row.role === "ancestor" ? "ancestor" : "reply"}
+                            selected={kbIndex >= 0 && kbIndex === selectedIndex}
+                            replyingTo={row.replyingTo}
+                            selfContinuation={row.compact}
+                            selfHeader={row.compactHeader}
+                            avatarPx={row.compact ? undefined : THREAD_AVATAR}
+                            avatarGapPx={THREAD_AVATAR_GAP}
+                            paddingTop={isFocal ? FOCAL_PAD_TOP : THREAD_PAD_TOP}
+                            onOpen={isFocal ? undefined : openPost}
+                            onReply={replyPost}
+                            onQuote={quotePost}
+                          />
+                          {isFocal ? (
+                            <div className="flex flex-wrap items-center gap-2 border-t border-border/60 py-2 pl-[68px] pr-4 text-xs text-muted-foreground">
+                              <span>{fullTime(node.created_at)}</span>
+                              <span aria-hidden>·</span>
+                              <span data-testid="reply-count">
+                                {node.reply_count > 0
+                                  ? `${node.reply_count} 条回复`
+                                  : "还没有回复"}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </TimelineRow>
+                    );
+                  })}
+                </div>
+
+                {staticMode ? (
+                  <div
+                    className="border-b border-border/60 px-4 py-3 text-sm text-muted-foreground"
+                    data-testid="reply-readonly"
+                  >
+                    静态归档 · 只读：这条线程以导出时的快照为准，不能回复。
+                  </div>
+                ) : focal.deleted_at === null ? null : (
+                  <div
+                    className="border-b border-border/60 px-4 py-3 text-sm text-muted-foreground"
+                    data-testid="reply-unavailable"
+                  >
+                    此帖已删除，不能再回复。
+                  </div>
+                )}
+
+                <div
+                  ref={spacerRef}
+                  aria-hidden
+                  data-testid="thread-tail-spacer"
+                  style={{ height: "0px" }}
+                />
+
+                {focal.deleted_at === null && !staticMode ? (
+                  <div className="sticky bottom-0 z-20 border-t border-border/60 bg-background/85 px-3 py-2 backdrop-blur-md">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      data-testid="reply-open"
+                      aria-label={`回复 @${focal.author}`}
+                      onClick={() => setReplyOpen(true)}
+                      className="h-10 w-full justify-start rounded-full border-border/70 bg-muted/40 px-4 text-sm font-normal text-muted-foreground hover:bg-muted/70"
+                    >
+                      发布你的回复
                     </Button>
                   </div>
-                );
-              })}
-            </Card>
-            )}
+                ) : null}
+
+                <ThreadAnchoring
+                  containerRef={containerRef}
+                  rowRef={focalRowRef}
+                  spacerRef={spacerRef}
+                  postId={postId}
+                  anchorKey={anchorKey}
+                  loaded={loaded}
+                  lastFirstRef={lastFirstRef}
+                  directionRef={directionRef}
+                  anchorLocked={anchorLocked}
+                  anchoredFor={anchoredFor}
+                  programmaticTop={programmaticTop}
+                />
+              </>
+            ) : null}
           </ContentSwap>
         </div>
-            </>
-          ) : null}
-        </ContentSwap>
-        {focal && focal.deleted_at === null && !staticMode ? (
-          <div className="sticky bottom-0 z-20 border-t border-border/60 bg-background/85 px-3 py-2 backdrop-blur-md">
+        {newReplyCount > 0 ? (
+          <div className="pointer-events-none absolute right-3 top-3 z-20">
             <Button
               type="button"
-              variant="outline"
-              data-testid="reply-open"
-              aria-label={`回复 @${focal.author}`}
-              onClick={() => setReplyOpen(true)}
-              className="h-10 w-full justify-start rounded-full border-border/70 bg-muted/40 px-4 text-sm font-normal text-muted-foreground hover:bg-muted/70"
+              data-testid="new-replies-pill"
+              className="pointer-events-auto h-7 rounded-full px-3"
+              onClick={mergePending}
             >
-              发布你的回复
+              <ArrowUpIcon data-icon="inline-start" />
+              {newReplyCount} 条新回复
             </Button>
           </div>
         ) : null}
@@ -753,6 +1189,8 @@ function ThreadHeader({ source }: { source: string }) {
       backTestId="thread-back"
       source={`来自${source}`}
       sourceTestId="thread-source"
+      // 吸顶栏：半透明玻璃 + thread-hairline 下边线（视觉复核项 9）。
+      tone="thread"
     />
   );
 }

@@ -1,0 +1,21 @@
+/*
+ * report 线程 timeline 自有令牌（不修改 solid-glass 原件）。
+ *
+ * 色值来自 Owner 2026-11-08 视觉复核：导轨 #C3C9D2（比 divider 深一档，
+ * divider 继续用 --border 不动）、吸顶栏下边线 #D7DBE0。
+ * dark 下没有给定色值，按 solid-glass 的玻璃语汇用半透明白。
+ */
+:root {
+  --thread-rail: #c3c9d2;
+  --thread-hairline: #d7dbe0;
+}
+
+.dark {
+  --thread-rail: oklch(1 0 0 / 18%);
+  --thread-hairline: oklch(1 0 0 / 10%);
+}
+
+@theme inline {
+  --color-thread-rail: var(--thread-rail);
+  --color-thread-hairline: var(--thread-hairline);
+}

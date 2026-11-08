@@ -17,7 +17,6 @@ import { QuoteCard } from "@/components/QuoteCard";
 import { TagChips } from "@/components/TagChips";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { copyText, postLink } from "@/lib/copy";
 import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
@@ -27,7 +26,6 @@ import { markSharedSubject } from "@/lib/shared-element";
 import { toastReadOnly } from "@/lib/readonly";
 
 export type PostVariant = "feed" | "focal" | "reply" | "ancestor";
-export type ChainPosition = "none" | "start" | "middle" | "end" | "single";
 
 interface PostCardProps {
   post: PostLike;
@@ -37,21 +35,31 @@ interface PostCardProps {
   onQuote?: (post: PostLike) => void;
   onCopy?: (post: PostLike) => void;
   selected?: boolean;
+  /** 「回复给 @x」：仅当父帖不是上一 post 行时由 planner 传入（design §2.3）。 */
   replyingTo?: string | null;
-  /** 自接线程的后续条目：24px 头像、无作者行/操作栏 */
+  /** 自接线程的连续续接条目：24px 头像靠正文列一侧、无作者行/操作栏。 */
   selfContinuation?: boolean;
-  /** 自接链首条仍显示作者/时间（整链头像统一 24px） */
+  /** 连续自接链的首条仍显示作者/时间（整链头像统一 24px、同列同轨）。 */
   selfHeader?: boolean;
-  chainPosition?: ChainPosition;
+  /** 头像像素（feed 42；线程 timeline 行 46）。 */
+  avatarPx?: number;
+  /** 头像列与正文的间距（feed 12；线程 6 → 正文列 x=68）。 */
+  avatarGapPx?: number;
+  /** 行首内边距（默认 12；focal 20）。 */
+  paddingTop?: number;
   className?: string;
   testId?: string;
 }
 
+/** 线程 timeline 行的字号：正文 17/27（设计复核 16.5–17 / 26–28）。 */
+const THREAD_BODY = "text-[17px] leading-[25px]";
+
 /**
  * 单条帖文卡片。
  *
- * - feed：正文约 6 行截断 + 展开；focal：全文永不截断（design §12.3）
- * - 自接线程后续条：仅头像 + 正文 + i/n，连接线沿头像列（design §12.4）
+ * - feed：正文约 6 行截断 + 展开；focal/ancestor：全文永不截断（design §12.3）
+ * - 线程行共用同一条 46px 头像列（正文列 x=68）与 `px-4` 水平度量：不做任何缩进
+ *   （design report-thread-timeline §3）；自接链续接条的 24px 头像**同轴居中**（中心 39）
  * - 操作栏固定三键：回复 / 引用 / 复制链接（无点赞转发）
  */
 export function PostCard({
@@ -65,7 +73,9 @@ export function PostCard({
   replyingTo = null,
   selfContinuation = false,
   selfHeader = false,
-  chainPosition = "none",
+  avatarPx,
+  avatarGapPx,
+  paddingTop,
   className,
   testId,
 }: PostCardProps) {
@@ -118,61 +128,48 @@ export function PostCard({
   };
 
   if (selfContinuation) {
+    // 连续自接续接行：24px 头像与普通行同轴（中心 39，gutter 17，正文列仍 x=68），
+    // 编号不做独立 chip 行，改正文行内后缀「· 5/9」。
+    const inlineNumber =
+      post.i !== undefined && post.n !== undefined ? ` · ${post.i}/${post.n}` : "";
+    const source = deleted ? post.body_md : `${post.body_md}${inlineNumber}`;
     return (
       <article
         data-post-id={post.id}
         data-shared-host
         data-author={post.author}
         data-testid={testId ?? "post-self-continuation"}
-        className={cn("relative flex gap-2 px-3 py-1.5", selected && "bg-accent/50", className)}
+        className={cn("relative flex items-start px-4 py-1.5", selected && "bg-accent/50", className)}
+        style={{ gap: 6 }}
         onClick={(event) => {
           if ((event.target as HTMLElement).closest("a,button,input,textarea")) return;
           handleOpen(event.currentTarget);
         }}
       >
-        {chainPosition !== "none" && chainPosition !== "single" ? (
-          <span
-            aria-hidden
-            className="absolute left-[23px] w-0.5 bg-border"
-            style={
-              chainPosition === "start"
-                ? { top: 24, bottom: 0 }
-                : chainPosition === "end"
-                  ? { top: 0, height: 12 }
-                  : { top: 0, bottom: 0 }
-            }
-          />
-        ) : null}
-        <div className="relative z-[1] shrink-0" data-shared-avatar>
-          <AuthorAvatar account={author} fallbackId={post.author} size="small" />
+        <div className="flex w-[46px] shrink-0 items-start justify-center">
+          <div className="relative z-[1] size-6" data-shared-avatar>
+            <AuthorAvatar account={author} fallbackId={post.author} size="small" />
+          </div>
         </div>
         <div className="min-w-0 flex-1">
           {selfHeader ? (
-            <div className="flex items-start justify-between gap-2">
-              <div data-shared-author>
-                <AuthorLine
-                  account={author}
-                  fallbackId={post.author}
-                  time={timeShort(post.created_at)}
-                  sharedId={canShare ? post.id : undefined}
-                />
-              </div>
-              {post.i !== undefined && post.n !== undefined ? (
-                <Badge variant="secondary" className="shrink-0 h-4 px-1 text-[10px]">
-                  {post.i}/{post.n}
-                </Badge>
-              ) : null}
+            <div data-shared-author>
+              <AuthorLine
+                account={author}
+                fallbackId={post.author}
+                time={timeShort(post.created_at)}
+                size="thread"
+                sharedId={canShare ? post.id : undefined}
+              />
             </div>
-          ) : post.i !== undefined && post.n !== undefined ? (
-            <Badge variant="secondary" className="mb-0.5 h-4 px-1 text-[10px]">
-              {post.i}/{post.n}
-            </Badge>
           ) : null}
           {deleted ? (
             <DeletedBody compact />
           ) : (
             <>
-              <Markdown source={post.body_md} className="text-[0.95rem]" />
+              <div data-testid="post-body" className={cn(THREAD_BODY, selfHeader && "mt-0.5")}>
+                <Markdown source={source} />
+              </div>
               <MediaGrid media={post.media} />
               <QuoteCard post={post} />
               <TagChips tags={post.tags} />
@@ -191,11 +188,13 @@ export function PostCard({
       data-testid={testId ?? "post-card"}
       data-variant={variant}
       className={cn(
-        "relative px-4 py-3 transition-colors",
+        "relative px-4 transition-colors",
+        variant === "feed" ? "pb-3" : "pb-1.5",
         onOpen && !deleted && "cursor-pointer hover:bg-muted/30",
         selected && "bg-accent/60 ring-2 ring-ring/40",
         className,
       )}
+      style={{ paddingTop: paddingTop ?? 12 }}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest("a,button,input,textarea")) return;
         handleOpen(event.currentTarget);
@@ -203,12 +202,13 @@ export function PostCard({
       onPointerEnter={() => prefetchThread(client, post.id)}
       onPointerDown={() => prefetchThread(client, post.id)}
     >
-      <div className="flex gap-3">
-        <div className="shrink-0" data-shared-avatar>
+      <div className="flex" style={{ gap: avatarGapPx ?? 12 }}>
+        <div className="relative z-[1] shrink-0" data-shared-avatar>
           <AuthorAvatar
             account={author}
             fallbackId={post.author}
-            size={variant === "ancestor" ? "small" : "normal"}
+            size="normal"
+            pixel={avatarPx}
             sharedId={canShare ? post.id : undefined}
           />
         </div>
@@ -220,20 +220,16 @@ export function PostCard({
                   account={author}
                   fallbackId={post.author}
                   time={timeShort(post.created_at)}
+                  size={variant === "feed" ? "default" : "thread"}
                   sharedId={canShare ? post.id : undefined}
                 />
               </div>
               {replyingTo ? (
-                <div className="mt-0.5 text-xs text-muted-foreground">
-                  回复 <span className="text-link">@{replyingTo}</span>
+                <div className="mt-0.5 text-[13px] text-muted-foreground">
+                  回复给 <span className="font-medium text-link">@{replyingTo}</span>
                 </div>
               ) : null}
             </div>
-            {post.i !== undefined && post.n !== undefined ? (
-              <Badge variant="secondary" className="shrink-0">
-                {post.i}/{post.n}
-              </Badge>
-            ) : null}
           </div>
 
           {deleted ? (
@@ -241,9 +237,9 @@ export function PostCard({
           ) : (
             <>
               <div
+                data-testid="post-body"
                 className={cn(
-                  "mt-1",
-                  variant === "focal" ? "text-[1.05rem] leading-relaxed" : "text-[0.95rem]",
+                  variant === "feed" ? "mt-1 text-[0.95rem]" : cn("-mt-2", THREAD_BODY),
                   clamped && "report-clamp-6",
                 )}
               >
@@ -271,13 +267,25 @@ export function PostCard({
           )}
 
           {!deleted ? (
-            <div className="-ml-2 mt-1.5 flex flex-wrap items-center gap-0.5 text-muted-foreground">
+            <div
+              data-testid="post-actions"
+              className={cn(
+                "text-muted-foreground",
+                variant === "feed"
+                  ? "-ml-2 mt-1.5 flex flex-wrap items-center gap-0.5"
+                  : "-mt-1.5 flex w-full max-w-[464px] flex-wrap items-center justify-between",
+              )}
+            >
               <Button
                 variant="ghost"
                 size="sm"
                 data-testid="action-reply"
                 aria-disabled={staticMode || undefined}
-                className={cn("h-11 min-w-11 gap-1.5 px-2", staticMode && "opacity-60")}
+                className={cn(
+                  "h-11 min-w-11 gap-1.5 px-2",
+                  variant !== "feed" && "-ml-2",
+                  staticMode && "opacity-60",
+                )}
                 onClick={(event) => {
                   event.stopPropagation();
                   if (staticMode) {
@@ -287,7 +295,7 @@ export function PostCard({
                   onReply?.(post);
                 }}
               >
-                <MessageCircleIcon data-icon="inline-start" />
+                <MessageCircleIcon className="size-4" data-icon="inline-start" />
                 回复{post.reply_count > 0 ? ` ${post.reply_count}` : ""}
               </Button>
               <Button
@@ -305,7 +313,7 @@ export function PostCard({
                   onQuote?.(post);
                 }}
               >
-                <QuoteIcon data-icon="inline-start" />
+                <QuoteIcon className="size-4" data-icon="inline-start" />
                 引用
               </Button>
               <Button
@@ -326,9 +334,9 @@ export function PostCard({
                 }}
               >
                 {isBookmarked(post.id) ? (
-                  <BookmarkCheckIcon data-icon="inline-start" />
+                  <BookmarkCheckIcon className="size-4" data-icon="inline-start" />
                 ) : (
-                  <BookmarkIcon data-icon="inline-start" />
+                  <BookmarkIcon className="size-4" data-icon="inline-start" />
                 )}
                 收藏
               </Button>
@@ -337,7 +345,7 @@ export function PostCard({
                 size="sm"
                 data-testid="action-copy"
                 title="点击复制；长按/右键也可复制链接"
-                className="h-11 min-w-11 gap-1.5 px-2"
+                className={cn("h-11 min-w-11 gap-1.5 px-2", variant !== "feed" && "-mr-2")}
                 onPointerDown={(event) => {
                   event.stopPropagation();
                   startLongPress();
@@ -359,7 +367,7 @@ export function PostCard({
                   void handleCopy();
                 }}
               >
-                {copied ? <CheckIcon data-icon="inline-start" /> : <LinkIcon data-icon="inline-start" />}
+                {copied ? <CheckIcon className="size-4" data-icon="inline-start" /> : <LinkIcon className="size-4" data-icon="inline-start" />}
                 {copied ? "已复制" : "复制链接"}
               </Button>
             </div>

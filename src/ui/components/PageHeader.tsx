@@ -9,6 +9,8 @@ import { cn } from "cn";
 
 export interface PageHeaderProps {
   title: ReactNode;
+  /** thread：半透明玻璃 + thread-hairline 下边线（线程页视觉复核项 9）。 */
+  tone?: "default" | "thread";
   back?: boolean;
   onBack?: () => void;
   backTestId?: string;
@@ -26,6 +28,7 @@ export interface PageHeaderProps {
 
 export function PageHeader({
   title,
+  tone = "default",
   back = false,
   onBack,
   backTestId,
@@ -40,7 +43,10 @@ export function PageHeader({
   return (
     <header
       className={cn(
-        "sticky top-0 z-30 shrink-0 border-b border-border/60 bg-background/80 backdrop-blur-md",
+        "sticky top-0 z-30 shrink-0 border-b",
+        tone === "thread"
+          ? "border-thread-hairline bg-background/75 backdrop-blur-xl"
+          : "border-border/60 bg-background/80 backdrop-blur-md",
         className,
       )}
     >

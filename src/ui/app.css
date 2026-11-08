@@ -12,6 +12,8 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "./theme/solid-glass.css";
+/* report 自有令牌（线程 timeline 导轨/吸顶栏细线）；不进 solid-glass 原件 */
+@import "./theme/report-thread.css";
 
 @layer base {
   html,
