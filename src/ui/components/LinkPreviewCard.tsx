@@ -92,7 +92,7 @@ function CoverImage({ preview }: { preview: PreviewLink }) {
         loading="lazy"
         referrerPolicy="no-referrer"
         onError={() => setBroken(true)}
-        className="absolute inset-0 size-full object-cover"
+        className="pointer-events-none absolute inset-0 size-full object-cover"
         data-testid="preview-media"
       />
     );
@@ -105,7 +105,7 @@ function CoverImage({ preview }: { preview: PreviewLink }) {
       loading="lazy"
       referrerPolicy="no-referrer"
       onError={() => setBroken(true)}
-      className="absolute inset-0 size-full object-cover"
+      className="pointer-events-none absolute inset-0 size-full object-cover"
       data-testid="preview-media"
     />
   );
@@ -116,7 +116,7 @@ function KindWash({ preview }: { preview: PreviewLink }) {
   return (
     <div
       data-testid="link-preview-icon-wash"
-      className="flex size-full items-center justify-center bg-[linear-gradient(135deg,var(--muted),var(--accent))]"
+      className="pointer-events-none flex size-full items-center justify-center bg-[linear-gradient(135deg,var(--muted),var(--accent))]"
     >
       <Icon className="size-10 text-muted-foreground/60" aria-hidden />
     </div>
@@ -271,7 +271,7 @@ function LinkPreviewCardImpl({
           <div className="relative aspect-[4/3] w-full overflow-hidden bg-muted">
             <KindWash preview={preview} />
             {pending ? (
-              <Skeleton className="absolute inset-0 rounded-none motion-reduce:animate-none" />
+              <Skeleton className="pointer-events-none absolute inset-0 rounded-none motion-reduce:animate-none" />
             ) : (
               <CoverImage preview={preview} />
             )}

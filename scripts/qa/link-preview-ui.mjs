@@ -184,6 +184,58 @@ try {
     const dots = carousel.locator('[data-testid="previews-dot"]');
     const dotCount = await dots.count();
     const feedRequestsBefore = requests.filter((url) => url.includes("/api/feed")).length;
+
+    // 真实鼠标：hover 卡片→点下一张（z-20 + 媒体层 pointer-events-none），
+    // 点封面/主区→新窗口，点指示点→对应页。
+    if (label === "desktop") {
+      await carousel.scrollIntoViewIfNeeded();
+      await carousel.hover();
+      const before = await carousel.getAttribute("data-active-index");
+      await page
+        .locator('article[data-post-id="p-carousel"] [data-testid="previews-next"]')
+        .click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector('article[data-post-id="p-carousel"] [data-testid="link-previews"]')
+            ?.getAttribute("data-active-index") === "1",
+        undefined,
+        { timeout: 10_000 },
+      );
+      await page.waitForTimeout(450);
+      const after = await carousel.getAttribute("data-active-index");
+      await carousel.screenshot({ path: join(OUT, `${label}-carousel-page2-mouse.png`) });
+
+      const mainLink = page.locator(
+        'article[data-post-id="p-ready"] [data-testid="link-preview-open"]',
+      );
+      await mainLink.scrollIntoViewIfNeeded();
+      const [popup] = await Promise.all([
+        context.waitForEvent("page", { timeout: 10_000 }),
+        mainLink.click({ position: { x: 80, y: 80 } }),
+      ]);
+      const coverOpenerIsNull = await popup.evaluate(() => window.opener === null);
+      const coverHref = await mainLink.getAttribute("href");
+      await popup.close();
+
+      await dots.nth(2).click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector('article[data-post-id="p-carousel"] [data-testid="link-previews"]')
+            ?.getAttribute("data-active-index") === "2",
+        undefined,
+        { timeout: 10_000 },
+      );
+      const dotIndex = await carousel.getAttribute("data-active-index");
+      results.mouse = results.mouse ?? {};
+      results.mouse[label] = {
+        nextArrow: { before, after, moved: before === "0" && after === "1" },
+        coverClick: { openerIsNull: coverOpenerIsNull, href: coverHref },
+        dotClick: { target: 2, after: dotIndex, moved: dotIndex === "2" },
+      };
+    }
+
     await dots.nth(1).click();
     await page.waitForTimeout(350);
     const activeIndexBefore = await carousel.getAttribute("data-active-index");
@@ -244,12 +296,32 @@ try {
     };
 
     const dotBox = await dots.first().boundingBox();
+    await carousel.scrollIntoViewIfNeeded();
+    const dotHit = await page.evaluate(() => {
+      const root = document.querySelector('article[data-post-id="p-carousel"]');
+      const dot = root?.querySelector('[data-testid="previews-dot"]');
+      const media = root?.querySelector('[data-testid="preview-media"]');
+      if (!dot) return null;
+      const dotRect = dot.getBoundingClientRect();
+      const element = document.elementFromPoint(
+        dotRect.left + dotRect.width / 2,
+        dotRect.top + dotRect.height / 2,
+      );
+      const tagged = element?.closest("[data-testid]");
+      return {
+        hitTestid: tagged?.getAttribute("data-testid") ?? null,
+        dotTop: Math.round(dotRect.top * 10) / 10,
+        mediaBottom: media ? Math.round(media.getBoundingClientRect().bottom * 10) / 10 : null,
+      };
+    });
     results.a11y = results.a11y ?? {};
     results.a11y[label] = {
       dotWidth: dotBox ? Math.round(dotBox.width) : null,
       dotHeight: dotBox ? Math.round(dotBox.height) : null,
       prevLabel: await carousel.locator('[data-testid="previews-prev"]').getAttribute("aria-label"),
       nextLabel: await carousel.locator('[data-testid="previews-next"]').getAttribute("aria-label"),
+      dotHitTestid: dotHit?.hitTestid ?? null,
+      dotAboveMedia: dotHit ? dotHit.dotTop >= dotHit.mediaBottom : null,
     };
 
     const overflow = await page.evaluate(() => ({

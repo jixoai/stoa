@@ -160,14 +160,14 @@ export function LinkPreviews({ post }: { post: Pick<PostView, "id" | "previews">
           <CarouselPrevious
             data-testid="previews-prev"
             aria-label="上一张"
-            className="left-2 z-10 hidden opacity-0 transition-opacity pointer-events-none group-hover/carousel:pointer-events-auto group-hover/carousel:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 sm:inline-flex"
+            className="left-2 z-20 hidden opacity-0 transition-opacity pointer-events-none group-hover/carousel:pointer-events-auto group-hover/carousel:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 sm:inline-flex"
           />
           <CarouselNext
             data-testid="previews-next"
             aria-label="下一张"
-            className="right-2 z-10 hidden opacity-0 transition-opacity pointer-events-none group-hover/carousel:pointer-events-auto group-hover/carousel:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 sm:inline-flex"
+            className="right-2 z-20 hidden opacity-0 transition-opacity pointer-events-none group-hover/carousel:pointer-events-auto group-hover/carousel:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 sm:inline-flex"
           />
-          <div className="mt-1.5 flex items-center justify-center gap-1">
+          <div className="relative z-20 mt-1.5 flex items-center justify-center gap-1">
             {cards.map((preview, index) => (
               <Button
                 key={preview.url}
