@@ -40,7 +40,8 @@ function eventText(event: NotificationEventLine, item: NotificationItem): string
 export function NotificationsPage() {
   const { client, account, accounts, staticMode } = useConnection();
   const notifications = useNotifications();
-  const { refresh: refreshNotifications, ensurePosts, postOf, isRead } = notifications;
+  const { refresh: refreshNotifications, ensurePosts, postOf, isRead, adoptServerReads } =
+    notifications;
   /** 未读 / 全部（默认）：全部 = 历史列表，已读行照常显示。 */
   const [scope, setScope] = useState<"all" | "unread">("all");
   const [history, setHistory] = useState<NotificationHistoryLine[]>([]);
@@ -69,6 +70,12 @@ export function NotificationsPage() {
           before: reset ? null : nextBefore.current,
         });
         if (token !== historyToken.current) return;
+        // 服务端历史的 read 先采纳（避免未 hydrate 的首帧误高亮；跨设备一致）。
+        const serverReadTargets = page.events
+          .filter((row) => row.read)
+          .map((row) => row.post_id ?? row.root_id ?? null)
+          .filter((id): id is string => typeof id === "string" && id.length > 0);
+        if (serverReadTargets.length > 0) adoptServerReads(serverReadTargets);
         setHistory((prev) => {
           if (reset) return page.events;
           const seen = new Set(prev.map((row) => row.seq));
@@ -88,7 +95,7 @@ export function NotificationsPage() {
         }
       }
     },
-    [client],
+    [client, adoptServerReads],
   );
 
   // 进入通知页只拉历史首页：未读/角标由 EventHub 增量 + provider 的 peek 对账维持，

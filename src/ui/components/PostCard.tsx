@@ -93,16 +93,21 @@ export function PostCard({
   // 停留已读（report-read-dwell）：两个分支的根 article 共用一个 ref。
   const articleRef = useRef<HTMLElement | null>(null);
   const readDwell = useReadDwell();
-  const read = usePostReadFlag(post.id, post.seq);
+  const localRead = usePostReadFlag(post.id, post.seq);
+  // 服务端权威（report-server-read-state D6）：PostView.read=true 首帧即已读，
+  // 不依赖本地缓存、不播放入场淡出；本地乐观已读仍保留既有 1.2s 淡出。
+  const read = post.read === true || localRead;
   const own = account !== null && post.author === account.id;
   // 自己的帖/软删帖不显示未读高亮，也不注册观察；静态归档/无 IO 降级同理（P1-6）。
   const trackable = !staticMode && readDwell.active && !deleted && !own;
+  // 已读帖不注册观察（不建 timer、不重复写服务端）。
+  const observeRead = trackable && !read;
   const quotedMedia = post.quoted_visible ? (post.quoted?.media.length ?? 0) : 0;
   const hasMedia = post.media.length > 0 || quotedMedia > 0;
 
   useEffect(() => {
     const el = articleRef.current;
-    if (!el || !trackable) return;
+    if (!el || !observeRead) return;
     readDwell.observe(el, {
       postId: post.id,
       author: post.author,
@@ -114,9 +119,9 @@ export function PostCard({
     return () => readDwell.unobserve(el);
   }, [
     readDwell,
-    trackable,
+    observeRead,
     // read 翻转时重注册：0→1 由引擎保留 dwell-state=read（不杀淡出动画）；
-    // 1→0（LRU 淘汰）重新观察，停留后可以再次写回 read-set。
+    // 1→0（LRU 淘汰/对账丢弃）重新观察，停留后可以再次写回 read-set。
     read,
     post.id,
     post.author,

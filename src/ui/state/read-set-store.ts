@@ -137,9 +137,32 @@ export class ReadSetStore {
     return { changed: true, evicted };
   }
 
+  /**
+   * 服务端对账：删除「服务端没有且不在重试队列」的本地乐观条目（服务端为准）。
+   * 只通知被删除的 id（对应卡片需要重新显示未读）。
+   */
+  remove(postIds: readonly string[]): string[] {
+    const removed: string[] = [];
+    for (const postId of postIds) {
+      if (this.ids.delete(postId)) removed.push(postId);
+    }
+    if (removed.length > 0) {
+      this.schedulePersist();
+      this.notify(removed);
+    }
+    return removed;
+  }
+
+  /** 账号切换：清空当前集合（内存/持久化），并通知全部订阅者。 */
+  clear(): void {
+    if (this.ids.size === 0) return;
+    this.ids.clear();
+    this.schedulePersist();
+    this.notifyAll();
+  }
+
   /** 只通知该 postId 的订阅者（一次停留不惊动整列表）。 */
-  subscribe(postId: string, listener: () => void): () => void {
-    let group = this.listeners.get(postId);
+  subscribe(postId: string, listener: () => void): () => void {    let group = this.listeners.get(postId);
     if (!group) {
       group = new Set();
       this.listeners.set(postId, group);

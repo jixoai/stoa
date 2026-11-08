@@ -1,14 +1,20 @@
 /**
  * 通知状态：历史列表由页面单独分页拉取；这里维护「未读提醒」的实时投影
- * （EventHub 增量 + peek 对账）以及**按帖已读**的本地读集合。
+ * （EventHub 增量 + peek 对账）以及**按帖已读**的三层状态。
+ *
+ * 已读分层（report-server-read-state design §5.1）：
+ * - 服务端 `post_reads`（经 `PostView.read` / history.read / GET /api/reads 采纳）
+ *   = **权威**：跨设备/隐私窗口首帧即已读；
+ * - 本地 read-set = **乐观缓存**（停留瞬间即时 UI、离线可用），有界 2000 LRU；
+ * - 写队列 `read-sync` = 未确认的服务端写入（离线重试，ready/online/visible 补写）。
+ * - 未读判定 = `serverReadIds ∪ readIds ∪ seq ≤ cursor`；单帖已读不推进游标，
+ *   `ack()`（全部已读）= 目标批量写 post_reads + 推进游标（兼容保留）。
  *
  * 硬规则（report-notification-history-and-read + report-event-hub §4.7）：
- * - 未读判定 = `target ∈ readSet ∪ seq ≤ cursor`；单帖已读只写本端 read-set，
- *   **不推进服务端游标**；`ack()`（全部已读）是唯一推进游标与唯一清空路径。
  * - 刷新是 union 合并，不是替换：peek 快照只补新行，内存里已有的行不因游标推进消失。
- * - 角标 = 服务端 `unread_by_target` 的**不同 target 数** − read-set 命中的 target，
- *   加上快照之后新到、尚未被下一次对账吸收的本地 target。服务端 `unread_count`
- *   是事件数（一次 @ 会同时产生 post.created + thread.invited），只用于漂移对账。
+ * - 角标 = 服务端 `unread_by_target` 的**不同 target 数** − 本地乐观 read-set 命中的
+ *   target，加上快照之后新到、尚未被下一次对账吸收的本地 target。服务端快照已按
+ *   `post_reads` 扣减，跨设备角标天然一致；`unread_count` 是事件数，只用于漂移对账。
  * - `post_deleted=true` 的帧与 `post.deleted` 本身不计数；删除未读帖立即扣减并
  *   排一次服务端对账兜底。
  * - 心跳/60s 只做**漂移检测**：计数一致时零业务请求（空闲不轮询）。
@@ -31,6 +37,17 @@ import { NotificationProjection } from "@/state/hub/notification-projection";
 import { useEventHub, useEventHubApi, useHubStatus } from "@/state/hub/provider";
 import type { HubEventLine } from "@/state/hub/types";
 import { noteReadSetPersist } from "@/state/read-dwell";
+import {
+  READ_QUEUE_BATCH_SIZE,
+  READ_QUERY_LIMIT,
+  ServerReadQueue,
+  chunkIds,
+  isReadFromSources,
+  planReadReconciliation,
+  readQueueStorageKey,
+  readUploadMarkerKey,
+  uploadLegacyReadSet,
+} from "@/state/read-sync";
 import {
   READ_SET_LIMIT,
   READ_SET_PERSIST_DEBOUNCE_MS,
@@ -74,10 +91,12 @@ interface NotificationsValue {
   ack: () => Promise<void>;
   /** 打开某帖详情/停留达标时调用：只把该帖标记为已读（本端读集合） */
   markPostRead: (postId: string) => void;
-  /** 统一已读判定：target 在本地读集合，或事件 seq ≤ 已 ack 游标 */
+  /** 统一已读判定：target 在服务端读集合/本地读集合，或事件 seq ≤ 已 ack 游标 */
   isRead: (targetId: string | null, seq: number) => boolean;
   /** 单帖已读纯查询（PostCard/停留引擎用；seq 参与「全部已读」游标判定） */
   isPostRead: (postId: string, seq: number) => boolean;
+  /** 采纳服务端已读（PostView.read / history.read / POST /api/reads 回执） */
+  adoptServerReads: (postIds: readonly string[]) => void;
   /** 只订阅某个 postId 的已读翻转（不重渲染整列表） */
   subscribePostRead: (postId: string, listener: () => void) => () => void;
   /** 通知历史行取帖子投影（undefined = 尚未取回） */
@@ -206,6 +225,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const storageKey = accountRef.current
     ? readSetStorageKey(client?.base ?? "", accountRef.current)
     : null;
+  const queueStorageKey = accountRef.current
+    ? readQueueStorageKey(client?.base ?? "", accountRef.current)
+    : null;
   // 读集合在首帧就同步装好（而不是等 effect）：深链直接进详情时，停留引擎/
   // 通知页的 markPostRead 可能早于父级 effect 执行，异步加载会把它覆盖掉。
   const readStoreRef = useRef<ReadSetStore | null>(null);
@@ -220,6 +242,48 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   }
   const readStore = readStoreRef.current;
   const [readIds, setReadIds] = useState<Set<string>>(() => readStore.snapshot());
+  // 服务端权威读集合（PostView.read / history.read / 写回执采纳；纯内存 LRU 2000）。
+  // 不是唯一真值来源：feed 卡片直接读 post.read；这里服务通知行/停留引擎/角标判定。
+  const serverReadStoreRef = useRef<ReadSetStore | null>(null);
+  if (serverReadStoreRef.current === null) {
+    serverReadStoreRef.current = new ReadSetStore({
+      storageKey: null,
+      storage: null,
+      limit: READ_SET_LIMIT,
+      debounceMs: 0,
+    });
+  }
+  const serverReads = serverReadStoreRef.current;
+  const [serverReadIds, setServerReadIds] = useState<Set<string>>(() => serverReads.snapshot());
+
+  const adoptServerReads = useCallback(
+    (postIds: readonly string[]) => {
+      let changed = false;
+      for (const postId of postIds) {
+        if (!postId) continue;
+        if (serverReads.mark(postId).changed) changed = true;
+      }
+      if (changed) setServerReadIds(serverReads.snapshot());
+    },
+    [serverReads],
+  );
+
+  // 写路径队列：per-account 持久化；失败离线保留、恢复后批量补写（P1-7）。
+  const readSyncRef = useRef<ServerReadQueue | null>(null);
+  if (readSyncRef.current === null) {
+    readSyncRef.current = new ServerReadQueue({
+      storageKey: staticMode ? null : queueStorageKey,
+      storage: staticMode ? null : browserStorage(),
+      static: staticMode,
+      onAck: (postIds) => adoptServerReads(postIds),
+    });
+  }
+  const readSync = readSyncRef.current;
+  readSync.setClient(
+    !staticMode && client && accountRef.current
+      ? { markReads: (postIds) => client.markReads(postIds) }
+      : null,
+  );
   const [loading, setLoading] = useState(true);
   const [hydrating, setHydrating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -242,6 +306,14 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       appliedStorageKey.current = storageKey;
       readStore.switchKey(staticMode ? null : storageKey, staticMode ? null : browserStorage());
       setReadIds(readStore.snapshot());
+      // 旧账号的 pending 已随本地 read-set 落盘（队列自己的 key）；新账号从自己的
+      // 队列重新加载，绝不把旧账号的 id 写到新账号（generation 守卫）。
+      readSync.switchKey(
+        staticMode ? null : queueStorageKey,
+        staticMode ? null : browserStorage(),
+      );
+      serverReads.clear();
+      setServerReadIds(serverReads.snapshot());
     }
     if (projectionKeyRef.current === projectionKey) return;
     projectionKeyRef.current = projectionKey;
@@ -252,11 +324,14 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     lastHeartbeat.current = null;
     bump();
     // 新投影由下面的 refresh effect（client 变化会重建 refresh）重新取一次快照。
-  }, [storageKey, projectionKey, staticMode, bump, readStore]);
+  }, [storageKey, queueStorageKey, projectionKey, staticMode, bump, readStore, readSync, serverReads]);
 
-  // pagehide / hidden / Provider 卸载时同步 flush 排队中的 250ms 持久化。
+  // pagehide / hidden / Provider 卸载时同步 flush 排队中的持久化（读集合 + 重试队列）。
   useEffect(() => {
-    const flush = () => readStore.flush();
+    const flush = () => {
+      readStore.flush();
+      readSync.flushPersist();
+    };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") flush();
     };
@@ -267,7 +342,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("visibilitychange", onVisibility);
       flush();
     };
-  }, [readStore]);
+  }, [readStore, readSync]);
 
   const hydratePosts = useCallback(
     async (ids: string[], force = false) => {
@@ -300,9 +375,14 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         for (const [id, post] of results) next.set(id, post);
         return next;
       });
+      // 通知行视角的服务端已读：PostView.read=true 直接采纳（跨设备首帧就准）。
+      const serverReadFromPosts = results
+        .filter(([, post]) => post?.read === true)
+        .map(([id]) => id);
+      if (serverReadFromPosts.length > 0) adoptServerReads(serverReadFromPosts);
       if (hydrationToken.current === token) setHydrating(false);
     },
-    [client],
+    [client, adoptServerReads],
   );
 
   /**
@@ -372,6 +452,70 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /**
+   * ready 对账（P1-8 / design §5.3）：先补写队列，再 `GET /api/reads` 分片核对。
+   * 服务端为准：本地「服务端没有且不在重试队列」的条目会被丢弃；请求失败不删本地
+   * （失败 ≠ 服务端为空）。隐私窗口（无本地缓存）跳过请求，权威值来自 peek/history。
+   */
+  const reconcileServerReads = useCallback(async () => {
+    if (staticMode || !client) return;
+    // P1-13 升级过渡：旧本地 read-set 一次性上传（≤2000，100/片）。失败不写标记，
+    // 本轮也不再执行「服务端为准」的丢弃（避免服务端尚不知道的本地已读被抹掉）。
+    const upload = await uploadLegacyReadSet({
+      ids: readStore.values(),
+      client: { markReads: (postIds) => client.markReads(postIds) },
+      storage: browserStorage(),
+      markerKey: accountRef.current
+        ? readUploadMarkerKey(client.base, accountRef.current)
+        : null,
+    });
+    if (upload.attempted && !upload.ok) return;
+    const queue = readSync;
+    await queue.flush();
+    const localIds = readStore.values();
+    const queued = new Set(queue.pending());
+    const ids = [...new Set([...localIds, ...queued])].slice(-READ_SET_LIMIT);
+    if (ids.length === 0) return;
+    const serverIds = new Set<string>();
+    for (const chunk of chunkIds(ids, READ_QUERY_LIMIT)) {
+      let rows;
+      try {
+        rows = await client.readStates(chunk);
+      } catch {
+        return;
+      }
+      for (const row of rows) serverIds.add(row.post_id);
+    }
+    const plan = planReadReconciliation({ localIds, queuedIds: queued, serverIds });
+    if (plan.adopt.length > 0) adoptServerReads(plan.adopt);
+    if (plan.orphans.length > 0) {
+      readStore.remove(plan.orphans);
+      setReadIds(readStore.snapshot());
+    }
+  }, [staticMode, client, readSync, readStore, adoptServerReads]);
+
+  useEffect(() => {
+    if (staticMode || !client) return;
+    void reconcileServerReads();
+  }, [reconcileServerReads, projectionKey]);
+
+  // 网络恢复 / 页面重新可见：补写离线队列（事件触发，不做定时轮询）。
+  useEffect(() => {
+    if (staticMode) return;
+    const onOnline = () => {
+      void readSync.flush();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void readSync.flush();
+    };
+    window.addEventListener("online", onOnline);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [staticMode, readSync]);
 
   /** 删除事件落到帖子投影：通知行立即转「已删除」，不等下一次 hydrate。 */
   const markPostDeleted = useCallback((postId: string) => {
@@ -489,8 +633,25 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   }, [staticMode, hubStatus.degradedPolling, reconcile]);
 
   const ack = useCallback(async () => {
-    if (!client) return;
+    if (!client || staticMode) return;
     const current = projectionRef.current;
+    // 1) 当前通知目标 → 服务端逐帖已读（batch ≤100；失败项进重试队列，不阻断 ack）。
+    const targets = new Set<string>(current.serverTargets.keys());
+    for (const target of current.localTargets) targets.add(target);
+    for (const projected of current.events.values()) {
+      const targetId = projected.event.post_id ?? projected.event.root_id;
+      if (targetId) targets.add(targetId);
+    }
+    const targetIds = [...targets];
+    for (let index = 0; index < targetIds.length; index += READ_QUEUE_BATCH_SIZE) {
+      const chunk = targetIds.slice(index, index + READ_QUEUE_BATCH_SIZE);
+      try {
+        await client.markReads(chunk);
+        adoptServerReads(chunk);
+      } catch {
+        for (const postId of chunk) readSync.enqueue(postId);
+      }
+    }
     const maxEventSeq = [...current.events.keys()].reduce((value, seq) => Math.max(value, seq), 0);
     // 游标只推进到「已确认的流位置」；hello 的 as_of_seq 覆盖没订阅事件的历史未读。
     const target = Math.max(current.cursor, hub?.getStatus().asOfSeq ?? 0, maxEventSeq);
@@ -510,29 +671,32 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setError((err as Error).message);
     }
-  }, [client, hub, bump, scheduleReconcile]);
+  }, [client, staticMode, hub, bump, scheduleReconcile, adoptServerReads, readSync]);
 
   /**
-   * 按帖已读：只记录该帖（本端），不碰服务端游标——别的旧帖不受影响。
-   * 写路径只通知该 postId 的订阅者；Provider 自身重渲染让角标/通知列表同源更新。
+   * 按帖已读：本地 read-set（即时 UI）+ 服务端异步写入（P1-8）。
+   * 不碰服务端游标——别的旧帖不受影响；写失败留在重试队列（不阻塞 UI）。
    * 已在集合内的重复标记只 touch LRU（幂等，不重渲染）。
    */
   const markPostRead = useCallback(
     (postId: string) => {
       if (!postId) return;
       const result = readStore.mark(postId);
-      if (!result.changed) return;
-      setReadIds(readStore.snapshot());
+      if (result.changed) setReadIds(readStore.snapshot());
+      // 服务端已确认的帖子不重复入队；本地乐观已读但服务端未知（离线/升级存量）仍补写。
+      if (!staticMode && !serverReads.has(postId)) readSync.enqueue(postId);
     },
-    [readStore],
+    [readStore, readSync, serverReads, staticMode],
   );
 
   const isRead = useCallback(
-    (targetId: string | null, seq: number) => {
-      if (targetId && readIds.has(targetId)) return true;
-      return seq <= projection.cursor;
-    },
-    [readIds, projection, version],
+    (targetId: string | null, seq: number) =>
+      isReadFromSources(
+        { serverReadIds, localReadIds: readIds, cursor: projection.cursor },
+        targetId,
+        seq,
+      ),
+    [readIds, serverReadIds, projection, version],
   );
 
   // 游标变化（ack / 服务端推送）会让「seq ≤ 游标」的帖子集体转已读：通知所有
@@ -581,11 +745,19 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const postReadApi = useMemo<PostReadApi>(
     () => ({
       isPostRead: (postId: string, seq: number) =>
-        readStore.has(postId) || (seq > 0 && seq <= cursorRef.current),
-      subscribePostRead: (postId: string, listener: () => void) =>
-        readStore.subscribe(postId, listener),
+        serverReads.has(postId) ||
+        readStore.has(postId) ||
+        (seq > 0 && seq <= cursorRef.current),
+      subscribePostRead: (postId: string, listener: () => void) => {
+        const unsubscribeLocal = readStore.subscribe(postId, listener);
+        const unsubscribeServer = serverReads.subscribe(postId, listener);
+        return () => {
+          unsubscribeLocal();
+          unsubscribeServer();
+        };
+      },
     }),
-    [readStore],
+    [readStore, serverReads],
   );
 
   const value = useMemo<NotificationsValue>(
@@ -603,6 +775,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       markPostRead,
       isRead,
       isPostRead: postReadApi.isPostRead,
+      adoptServerReads,
       subscribePostRead: postReadApi.subscribePostRead,
       postOf,
       ensurePosts,
@@ -621,6 +794,7 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       markPostRead,
       isRead,
       postReadApi,
+      adoptServerReads,
       postOf,
       ensurePosts,
     ],

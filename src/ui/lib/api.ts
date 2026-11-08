@@ -25,6 +25,12 @@ import type {
 import type { PluginView, PluginWorkerSummary } from "@core/plugins/types";
 
 // 发现接口的行类型由 core 统一声明（report-discover），这里只做壳侧再导出。
+/** `GET /api/reads` 行（账号私有）：与服务端响应同形。 */
+export interface ReadRow {
+  post_id: string;
+  read_at: number;
+}
+
 export type { SuggestedAccount, TrendingTag } from "@core/types";
 // 预览/插件契约单源在 core（服务端同一份类型），壳侧只再导出。
 export type {
@@ -542,6 +548,47 @@ export class ReportClient {
       body: { target },
     })) as { cursor: number; unread_count?: number };
     return { cursor: data.cursor, unread_count: data.unread_count ?? 0 };
+  }
+
+  // ── reads（服务端按帖已读；账号私有）────────────────────────────────────────
+  /** 单帖已读（幂等；重复写返回首次 `read_at`）。 */
+  async markRead(postId: string): Promise<{
+    post_id: string;
+    read: boolean;
+    read_at: number;
+    created: boolean;
+  }> {
+    return (await this.request("/api/reads", {
+      method: "POST",
+      body: { post_id: postId },
+    })) as { post_id: string; read: boolean; read_at: number; created: boolean };
+  }
+
+  /** 批量已读（≤100/次；未知/不可见 id 由服务端静默 skip）。 */
+  async markReads(postIds: string[]): Promise<{
+    stored: number;
+    skipped: string[];
+    read_at: number;
+  }> {
+    const data = (await this.request("/api/reads/batch", {
+      method: "POST",
+      body: { post_ids: postIds },
+    })) as { stored?: number; skipped?: string[]; read_at?: number };
+    return {
+      stored: data.stored ?? 0,
+      skipped: Array.isArray(data.skipped) ? data.skipped : [],
+      read_at: data.read_at ?? 0,
+    };
+  }
+
+  /** 本账号的逐帖读行（≤200/次；不存在的行直接省略）。 */
+  async readStates(ids: string[]): Promise<ReadRow[]> {
+    if (ids.length === 0) return [];
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const data = (await this.request(`/api/reads?${params.toString()}`)) as {
+      reads?: ReadRow[];
+    };
+    return Array.isArray(data.reads) ? data.reads : [];
   }
 
   // ── media ──────────────────────────────────────────────────────────────────

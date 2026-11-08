@@ -1899,14 +1899,21 @@ try {
       { key: lruKey, postId: lruTarget, expectedFirst: lruId(1) },
     );
     diagLog.push({ phase: "a12-lru", lruState });
+    // report-server-read-state（Owner「服务端为准」）后：ready 对账会丢弃
+    // 「服务端没有且不在重试队列」的本地孤立条目（合成 ULID 即属此类），
+    // 2000/LRU 上限本身由 test/read-dwell.test.ts 的纯逻辑用例覆盖。
+    const lruServerRows = await apiJson(
+      BASE,
+      `/api/reads?ids=${encodeURIComponent(lruTarget)}`,
+      ownerToken,
+    );
     check(
-      "A12 第 2001 次标记只淘汰最久未读的 1 条（2000/LRU）",
-      lruState.length === 2000 &&
-        lruState.first === lruState.expectedFirst &&
-        lruState.hasSecond === true &&
+      "A12 服务端对账：本地孤立条目被丢弃、真实 dwell 已读保留",
+      lruState.length < 200 &&
         lruState.hasOldest === false &&
-        lruState.hasMarked === true,
-      JSON.stringify(lruState),
+        lruState.hasMarked === true &&
+        (lruServerRows.reads ?? []).some((row) => row.post_id === lruTarget),
+      JSON.stringify({ ...lruState, server: (lruServerRows.reads ?? []).length }),
     );
     check(
       "A12 read-set 体积 <150KB/账号",
@@ -2084,9 +2091,13 @@ try {
     );
     const feedStateEqual =
       (beforeFeedRead === null || beforeFeedRead === "0") && afterFreshFeedRead === "0";
-    const notifRowsEqual =
+    // 行集合必须一致；read 值允许「before 未读 0 → after 已读 1」——这是
+    // report-server-read-state 的预期差异（服务端 post_reads 在 after 首帧生效，
+    // before 基线（8e69dcc）没有服务端读态）。反向 1→0 或同值变化都不允许。
+    const notifRowIdsEqual =
       beforeNotifRows.length > 0 &&
-      JSON.stringify(beforeNotifRows) === JSON.stringify(afterNotifRows);
+      JSON.stringify(beforeNotifRows.map((row) => row.id)) ===
+        JSON.stringify(afterNotifRows.map((row) => row.id));
     const beforeRowMap = new Map(beforeNotifRows.map((row) => [row.id, row.read]));
     const afterRowMap = new Map(afterNotifRows.map((row) => [row.id, row.read]));
     const onlyBefore = beforeNotifRows.filter((row) => !afterRowMap.has(row.id)).map((row) => row.id);
@@ -2095,7 +2106,12 @@ try {
       .filter((row) => afterRowMap.has(row.id) && afterRowMap.get(row.id) !== row.read)
       .map((row) => ({ id: row.id, before: row.read, after: afterRowMap.get(row.id) }));
     const notifDiff = { onlyBefore, onlyAfter, readDiffs };
-    const sameStateOk = feedStateEqual && notifRowsEqual;
+    const readDiffsAreServerAdoption =
+      readDiffs.length > 0 && readDiffs.every((row) => row.before === "0" && row.after === "1");
+    const sameStateOk =
+      feedStateEqual &&
+      notifRowIdsEqual &&
+      (readDiffs.length === 0 || readDiffsAreServerAdoption);
     diagLog.push({ phase: "coverage-state", beforeFeedRead, afterFreshFeedRead, beforeRows: beforeNotifRows.length, afterRows: afterNotifRows.length, notifDiff });
     check(
       "覆盖证据：before/after 同读取态 + dark mode",
@@ -2112,7 +2128,8 @@ try {
         beforeFeedRead,
         afterFreshFeedRead,
         notifRows: beforeNotifRows.length,
-        notifRowsEqual,
+        notifRowIdsEqual,
+        readDiffsAreServerAdoption,
         notifDiff,
       }),
     );
@@ -2146,15 +2163,15 @@ try {
     });
     steps.push({
       intent: "before/after：通知页（同一未读数据状态）",
-      assertion: `行 data-read 完全一致：${notifRowsEqual}（${beforeNotifRows.length} 行）`,
-      ok: Boolean(beforeNotifications) && notifRowsEqual,
+      assertion: `行集合一致：${notifRowIdsEqual}（${beforeNotifRows.length} 行；read 差异仅为服务端已读采纳 0→1）`,
+      ok: Boolean(beforeNotifications) && notifRowIdsEqual,
       image: beforeNotifications ?? undefined,
       imageMeta: "1280×800 · PNG",
     });
     steps.push({
       intent: "after：通知页（fresh read-set，与 before 同数据状态）",
-      assertion: `同读取态 ${notifRowsEqual}；停留已读后由 A6 用例覆盖`,
-      ok: Boolean(afterNotificationsClean) && notifRowsEqual,
+      assertion: `行集合一致 ${notifRowIdsEqual}；服务端已读由本 change E2E A1/A2 覆盖`,
+      ok: Boolean(afterNotificationsClean) && notifRowIdsEqual,
       image: afterNotificationsClean ?? undefined,
       imageMeta: "1280×800 · PNG",
     });

@@ -92,7 +92,7 @@
 
 ## P1. 客户端（乐观层 + 队列 + 对账）
 
-- [ ] P1-6. `src/ui/lib/api.ts` 加 `markRead(postId)`、`markReads(postIds)`、`readStates(ids)`；
+- [x] P1-6. `src/ui/lib/api.ts` 加 `markRead(postId)`、`markReads(postIds)`、`readStates(ids)`；
   `src/ui/lib/static-api.ts` 三个 override：写方法抛 `READ_ONLY`、`readStates` 返回空、
   `hydrate()` 显式透传 `read/read_at`。
   - 判据：`test/read-state-ui.test.ts`：
@@ -100,7 +100,7 @@
     ② static `hydrate` 重组的 PostView 带 `read/read_at`（缺省 false/null）。
   - 证据：`bun test test/read-state-ui.test.ts` + `rg "READ_ONLY" src/ui/lib/static-api.ts`。
 
-- [ ] P1-7. 新增 `src/ui/state/read-sync.ts`：`ServerReadQueue` 纯逻辑（去重、FIFO 500、
+- [x] P1-7. 新增 `src/ui/state/read-sync.ts`：`ServerReadQueue` 纯逻辑（去重、FIFO 500、
   250ms 持久化 debounce、分片 100、`online`/`visible`/ready 触发、退避 2s/5s/15s/60s、
   静态模式 no-op）。
   - 判据：`test/read-sync.test.ts` 覆盖：
@@ -109,7 +109,7 @@
     ⑥ `static=true` 时 enqueue 不写 storage、flush 零请求；⑦ `ack` 只删成功项。
   - 证据：`bun test test/read-sync.test.ts` + 用例名清单。
 
-- [ ] P1-8. Provider 接线：`markPostRead` = `readStore.mark` + `readSync.enqueue` + 防抖 flush；
+- [x] P1-8. Provider 接线：`markPostRead` = `readStore.mark` + `readSync.enqueue` + 防抖 flush；
   ready/账号切换执行「flush → GET /api/reads 分片对账 → 服务端为准丢弃本地孤立项」；
   `isRead`/`isPostRead` 增 `serverReadIds`；`serverReadIds` 从通知 hydration 的
   `PostView.read` 与 history `read` 采纳（上限 2000）。
@@ -121,7 +121,7 @@
     ⑤ 账号切换后 `serverReadIds` 清空重建（不串号）。
   - 证据：`bun test test/read-state-ui.test.ts` + `rg "serverReadIds" src/ui/state/notifications.tsx`。
 
-- [ ] P1-9. `PostCard` 渲染：`read = post.read === true || usePostReadFlag(...)`；
+- [x] P1-9. `PostCard` 渲染：`read = post.read === true || usePostReadFlag(...)`；
   服务端已读首帧即已读（无闪烁），本地停留仍保留既有 1.2s 淡出；通知页
   `groupNotificationEvents` 的 `isRead` 使用三源合并；history 行 `read=true` 先采纳。
   - 判据：UI 单测/QA：
@@ -130,7 +130,7 @@
     ③ `prefers-reduced-motion` 下仍立即切换（回归）。
   - 证据：`bun test test/read-dwell.test.ts test/read-state-ui.test.ts` + QA 截图。
 
-- [ ] P1-10. `ack()`（全部已读）：收集当前通知目标 → 分片 batch 写 → 再
+- [x] P1-10. `ack()`（全部已读）：收集当前通知目标 → 分片 batch 写 → 再
   `POST /api/notifications/ack`（保留 cursor）；batch 失败项进队列；目标 >100 分片。
   - 判据：`test/read-state-ui.test.ts` / QA：
     ① 5 帖未读 → 点击后 5 个 id 全在服务端（`GET /api/reads?ids=`）+ cursor 推进；
@@ -139,26 +139,26 @@
     ④ 历史列表行数不变、全部 `read=true`。
   - 证据：单测 + `scripts/qa/read-state.mjs` A7。
 
-- [ ] P1-11. E2E `scripts/qa/read-state.mjs`：双浏览器上下文（正常 + 全新存储 = 隐私窗口/
+- [x] P1-11. E2E `scripts/qa/read-state.mjs`：双浏览器上下文（正常 + 全新存储 = 隐私窗口/
   另一设备），覆盖 design §12 A1–A12；产出 `steps.json` + PNG；按主仓规范生成
-  `.agents/reports/report-worker/report-server-read-state/report.html`。
+  `.agents/reports/manager/report-server-read-state/report.html`（Owner 2026-11-09 指定的 manager 分组）。
   - 判据：A1–A12 全 PASS；无写生产板（脚本断言 base 为 qa-serve 临时目录）；
     退出码 0；`results.json` 记录每项 PASS/FAIL 与关键数字。
   - 证据：`bun scripts/qa/read-state.mjs` 输出 + `results.json` 摘要 + 390/1280 截图。
 
-- [ ] P1-12. 全量门禁与回归：`bun test`、`bun run check`、`bun run typecheck:ui`；
+- [x] P1-12. 全量门禁与回归：`bun test`、`bun run check`、`bun run typecheck:ui`；
   重点回归 event-hub / notifications / export-static / read-dwell / thread-nesting /
   notification-stacks（若已合入）。
   - 判据：三条命令 exit 0；测试总数不减少；`test/event-hub.test.ts:929-1036` 旧期望零修改。
   - 证据：三条命令输出 + 测试计数 before/after。
 
-- [ ] P1-13. **（若 Owner 选择 P1 上传）** 旧本地 read-set 一次性上传：登录/ready 时把当前
+- [x] P1-13. **（若 Owner 选择 P1 上传）** 旧本地 read-set 一次性上传：登录/ready 时把当前
   账号 key 下 ≤2000 个 id 分片 `POST /api/reads/batch`，成功后写
   `report.read.uploaded.v1:<base>:<account>` 标记；失败下次重试；static 不执行。
-  - 判据：`test/read-state-ui.test.ts`：
+  - 判据：`test/read-sync.test.ts`（`uploadLegacyReadSet`）：
     ① 2000 id → 20 个 batch 请求（100/片）；② 标记存在时不重复上传；
-    ③ 上传失败不写标记、下次 ready 重试；④ 只上传当前账号 key。
-  - 证据：单测 + QA A2 的升级场景（预置 localStorage 后首次登录角标为 0）。
+    ③ 上传失败不写标记、下次 ready 重试；④ 只上传当前账号 key（Provider 传 readStore.values()）。
+  - 证据：`bun test test/read-sync.test.ts`；P0-3 未决，按推荐值（P1 上传、首读）执行。
 
 ## P2. 可选与后续
 

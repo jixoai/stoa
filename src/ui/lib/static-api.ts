@@ -34,6 +34,7 @@ import {
   type PluginView,
   type ProfilePageView,
   type ReadPage,
+  type ReadRow,
   type ServerStatus,
   type SuggestedAccount,
   type TrendingTag,
@@ -72,6 +73,9 @@ export interface SnapshotPost {
   media?: SnapshotMedia[];
   /** 持久化预览字段（导出快照原样携带；旧归档缺省 []）。 */
   previews?: PreviewLink[];
+  /** 服务端按帖已读（report-server-read-state；旧归档缺省 false/null）。 */
+  read?: boolean;
+  read_at?: number | null;
 }
 
 export interface ReportSnapshot {
@@ -332,6 +336,9 @@ export class StaticReportClient extends ReportClient {
       quoted: deleted ? null : quoted,
       quoted_visible: deleted ? false : post.quoted_visible ?? Boolean(quoted),
       previews: deleted ? [] : post.previews ?? [],
+      // 快照已内联 viewer 视角读字段：显式透传（旧归档缺省 false/null）。
+      read: post.read === true,
+      read_at: post.read_at ?? null,
     };
   }
 
@@ -816,6 +823,20 @@ export class StaticReportClient extends ReportClient {
 
   override async ackNotifications(): Promise<{ cursor: number; unread_count: number }> {
     throw readOnlyError();
+  }
+
+  /** 静态归档只读：已读写路径一律客户端层拒绝（零网络）。 */
+  override async markRead(_postId: string): Promise<never> {
+    throw readOnlyError();
+  }
+
+  override async markReads(_postIds: string[]): Promise<never> {
+    throw readOnlyError();
+  }
+
+  /** 归档快照不提供账号读行：返回空集合，且零 fetch。 */
+  override async readStates(_ids: string[]): Promise<ReadRow[]> {
+    return [];
   }
 
   override async streamTicket(): Promise<string> {
