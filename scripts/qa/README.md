@@ -177,6 +177,64 @@ Rules:
 - Production hard deletes require explicit Owner/manager approval. Automated QA
   must only do this against `/tmp/report-qa-*`.
 
+## report-link-preview E2E (`link-preview-fixture.mjs` + `link-preview.mjs`)
+
+Covers openspec change `report-link-preview` design §14.3 A1–A5 and A7–A17.
+A6 (P2 image 4:3 crop) is explicitly SKIPPED in the coverage matrix; A17 is the
+carousel-specific scenario.
+
+Prerequisites (full run):
+
+- The change implementation is merged (server: `post_previews` /
+  `preview_jobs` / worker / `GET|PATCH /api/plugins` / `post.updated`;
+  UI: `[data-testid="link-preview-card"]` with `data-preview-status`,
+  `data-preview-phase`, `data-preview-url`, and the 4:3 cover area
+  `[data-testid="preview-media"]`).
+  Carousel contract used by A17: `[data-testid="link-previews"]` root with
+  `data-active-index` (current page), `[data-testid="previews-prev"]` /
+  `[data-testid="previews-next"]` arrows, and three
+  `[data-testid="previews-dot"]` indicators with `data-index="0|1|2"` and
+  `aria-current="true"` on the active one.
+- `bun install` in the repo root; `playwright-core` uses the installed Chrome
+  channel (`channel: "chrome"`).
+- Static export needs a built shell. The driver rebuilds `dist/` with
+  `bun run build` before A3; pass `--no-build` to reuse an existing build.
+- The driver auto-starts `scripts/qa/qa-serve.mjs` with an empty
+  `/tmp/report-qa-*` board and sets
+  `FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS=<fixture main origin>` for that
+  child only. The fixture's second loopback listener is deliberately NOT
+  allowlisted (A8).
+
+Commands:
+
+```bash
+# fixture-only self test (31 endpoint/stats assertions, exits 0 on success)
+node scripts/qa/link-preview-fixture.mjs --self-test
+
+# prerequisites only: fixture + isolated backend + plugin/capability surface
+bun scripts/qa/link-preview.mjs --preflight
+
+# full A1–A17 run (A6 skipped)
+bun scripts/qa/link-preview.mjs
+
+# attach to an already-running isolated qa-serve (A4/A13 auto-SKIP: the script
+# never kills or restarts a backend it does not own)
+REPORT_QA_BASE=http://127.0.0.1:13688 bun scripts/qa/link-preview.mjs
+
+# keep the temp data dir for inspection after the run
+bun scripts/qa/link-preview.mjs --keep-board
+```
+
+Evidence: `.agents/reports/manager/report-link-preview/steps.json` plus
+screenshots in the same directory. The driver never writes `report.html`; feed
+the directory to the shared `e2e-report-gen.mjs` generator.
+
+The fixture prints one JSON line with `url`/`port`/`privateUrl`/`privatePort`
+and exposes `GET /__stats` (per-path HEAD/GET/total counts, worker-UA counts,
+request headers, first/last timestamps for main + private listeners),
+`POST /__reset`, and `GET /__fixtures` (endpoint URLs and ready-made post
+bodies, including the 4-link body used by A10).
+
 ## Notes / limitations
 
 - `src/ui/.qa/app-grade/run.mjs` and `src/ui/.qa/p9/acceptance.mjs` now require
