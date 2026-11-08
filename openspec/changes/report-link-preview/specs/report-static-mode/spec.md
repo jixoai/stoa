@@ -2,26 +2,27 @@
 
 ## ADDED Requirements
 
-### Requirement: 静态归档不显示链接预览
+### Requirement: 静态归档携带预览字段
 
-静态导出快照 SHALL NOT 包含 `previews` 字段；`StaticReportClient` 的插件与预览读取方法
-SHALL 返回禁用态或抛 `READ_ONLY`，SHALL NOT 发起任何网络请求。静态模式 SHALL NOT 渲染
-链接预览卡（`[data-testid="link-preview-card"]` 数量为 0），SHALL NOT 尝试服务端抓取或
-展示伪造的预览数据。正文中的 markdown 链接与裸 `http/https` URL SHALL 仍渲染为可点击
-链接（新窗口，`noopener noreferrer`），作为「只保留纯链接」的降级形态。插件被关闭时
-SHALL 采用与静态模式相同的降级表现。
+静态导出快照 SHALL 原样包含每个帖子的持久化 `previews` 字段（含 pending/partial/ready/
+failed），并 SHALL 在顶层包含导出时的 `preview_enabled`；SHALL NOT 在导出路径启动 worker、
+入队或抓取；导出 SHALL 只读数据库。静态壳 SHALL 从快照透传 previews，SHALL NOT 发起任何
+网络请求；`preview_enabled=false` 时 SHALL 全部按纯链接渲染。静态 UI SHALL 只把
+`ready/partial` 渲染为预览卡；`pending/failed` SHALL 渲染为纯链接（静态没有 worker，
+pending 不会自行完成）。静态卡片 SHALL 只加载本归档 `media/` 或同源 `/api/media/` 的封面；
+外链封面 SHALL 省略（文字卡），保证离线不依赖外网。
 
-#### Scenario: 导出快照无预览
+#### Scenario: 离线归档显示卡片
 
-- **WHEN** 服务端执行 `export`，检查 `index.html` 内联快照
-- **THEN** 任意帖子的 JSON 都没有 `previews` 键
+- **WHEN** 用 `file://` 打开导出的归档
+- **THEN** ready/partial 帖子显示与导出时一致的卡片（含封面），0 网络请求
 
-#### Scenario: 归档里没有卡片
+#### Scenario: pending/failed 为纯链接
 
-- **WHEN** 用 `file://` 打开归档并浏览含链接的帖子
-- **THEN** 页面 0 张预览卡、无网络请求失败提示；裸 URL 与 markdown 链接都可点击
+- **WHEN** 快照中某条预览是 pending 或 failed
+- **THEN** 静态页不显示永久骨架/失败卡，只显示可点普通链接
 
-#### Scenario: 插件关闭同降级
+#### Scenario: 导出无副作用
 
-- **WHEN** 在线实例关闭 `link-preview` 后浏览同一帖子
-- **THEN** 不显示预览卡，链接仍可点击，与静态归档表现一致
+- **WHEN** 服务端执行 `export`
+- **THEN** `preview_jobs` 不新增、`post_previews` 不被修改、无外网请求
