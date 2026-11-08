@@ -78,15 +78,15 @@
   - 判据：`test/export-static.test.ts` 断言快照 previews 完整、`preview_enabled` 正确、
     导出期间 0 网络/0 job；静态模式 0 fetch；只读导出碰到无 `post_previews` 的旧库不失败
     （previews=[]）。
-- [ ] P1-14. `src/ui/lib/api.ts`：`PreviewLink`/`PluginView` 类型与 `plugins()`/`setPlugin()`/
+- [x] P1-14. `src/ui/lib/api.ts`：`PreviewLink`/`PluginView` 类型与 `plugins()`/`setPlugin()`/
   `status()`；`static-api.ts` 对应 override（静态无 plugin API，previews 透传）。
   - 判据：`bun run typecheck:ui`；静态模式 0 网络（fetch mock）。
-- [ ] P1-15. `src/ui/state/plugins.tsx`：`PluginsProvider` 在 ready 后拉 `/api/plugins`；
+- [x] P1-15. `src/ui/state/plugins.tsx`：`PluginsProvider` 在 ready 后拉 `/api/plugins`；
   暴露 `enabled(id)/refresh/setEnabled`；PATCH 乐观更新+回滚；监听 `plugin.updated` 控制帧；
   静态模式不做请求，`LinkPreviews` 以快照 `preview_enabled` 为准而非 `enabled`。
   - 判据：单测 ready/断线/静态/回滚/控制帧；切后端重建；关闭后卡片隐藏；静态 ready/partial
     仍显示。
-- [ ] P1-16. 客户端事件：`src/ui/state/hub/types.ts` 增 `post.updated` topic/variant/
+- [x] P1-16. 客户端事件：`src/ui/state/hub/types.ts` 增 `post.updated` topic/variant/
   `HUB_DATA_TOPICS`；新增 `src/ui/state/post-previews.tsx`（`apply(postId,previews,
   updatedAt)` 幂等覆盖 + `usePostPreviews(post)`）；EventHub handler 投递；重复/乱序事件
   按 `updated_at` 丢弃旧值。
@@ -95,7 +95,7 @@
 
 ## P1. UI 与设置
 
-- [ ] P1-17. 官方 `carousel` + `Card` 收编（base-nova registry；`embla-carousel-react` 为
+- [x] P1-17. 官方 `carousel` + `Card` 收编（base-nova registry；`embla-carousel-react` 为
   registry 声明依赖）：`LinkPreviews.tsx` 用官方 `Carousel/CarouselContent/CarouselItem/
   CarouselPrevious/CarouselNext` 承载 0..3 张 `LinkPreviewCard`（**一页一张、平权、无主卡**，
   顺序＝正文出现顺序）；`pending` 固定 4:3 占位（域名+Skeleton，预留高度）、`partial` 已有
@@ -107,15 +107,15 @@
   - 判据：Playwright 断言 3 链接 = 3 页；拖拽/箭头/指示点/←→ 键盘切换；阶段更新不跳页；
     pending→ready 高度差 ≤2px；点击新页 `window.opener=null`；failed 仍可点；390/1280
     无溢出；CLS<0.02；reduced-motion 瞬切。
-- [ ] P1-18. `PostCard.tsx` 两个分支在 `QuoteCard` 后、`TagChips` 前插 `<LinkPreviews>`；
+- [x] P1-18. `PostCard.tsx` 两个分支在 `QuoteCard` 后、`TagChips` 前插 `<LinkPreviews>`；
   仅插件启用（且非静态失败态）渲染；事件更新不重排列表、不重置轮播页。
   - 判据：feed/线程/搜索/收藏/成员页五处出现；多阶段事件只改对应 slide；滚动位置不变。
-- [ ] P1-19. 官方 `switch` 收编（base-nova registry）＋ `SettingsSheet`：插件开关、版本/
+- [x] P1-19. 官方 `switch` 收编（base-nova registry）＋ `SettingsSheet`：插件开关、版本/
   rulesVersion、worker 状态、隐私 Alert、依赖提示、agent 只读、静态只读、错误重试；
   `SettingsSheetProvider` 在 AppShell 单实例；Nav/AccountSheet 入口。
   - 判据：两入口同实例；owner/manager 可切、agent 403/disabled；静态不发 `/api/plugins`；
     组件来源可对表 registry。
-- [ ] P1-20. `Markdown.tsx` 裸 URL 自动链接（复用 `scanBareUrls`，仅 http/https，尾标点
+- [x] P1-20. `Markdown.tsx` 裸 URL 自动链接（复用 `scanBareUrls`，仅 http/https，尾标点
   裁剪）；插件关闭/静态/失败卡仍可点。
   - 判据：裸 URL 变链接、代码块不变、括号 URL 不误伤；`rg` 无第二份正则。
 
@@ -124,7 +124,7 @@
 - [x] P1-21. 单测/集成：`bun test`、`bun run check`、`bun run typecheck:ui`；新增
   `test/link-preview-{extract,ssrf,fetch,html,queue,worker,event,http,export}.test.ts` 全绿。
   - 判据：strict 无 `any`；无 console error；`post.updated` 不影响通知/CLI/未读。
-- [ ] P1-22. 夹具/E2E `scripts/qa/link-preview-fixture.mjs` + `scripts/qa/link-preview.mjs`
+- [x] P1-22. 夹具/E2E `scripts/qa/link-preview-fixture.mjs` + `scripts/qa/link-preview.mjs`
   （隔离 `qa-serve` + playwright-core）覆盖 design §14.3 A1–A16（A6 P2）：
   - 判据：发帖 <200ms + pending；pending→partial→ready 时间/事件数；静态导出含 previews 且
     0 请求；升版本倒序入队且旧值保持；关闭/重开；SSRF/重定向/404/超时/超大体；4 链接取 3；
