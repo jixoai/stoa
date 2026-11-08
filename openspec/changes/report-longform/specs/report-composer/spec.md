@@ -40,16 +40,18 @@ SHALL 只读，SHALL NOT 挂载可编辑控件。
 
 ### Requirement: 长文块校验与错误定位
 
-编辑器 SHALL 在输入后（防抖）调用 `parseArticle` 校验；错误面板 SHALL 列出
-`{line, block, message}`，点击 SHALL 定位到编辑器对应行。`severity="error"`
-（非法 JSON、schema 类型不符、块数/体积超限）SHALL 禁用提交并显示 Alert；
-`severity="warning"`（未知块、字段截断）SHALL 只提示、不阻止提交。raw HTML
-SHALL 不被视为错误，但编辑器 SHALL 提示「HTML 不会被解释」。
+编辑器 SHALL 在输入后（防抖）调用 `parseArticle` 校验；错误面板每条 SHALL 列出
+`{line, block, fix}`（`fix` 为一句话怎么修），点击 SHALL 定位到编辑器对应行。
+`severity="error"`（非法 JSON、schema 类型不符、块数/体积超限）SHALL 禁用提交
+并显示 Alert；`severity="warning"`（未知块、未知 status/tone、字段截断）SHALL
+只提示、不阻止提交。raw HTML SHALL 不被视为错误，但编辑器 SHALL 提示
+「HTML 不会被解释」。
 
 #### Scenario: 坏块阻止提交
 
 - **WHEN** 正文含 ` ```fde2e:stats ` 且 JSON 缺引号
-- **THEN** 错误面板出现该块行号与原因，提交按钮禁用；修正后恢复可提交
+- **THEN** 错误面板出现该块行号、块名与 fix（如「补全 JSON 引号」），提交按钮
+  禁用；修正后恢复可提交
 
 #### Scenario: 未知块可提交
 
@@ -57,16 +59,22 @@ SHALL 不被视为错误，但编辑器 SHALL 提示「HTML 不会被解释」�
 - **THEN** 编辑器给 warning（当前版本不识别，仍会原样保存），提交按钮可用；
   服务端收到原文，阅读端按未知块降级
 
+#### Scenario: 未知 status/tone 提示
+
+- **WHEN** steps.status 或 callout.tone 写错
+- **THEN** 错误面板给 warning + fix（「改为 pending/info」），提交按钮可用；
+  阅读端按 pending/info 渲染
+
 #### Scenario: 定位到行
 
 - **WHEN** 点击错误面板中的一条错误
-- **THEN** 编辑器滚动到对应行并把光标放到该块起始位置
+- **THEN** 编辑器滚动到对应行并把光标放到该块起始位置，fix 文案可见
 
 ### Requirement: 长文插入与导入
 
 编辑器 SHALL 提供官方 `DropdownMenu` 的「插入区块」入口：P1 为
-stats/steps/compare/callout，P2 追加 gallery；插入带示例 JSON 的 fenced 模板并把
-光标放到 JSON 内。SHALL 提供「插入图片」（上传 `/api/media` 后插入
+stats/steps/compare/callout，P2 追加 gallery/log；插入带示例 JSON 的 fenced
+模板并把光标放到 JSON 内。SHALL 提供「插入图片」（上传 `/api/media` 后插入
 `![alt](/api/media/<hash>)`）与拖拽 `.md` 导入（≤512,000 字符，非空时确认覆盖）。
 导入 SHALL 只接受 Markdown 文本，SHALL NOT 解析/执行 HTML。
 
@@ -80,6 +88,11 @@ stats/steps/compare/callout，P2 追加 gallery；插入带示例 JSON 的 fence
 - **WHEN** 依次插入 stats/steps/compare/callout
 - **THEN** 每块出现对应 fenced 模板，预览显示统计网格/步骤列表/双图对比/
   Alert；坏 JSON 时预览降级并提示
+
+#### Scenario: 插入 log（P2）
+
+- **WHEN** 在编辑器选择「插入区块 → log」
+- **THEN** 出现 ` ```fde2e:log ` 模板，预览默认收起；展开显示纯文本 pre
 
 #### Scenario: 插入图片
 

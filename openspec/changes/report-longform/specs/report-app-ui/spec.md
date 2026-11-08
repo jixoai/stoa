@@ -109,13 +109,20 @@ feed/线程/搜索/收藏/成员页 SHALL 用「长文摘要卡」表示 article
 
 ### Requirement: 目录、锚点与阅读进度
 
-文章视图 SHALL 为 H2/H3 生成目录（少于 2 个标题时不显示）；标题 SHALL 有确定性
-锚点 id：纯文本 → NFKC → 小写 → 非 `[a-z0-9\u4e00-\u9fff-]` 替换为 `-` → 合并/
-去首尾 → 截断 64 码点 → 空串为 `section`；重复标题 SHALL 依次加 `-2`、`-3`。
+文章视图 SHALL 从 Markdown headings 自动生成目录（少于 2 个标题时不显示），
+SHALL NOT 提供 `fde2e:toc` 块；标题 SHALL 有确定性锚点 id：纯文本 → NFKC →
+小写 → 非 `[a-z0-9\u4e00-\u9fff-]` 替换为 `-` → 合并/去首尾 → 截断 64 码点 →
+空串为 `section`；重复标题 SHALL 依次加 `-2`、`-3`。
 目录 SHALL 是 `<nav aria-label="目录">`，点击 SHALL 滚动到标题且不被吸顶头遮挡
 （`scroll-margin-top`）。页面 SHALL 支持 `?s=<slug>` 深链定位（未知 slug 忽略）。
 阅读进度 SHALL 以滚动比例 0..1 单调更新，并用 `role="progressbar"` 暴露；
 active 目录项 SHALL 随滚动切换。`prefers-reduced-motion` 下所有滚动 SHALL 瞬时。
+
+#### Scenario: 自动生成 TOC
+
+- **WHEN** article 含 2 个以上 H2/H3
+- **THEN** 目录自动出现；DOM 中不存在 `fde2e:toc` 块或专用 toc 渲染器；
+  少于 2 个标题时不渲染空目录
 
 #### Scenario: 重复标题锚点
 

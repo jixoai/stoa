@@ -9,7 +9,9 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
 
 1. **支持长文章，但不开放任意 HTML**。正文仍是 Markdown，结构化展示用
    **fenced 指令块**（不是自定义 HTML 元素）：渲染器白名单 + JSON schema 校验，
-   raw HTML 一律转义为文本。
+   raw HTML 一律转义为文本。块集**硬封顶 6 块**：P1 `stats`/`steps`/`compare`/
+   `callout`，P2 `gallery`/`log`；不做 toc/timeline/verdict/coverage/tabs/
+   mermaid/chart/math/checklist 等（202 份本地报告 + 12 个来源调研结论）。
 2. **三种载体分工**：
    - `note`（短帖，默认）：现有 200,000 字符上限与 feed 6 行截断不变；
    - `article`（长文，新）：512,000 字符上限、独立文章视图、prose 排版；
@@ -27,7 +29,7 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
    http/https（文章内锚点例外）；通知/已读语义不变；静态导出存 Markdown（块数据
    内嵌其中）、客户端渲染、零服务端依赖。
 6. **分期**：P1 文章视图 + 嵌入讨论区 + 四块（stats/steps/compare/callout）+
-   全屏编辑 + 静态导出 + 报告模板；P2 gallery 块 + TOC/阅读进度 + 导入；
+   全屏编辑 + 静态导出 + 报告模板；P2 gallery/log 块 + TOC/阅读进度 + 导入；
    P3 打印/HTML 导出样式。
 
 ## 现状（只读实测与代码证据）
@@ -75,7 +77,9 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
    200,000；静态快照携带 `kind` 与 `body_md`。
 2. **指令块**：` ```fde2e:<name> ` fenced 块（JSON body）作为结构化展示的唯一扩展点；
    解析放 `src/core/article.ts`（服务端/客户端/静态共用）；未知块与坏 JSON 安全降级；
-   raw HTML 永不执行；URL scheme 与 media 引用白名单。
+   raw HTML 永不执行；URL scheme 与 media 引用白名单。块 schema 支持 stats 前后
+   数字/变化、callout items/code、compare viewport；Markdown 扩展（task list/
+   footnote/figure/自动 TOC）P2 落地，**不新增块**。
 3. **阅读**：新增 `#/a/<id>` 文章视图（prose、标题/作者/时间/阅读时长、正文下方
    嵌入讨论区、宽表格/代码横向滚动；TOC/锚点/阅读进度/图集为 P2）；
    讨论区复用平铺 timeline（focal=文章），顶部/底部保留「在独立线程页打开」；
@@ -101,8 +105,8 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
 - 不引入新的运行时依赖（JSON schema 校验用本仓纯函数，不引 ajv/zod）。
 - 不把长文拆成多帖/多段自接链（article 是单帖正文）。
 - 静态归档不启动任何服务端解析/抓取；块在客户端解析。
-- P1 做 stats/steps/compare/callout 四块；gallery、TOC/阅读进度、导入留 P2；
-  P3 才做打印与独立 HTML 导出样式。
+- P1 做 stats/steps/compare/callout 四块；gallery/log、TOC/阅读进度、导入留
+  P2；P3 才做打印与独立 HTML 导出样式。
 
 ## 与在途 change 的关系（合并顺序）
 

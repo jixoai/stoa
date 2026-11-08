@@ -6,9 +6,10 @@
 
 静态导出快照 SHALL 携带每条帖的 `kind` 与 `body_md`；SHALL NOT 预渲染 HTML 或
 另存 blocks 数组——指令块 SHALL 由客户端用与线上相同的 `parseArticle` 解析。
-静态归档 SHALL 支持 `#/a/<id>` 文章视图、摘要卡、P1 四块/未知块降级、
-**正文下方嵌入讨论区（只读展示快照中的既有回复）**、TOC/进度（P2）与
-图片/图集查看；所有媒体 SHALL 走归档相对路径（`media/<hash>.<ext>`）。
+静态归档 SHALL 支持 `#/a/<id>` 文章视图、摘要卡、P1 四块与 P2 gallery/log
+（未知块降级）、**正文下方嵌入讨论区（只读展示快照中的既有回复）**、
+TOC/进度（P2）与图片/图集查看；所有媒体 SHALL 走归档相对路径
+（`media/<hash>.<ext>`）。
 静态模式 SHALL NOT 发起任何网络请求（无 `/api/*`、无字体/CDN），SHALL NOT 启动
 服务端解析/抓取/worker。写操作 SHALL 只读提示。
 
@@ -22,6 +23,17 @@
 
 - **WHEN** 归档中的 article 含 stats/steps/compare/callout 与未知块
 - **THEN** 四块正常渲染，未知块降级占位；快照中没有预渲染 HTML
+
+#### Scenario: 静态 log/gallery
+
+- **WHEN** 归档中的 article 含 `fde2e:log` 与 `fde2e:gallery`
+- **THEN** log 原生 details 默认收起、打印展开、浏览器搜索命中；gallery 可
+  横向滚动读取全部图片并支持键盘；展开/切换不改变路由与滚动位置；请求数 0
+
+#### Scenario: 静态 Markdown 扩展
+
+- **WHEN** 归档中的 article 含 task list、footnote、figure caption
+- **THEN** 三者按 P2 规则渲染；无对应语法时与升级前一致；请求数 0
 
 #### Scenario: 静态讨论区只读
 

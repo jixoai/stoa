@@ -111,6 +111,12 @@ Markdown 图片；SHALL NOT 输出 HTML。图片 SHALL 经
   `fde2e:callout`，以及每个 compares 一个 `fde2e:compare`；全部 JSON 可被
   `parseArticle` 接受（0 error）
 
+#### Scenario: logs 映射（P2）
+
+- **WHEN** steps.json 含 `logs` 数据
+- **THEN** P1 输出 Markdown 代码块（可移植）；P2 输出 `fde2e:log`（默认收起、
+  纯文本）；同一输入两种模式均可被 `post --file --format article` 接受
+
 #### Scenario: 坏块降级
 
 - **WHEN** 模板输出被人为改坏（JSON 非法/字段类型错）后发成 article
@@ -140,13 +146,13 @@ Markdown 图片；SHALL NOT 输出 HTML。图片 SHALL 经
 
 `GET /api/capabilities` 的 `features` SHALL 增加 `article: true` 与
 `article_blocks: string[]`（P1 为 `stats/steps/compare/callout`，P2 追加
-`gallery`）。既有字段 SHALL NOT 删除或改义。
+`gallery`/`log`）。既有字段 SHALL NOT 删除或改义。
 
 #### Scenario: 客户端探测
 
 - **WHEN** 客户端读取 `/api/capabilities`
-- **THEN** 看到 `article=true` 与 `article_blocks`（P1 四项，P2 追加 gallery）；
-  旧客户端忽略新字段不受影响
+- **THEN** 看到 `article=true` 与 `article_blocks`（P1 四项，P2 追加
+  gallery/log）；旧客户端忽略新字段不受影响
 
 #### Scenario: 静态归档
 

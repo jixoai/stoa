@@ -37,13 +37,20 @@
     `scripts/check.mjs` 路由/命令 lint 通过（无新端点）。
 - [ ] P1-6. `src/core/article.ts`（新）：`parseArticle`/`articleSummary`；
   fenced `fde2e:<name>` 识别；JSON 解析；**P1 四块 schema**
-  （stats/steps/compare/callout）；未知块/坏 JSON/schema 错降级；标题/摘要/
-  阅读时长/纯文本；H2/H3 slug（NFKC、CJK、冲突 `-2/-3`）；`BlockIssue` 行号。
-  - 判据：`test/article-parse.test.ts` 覆盖：普通 ```js 不变；四块各自识别与
-    字段校验；未知块降级；坏 JSON；schema 类型错；重复标题 slug；CJK 标题；
-    无 H1 回退；首个 block 非 H1 时不抢标题；3/4 反引号 fence 与闭合长度；
-    块起始行号；`articleSummary` 标题/摘要/minutes；200 块/16KiB 上限；
-    解析 512KB <50ms；任何输入不抛异常。
+  （stats/steps/compare/callout，design §3.2 最终版）；未知块/坏 JSON/schema
+  错降级 + warning；标题/摘要/阅读时长/纯文本；H2/H3 slug（NFKC、CJK、冲突
+  `-2/-3`）；`BlockIssue` 行号。
+  - 判据：`test/article-parse.test.ts` 覆盖：普通 ```js 不变；stats 1..8/
+    label40/value32/before-after32/unit12/hint80/tone/better；steps 1..20/
+    title 必填/status done|failed|degraded|skipped|pending（未知→pending+
+    warning）/expect1000/detail2000/command4KiB/output8KiB/media 本地；
+    compare before/after 必填/label60/caption200/title120/note300/viewport40
+    （两侧不一致 warning）；callout tone/body2000/items0..8×300/code4KiB；
+    未知块降级（含行号）；坏 JSON；schema 类型错；未知 tone→info+warning；
+    重复标题 slug；CJK 标题；无 H1 回退；首个 block 非 H1 时不抢标题；
+    3/4 反引号 fence 与闭合长度；块起始行号；`articleSummary` 标题/摘要/
+    minutes；200 块/16KiB 上限；截断/超限记 warning；解析 512KB <50ms；
+    任何输入不抛异常。
 
 ## P1. 阅读
 
@@ -97,11 +104,12 @@
   `createPost({body, kind:"article"})`；成功 `navigate(/a/<id>)`。
   - 判据：A14；390 全屏 tabs、1280 分栏；草稿恢复/清除；双击只发一次；
     四块模板插入后预览可解析；静态模式只读；离开有未提交内容有确认。
-- [ ] P1-14. 编辑器校验：`parseArticle` 防抖校验；错误面板列
-  `line/block/message`；点击定位 textarea 行；`error` 禁止提交、`warning`
-  只提示；未知块/raw HTML 提示不阻止。
-  - 判据：A14；坏 JSON/schema 错禁止提交并定位；未知块可提交；raw HTML 提示
-    「不会被解释」；提交后服务端收到原文。
+- [ ] P1-14. 编辑器校验：`parseArticle` 防抖校验；错误面板每条列
+  `line/block/fix`（一句话怎么修）；点击定位 textarea 行；`error` 禁止提交、
+  `warning` 只提示；未知块/未知 status/tone/raw HTML 提示不阻止。
+  - 判据：A14；坏 JSON/schema 错禁止提交并定位；错误面板含 line+block+fix；
+    未知块可提交；未知 status 提示按 pending、未知 tone 提示按 info；raw HTML
+    提示「不会被解释」；提交后服务端收到原文。
 
 ## P1. 工具链与静态
 
@@ -118,16 +126,21 @@
   - 判据：A12；file+body 报错、两者都缺报错；article URL 为 `#/a/<id>`；
     note 旧调用（只 body）行为不变；插件 README 工具表更新。
 - [ ] P1-17. 报告模板：`plugins/report-channel/scripts/report-to-article.mjs`
-  （新）：steps.json → article Markdown，**P1 直接输出四块**——
-  `fde2e:callout`（thesis）、`fde2e:stats`（概览/汇总）、每节
-  `fde2e:steps`、`sections[].compares[]` → `fde2e:compare`；截图用普通
-  Markdown 图片；`--upload`/`--media-map`；确定性输出；代码 fence 动态长度。
+  （新）：按 design §6.3 映射表把 steps.json 转 article Markdown，**P1 直接
+  输出四块**——`fde2e:callout`（thesis）、`fde2e:stats`
+  （summary/coverage 概览）、每节 `fde2e:steps`（expect/detail/command/
+  output/media）、`imageBefore`+`image` 或 `sections[].compares[]` →
+  `fde2e:compare`；`env`/`coverage` 用 Markdown 表格；截图进
+  `steps[].media` 或普通 Markdown 图片；`logs` P1 回退 Markdown 代码块
+  （P2 升级 log 块）；`--upload`/`--media-map`；确定性输出；代码 fence 动态
+  长度。
   - 判据：A2（P1 四块）；同一 steps.json 两次输出 diff 为空；输出的块 JSON
     （stats/steps/callout，有 compares 时加 compare）均通过 `parseArticle`
-    0 error；坏块（人为改坏 JSON）在文章页降级不白屏；
-    截图 `--upload` 后为 `/api/media/<hash>` 且 article/静态归档可加载；
-    compare before/after 两图并排可开 viewer；无 upload/map 时警告并输出
-    普通链接；fence 注入测试；输出可被 `post --file --format article` 接受。
+    0 error；steps 的 degraded/skipped 不丢；env/coverage 是 Markdown 表格；
+    坏块（人为改坏 JSON）在文章页降级不白屏；截图 `--upload` 后为
+    `/api/media/<hash>` 且 article/静态归档可加载；compare before/after 两图
+    并排可开 viewer；无 upload/map 时警告并输出普通链接；fence 注入测试；
+    输出可被 `post --file --format article` 接受。
 - [ ] P1-18. 静态：`src/ui/lib/static-api.ts` 加可选 `kind` 与 hydrate 默认
   note（含 quoted 回退分支补 `kind`）；`src/server/export.ts` 快照自然携带
   kind；`ArticlePage`/摘要卡/四块/嵌入讨论区静态可用；`/a/<note>` 回退；
@@ -143,14 +156,20 @@
 - [ ] P1-20. E2E/QA：`scripts/qa/report-longform.mjs` + 隔离后端 + Playwright
   覆盖 A1、A2（P1 四块）、A3、A4、A5、A6、A8、A9、A10、A11、A12、A13、
   A14；截图/请求记录落 `src/ui/.qa/longform/`（390/1280）。
-  - 判据：全部 PASS；失败截图+响应状态留档；结束 kill 隔离服务并列 PID；
-    生产板 0 写入；`steps.json` 可被 P1-17 模板转成 article 作为交付物。
+  - 判据：全部 PASS（含 steps degraded/skipped、stats before→after/tone、
+    callout items/code、compare viewport 不一致 warning 与 <860px 一次一张）；
+    失败截图+响应状态留档；结束 kill 隔离服务并列 PID；生产板 0 写入；
+    `steps.json` 可被 P1-17 模板转成 article 作为交付物。
 - [ ] P1-21. 四块渲染件：stats/steps/compare/callout（design §3.2/§4.4）；
-  官方 Card/Badge/Alert 组合；`data-article-block` 标记；超限截断/警告；
-  未知字段忽略；compare 两侧图片可开 `ImageViewer`。
+  官方 Card/Badge/Alert/Tabs 组合；`data-article-block` 标记；超限截断/警告；
+  未知字段忽略；steps 五态 Badge、command/output pre 横向滚动、media 开
+  viewer；stats `value` 与 `before→after`+unit/better 双形态、tone 与 PASS
+  文字并存；compare ≥860 并排、<860 一次一张切换、viewport 不一致 warning、
+  title 可访问名称、图片开 `ImageViewer`；callout items+code。
   - 判据：A2（P1 四块）；四块 390/1280 无溢出；组件来源可对表
     `src/ui/components/ui/*`；无硬编码 hex；schema 单测覆盖边界
-    （0/超限/类型错）；坏块只降级该块。
+    （0/超限/类型错）；坏块只降级该块；degraded/skipped 语义可见；
+    compare 窄屏不出现上下两张巨图。
 - [ ] P1-22. 文章内嵌讨论区：`ArticleDiscussion`（新）复用 `client.thread` +
   `planForThreadView`（focal=article），只渲染 reply/subthread 行；从
   `ThreadPage` 抽出共享 `ThreadTimelineRows`（`TimelineRow` + PostCard
@@ -162,35 +181,48 @@
     大线程只出子线程入口；read-dwell 只注册一个 observer；静态回复只读；
     回复提交后新行并入、不整页刷新。
 
-## P2. gallery、TOC/进度与导入
+## P2. gallery/log、TOC/进度与导入
 
-- [ ] P2-1. `gallery` 块 schema 与渲染件（design §3.2/§4.4）；官方
-  `Carousel` 组合；`data-article-block` 标记；超限截断/警告；未知字段忽略。
-  - 判据：A2（gallery）；390/1280 无溢出；组件来源可对表
+- [ ] P2-1. `gallery` + `log` 块 schema 与渲染件（design §3.2/§4.4）：
+  gallery WAI-ARIA carousel（方向键/「2 of 3」/焦点返回/静态横向滚动）；
+  log 原生 `<details>/<summary>` + `<pre>`，默认收起、打印展开、浏览器搜索
+  命中、`text` 纯文本不解析 MD、不内联脚本/样式；`data-article-block` 标记；
+  超限截断/警告；未知字段忽略。
+  - 判据：A2（gallery/log）；390/1280 无溢出；log 展开/收起不跳路由/
+    滚动位置；gallery 键盘/计数/焦点返回正确；组件来源可对表
     `src/ui/components/ui/*`；无硬编码 hex；schema 单测覆盖边界
     （0/超限/类型错）。
-- [ ] P2-2. TOC/锚点/阅读进度：`ArticleToc`、slug 映射、`?s=<slug>` 深链、
-  进度条 CSS 变量、active heading IntersectionObserver、reduced-motion 瞬切。
+- [ ] P2-2. TOC/锚点/阅读进度 + **Markdown 扩展（不做新块）**：自动 TOC 从
+  Markdown headings 生成（不提供 toc 块）、slug 映射、`?s=<slug>` 深链、进度
+  条 CSS 变量、active heading IntersectionObserver、reduced-motion 瞬切；
+  `- [ ]`/`- [x]` task list、`[^1]` footnote、`![alt](src "caption")`
+  figure/figcaption（parser/renderer 加性扩展）。
   - 判据：A7；重复标题 slug 正确；点击/深链标题不被吸顶头遮挡（±4px）；
-    进度 0→1 单调；active 随滚动；一个 observer、无每帧 setState。
-- [ ] P2-3. 编辑器 gallery 插入/图片/导入：官方 DropdownMenu 追加
-  `gallery` 模板（四块已在 P1）；图片上传插入
+    进度 0→1 单调；active 随滚动；一个 observer、无每帧 setState；task list
+    只读 checkbox/aria-checked 正确；footnote 引用与文末定义对应、上限 50；
+    figure caption 转义且不解析块级 MD；无 toc 块。
+- [ ] P2-3. 编辑器 gallery/log 插入/图片/导入：官方 DropdownMenu 追加
+  `gallery`/`log` 模板（四块已在 P1）；图片上传插入
   `![alt](/api/media/<hash>)`；拖拽 `.md` 导入（≤512k，确认覆盖）；
   复用 `useMediaUpload`。
-  - 判据：gallery 插入可解析/预览；图片 hash 正确；导入不执行 HTML；
+  - 判据：gallery/log 插入可解析/预览；图片 hash 正确；导入不执行 HTML；
     大文件拒绝；390/1280 工具条不溢出。
-- [ ] P2-4. 模板增强（可选）：多图步骤（`steps[].images[]` 或
-  `sections[].gallery[]`）可输出 `fde2e:gallery` 分组；四块输出已在 P1 固定
-  （无独立开关）；旧 steps.json 兼容。
-  - 判据：gallery 输出通过 `parseArticle` 0 error；gallery 媒体有效；
-    同一输入确定性；旧 steps.json（无 compares/无 gallery）不报错。
+- [ ] P2-4. 模板增强：`logs` → `fde2e:log`（P1 为 Markdown 代码块）；
+  多图步骤（`steps[].images[]` 或 `sections[].gallery[]`）可输出
+  `fde2e:gallery` 分组；四块输出已在 P1 固定（无独立开关）；旧 steps.json
+  兼容。
+  - 判据：log/gallery 输出通过 `parseArticle` 0 error；log 默认收起、
+    gallery 媒体有效；同一输入确定性；旧 steps.json（无 compares/无
+    gallery/logs）不报错。
 - [ ] P2-5. 图集查看器：gallery 点击打开 `ImageViewer` 多图（左右滑动/计数/
   缩略条/键盘）；静态归档可用。
   - 判据：A2（gallery）/A10；多图手势与现有查看器一致；关闭不改路由/
     滚动位置。
-- [ ] P2-6. P2 验收：A2（gallery）、A7 与 A1/A14 的 TOC 相关断言全绿；
-  更新 `src/ui/.qa/longform/` 截图与 `steps.json`。
-  - 判据：全部 PASS；无回归（P1 用例仍绿）。
+- [ ] P2-6. P2 验收：A2（gallery/log）、A7 与 A1/A14 的 Markdown 扩展/TOC
+  相关断言全绿；更新 `src/ui/.qa/longform/` 截图与 `steps.json`。
+  - 判据：全部 PASS（含 log 原生 details 默认收起/打印展开/搜索命中、
+    gallery WAI-ARIA、task list/footnote/figure、自动 TOC）；无回归
+    （P1 用例仍绿）。
 
 ## P3. 打印与独立 HTML 导出
 
