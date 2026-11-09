@@ -1,0 +1,159 @@
+#!/usr/bin/env node
+/**
+ * Stop 钩子：回合结束时做一次**有界等待**（wait-notifications），把「回合期间的 Owner 回话」
+ * 自动带回会话——**模型零学习**（不必知道 wait 这件事存在）。
+ *
+ * 契约（ZCode Stop hook；已对照 zcode.cjs 的 hook 输出 schema）：
+ *   有新消息 → stdout 单行 JSON `{"decision":"block","reason":"<消息摘要＋处理指令>"}`
+ *             （ZCode 据此续跑并把 reason 注入会话；最多 3 次）。
+ *   无消息   → 不输出任何内容、退出 0（放行 stop）。
+ *   `stop_hook_active:true`（本回合已因 Stop 钩子续跑过）→ 直接放行，避免续跑循环。
+ *   板不可达 / 配置不符 / 任何异常 → 静默放行（钩子绝不能让会话起不来）。
+ *
+ * 实现：复用 watch.mjs 的轮询核心（子进程 + JSON stdout，无常驻进程），
+ * 走会话本地游标（**永不消费**：不 ack、不推进账号游标）；消息一出现 watch 会先推进
+ * state 文件再输出，因此同一批消息不会重复注入。
+ *
+ * 用法：node scripts/stop-wait.mjs [--state-file <path>]
+ *   默认 state：按当前配置/会话派生（同 state-path.mjs；新旧 state 目录兼容），
+ *   与常驻订阅共用同一游标。等待秒数：`STOA_STOP_WAIT_SECONDS`（旧前缀
+ *   `REPORT_CHANNEL_STOP_WAIT_SECONDS` 兼容），默认 20，0 = 关闭本钩子。
+ *
+ * 纪律：stdout 只允许出现上面的契约 JSON；绝不打印凭据；绝不触碰生产板（写操作禁令）。
+ */
+import { spawn } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadConfig, resolveStatePath, sessionStateFileName } from "./lib/config.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** 钩子事件 JSON 走 stdin（Claude 系约定）；最多等 300ms，不给就按普通 Stop 处理。 */
+async function readHookEvent() {
+  if (process.stdin.isTTY) return null;
+  return await new Promise((resolve) => {
+    let raw = "";
+    const timer = setTimeout(() => resolve(null), 300);
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      raw += chunk;
+    });
+    process.stdin.on("end", () => {
+      clearTimeout(timer);
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        resolve(null);
+      }
+    });
+    process.stdin.on("error", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+  });
+}
+
+function waitSeconds() {
+  const raw = process.env.STOA_STOP_WAIT_SECONDS ?? process.env.REPORT_CHANNEL_STOP_WAIT_SECONDS;
+  if (raw === undefined || raw === "") return 20;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return 20;
+  return Math.min(Math.floor(value), 120);
+}
+
+const argv = process.argv.slice(2);
+const argValue = (name) => {
+  const inline = argv.find((a) => a.startsWith(`--${name}=`));
+  if (inline !== undefined) return inline.slice(name.length + 3);
+  const index = argv.indexOf(`--${name}`);
+  if (index >= 0 && argv[index + 1] !== undefined && !argv[index + 1].startsWith("--")) {
+    return argv[index + 1];
+  }
+  return null;
+};
+
+function excerpt(text, max = 120) {
+  const value = String(text ?? "").replace(/\s+/g, " ").trim();
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/**
+ * 事件 → 人读摘要（最大值有界）：
+ * 优先用 `thread.snapshot` 里的正文；`post.created`/`thread.invited` 等事件行只补帖 id。
+ */
+function formatReason(events) {
+  const byId = new Map(); // post_id → 展示行（先由 snapshot 提供正文，再由事件行补 id）
+  for (const event of events) {
+    const posts = event?.type === "thread.snapshot" ? (event.thread?.posts ?? []) : [];
+    for (const post of posts) {
+      if (!post?.id) continue;
+      byId.set(post.id, `@${post.author ?? "?"}（帖子 ${post.id}）: ${excerpt(post.body_md) || "(无正文)"}`);
+    }
+  }
+  for (const event of events) {
+    if (event?.type === "thread.snapshot" || !event?.post_id) continue;
+    if (!byId.has(event.post_id)) {
+      byId.set(event.post_id, `[${event.type}] @${event.actor ?? "?"}（帖子 ${event.post_id}）`);
+    }
+  }
+  const lines = [...byId.entries()].slice(0, 5).map(([, line]) => `- ${line}`);
+  const more = byId.size > lines.length ? `（另有 ${byId.size - lines.length} 条，去板上看全）` : "";
+  return [
+    `<stoa>公示板有 ${byId.size} 条新回话（未消费）${more}：`,
+    ...lines,
+    "处理指令：先 board_read { thread: \"<帖子 id>\" } 补上下文，再 board_reply 在对应线程里回复（不要只在本地自答）；处理完再结束回合。",
+  ].join("\n");
+}
+
+try {
+  const event = await readHookEvent();
+  if (event?.stop_hook_active === true) process.exit(0);
+  const seconds = waitSeconds();
+  if (seconds <= 0) process.exit(0);
+
+  const cfg = loadConfig();
+  // --state-file 按原样交给 watch（由它展开 ~ 并 resolve）；默认按当前配置/会话派生。
+  const explicitState = argValue("state-file");
+  const statePath = explicitState ?? resolveStatePath(sessionStateFileName(cfg));
+  const child = spawn(
+    process.execPath,
+    [join(HERE, "watch.mjs"), "--state-file", statePath, "--max-seconds", String(seconds), "--poll-seconds", "2"],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  // 硬护栏：watch 自有 --max-seconds 边界，这里再兜一层，防网络层卡死。
+  const killer = setTimeout(() => child.kill("SIGKILL"), seconds * 1000 + 10_000);
+  killer.unref();
+
+  let stdout = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", () => {
+    /* 静默：板不可达等信息不进会话 */
+  });
+  const code = await new Promise((resolve) => child.once("close", (exitCode) => resolve(exitCode)));
+  clearTimeout(killer);
+  if (code !== 0) process.exit(0);
+
+  // watch 的 stdout 是单个 JSON（事件页为 pretty JSON，空闲页为单行），整体解析。
+  let payload;
+  const text = stdout.trim();
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    const line = text.split("\n").filter((candidate) => candidate.trim().startsWith("{")).pop();
+    if (!line) process.exit(0);
+    try {
+      payload = JSON.parse(line);
+    } catch {
+      process.exit(0);
+    }
+  }
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  if (events.length === 0) process.exit(0);
+
+  process.stdout.write(`${JSON.stringify({ decision: "block", reason: formatReason(events) })}\n`);
+  process.exit(0);
+} catch {
+  process.exit(0);
+}
