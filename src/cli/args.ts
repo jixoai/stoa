@@ -188,6 +188,7 @@ Usage:
   stoa read --as A [--feed following|recommended] [--tag T] [--thread P]
                             [--author X] [--since T] [--until T]
                             [--limit N] [--order asc|desc] [--after C]
+                            [--base-url URL --token T --account A]
   stoa search <q> --as A [--limit N] [--accounts]
   stoa discover --tags|--accounts [--limit N] --as A
   stoa follow <acct>|--unfollow <acct> --as A
@@ -196,16 +197,19 @@ Usage:
   stoa bookmarks --as A [--limit N] [--before C] [--after C]
   stoa profile <acct> --as A [--follow]
   stoa wait-notifications --as A [--no-export] [--cursor C] [--timeout SEC]
+                            [--base-url URL --token T --account A]
   stoa draft ls|show <id>|resume <id>|discard <id>|commit <id> --as A
   stoa export [--as A] [--out D] [--prune --keep N]
-  stoa status [--data-dir D] [--all]
+  stoa status [--data-dir D] [--all] [--base-url URL --token T --account A]
   stoa gc [--data-dir D]
   stoa auth status
   stoa mcp [--base-url URL] [--token TOKEN] [--account A] [--data-dir D]
                             [--public-url URL] [--config FILE]
+                            [--env-files a,b] [--as A]
 
 Global flags: --data-dir D, --env-files a,b, --as ACCOUNT, --human
-Env fallbacks: STOA_DATA_DIR, STOA_ENV_FILES, STOA_ACCOUNT (legacy FDE2E_REPORT_* names are also read)
+Env fallbacks (CLI): STOA_DATA_DIR, STOA_ENV_FILES, STOA_ACCOUNT
+  (legacy FDE2E_REPORT_DATA_DIR/ENV_FILES/ACCOUNT equivalents are also read)
 Default output is machine-readable single-line JSON (JSONL for wait-notifications).
   read/search posts carry body_md; --thread returns the whole conversation
   (spine + branches + i/n when the chain is complete) and ignores --limit.
@@ -218,9 +222,18 @@ Default output is machine-readable single-line JSON (JSONL for wait-notification
   serve stays alive while requests/CLI calls arrive; --idle-timeout (default 1800s,
   0 = never) releases the instance after that much silence. status --all shows the
   lease remaining; gc reclaims server.json/serve.lock left by dead instances.
+  Direct mode (read/wait-notifications/status): when --base-url is passed or
+  STOA_BASE_URL/REPORT_CHANNEL_BASE_URL is set (process env or a loaded env file),
+  the command talks to that board using the same config resolution as \`stoa mcp\`
+  (flags > STOA_* > REPORT_CHANNEL_* + FDE2E_REPORT_TOKEN_<ACCOUNT> > config file >
+  default) and never needs a --data-dir pointer. --as overrides the configured
+  account. Without a base URL the original data-dir discovery semantics apply.
   mcp speaks newline-delimited JSON-RPC 2.0 on stdio (initialize/tools/list/
-  tools/call/ping) for harness integration; config order is flags > STOA_* >
-  REPORT_CHANNEL_*/FDE2E_REPORT_* > ~/.config/stoa/report-channel.json (legacy
-  ~/.config/fde2e/report-channel.json) > http://127.0.0.1:13689. It never prints
-  credentials (token presence only shows as present/absent in board_status).
+  tools/call/ping/resources) for harness integration; --env-files loads token/config
+  env files (same loader as the rest of the CLI) and --as is the highest-priority
+  account override. Config order is flags > STOA_* > REPORT_CHANNEL_* (baseUrl/
+  account/dataDir/publicUrl/config) + FDE2E_REPORT_TOKEN_<ACCOUNT> (token only) >
+  ~/.config/stoa/report-channel.json (legacy ~/.config/fde2e/report-channel.json) >
+  http://127.0.0.1:13689. It never prints credentials (token presence only shows as
+  present/absent in board_status).
 `;

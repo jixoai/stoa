@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import { accountTokenEnvKey } from "../src/core/auth.ts";
 import { parseEnv } from "../src/core/env.ts";
 import {
@@ -19,10 +20,12 @@ import {
   loadToken,
   resolveMcpConfig,
 } from "../src/mcp/config.ts";
+import { MCP_PROTOCOL_VERSION, runMcpServer } from "../src/mcp/server.ts";
 import { TOOLS, callTool, cfgFor, resolveKind } from "../src/mcp/tools.ts";
 import { PANEL_MIME, PANEL_RESOURCE, PANEL_URI, renderPanelHtml } from "../src/mcp/panel.ts";
 import {
   initWorkspace,
+  parseJsonLines,
   runCli,
   startTestServer,
   type RunningTestServer,
@@ -197,6 +200,9 @@ describe("面板资源", () => {
     // 面板与凭据无关：HTML 里没有任何 token 字段或值。
     expect(html.includes("token")).toBe(false);
     expect(html.includes("Bearer")).toBe(false);
+    // MCP Apps 桥身份中性化：appInfo.name = stoa（旧插件为 report-channel）。
+    expect(html.includes('appInfo: { name: "stoa"')).toBe(true);
+    expect(html.includes("report-channel")).toBe(false);
   });
 });
 
@@ -379,7 +385,7 @@ describe("配置解析顺序（先到先得，空值＝未设）", () => {
     }
   });
 
-  test("cfgFor：args.as > FORCE_ACCOUNT（双前缀）> 配置账号", () => {
+  test("cfgFor：args.as > CLI --as（accountOverride）> FORCE_ACCOUNT（双前缀）> 配置账号", () => {
     const base = resolveMcpConfig({ flags: {}, env: {}, home: "/nonexistent-home" });
     expect(cfgFor(base, {}, {}).account).toBe("manager");
     expect(cfgFor(base, {}, { REPORT_CHANNEL_FORCE_ACCOUNT: "forced" }).account).toBe("forced");
@@ -387,6 +393,11 @@ describe("配置解析顺序（先到先得，空值＝未设）", () => {
     expect(
       cfgFor(base, { as: "explicit" }, { STOA_FORCE_ACCOUNT: "forced-new" }).account,
     ).toBe("explicit");
+    const cliAs = { ...base, accountOverride: "cli-as" };
+    expect(cfgFor(cliAs, {}, { STOA_FORCE_ACCOUNT: "forced-new" }).account).toBe("cli-as");
+    expect(cfgFor(cliAs, { as: "tool-as" }, { STOA_FORCE_ACCOUNT: "forced-new" }).account).toBe(
+      "tool-as",
+    );
   });
 });
 
@@ -430,11 +441,19 @@ describe("stoa mcp stdio 集成（隔离后端）", () => {
         { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
         statusCall(3, { as: "manager" }),
         { jsonrpc: "2.0", id: 4, method: "ping", params: {} },
+        // 协议版本协商：不认识的版本回服务端支持版本，认识的版本回显。
+        { jsonrpc: "2.0", id: 5, method: "initialize", params: { protocolVersion: "1999-01-01" } },
+        { jsonrpc: "2.0", id: 6, method: "initialize", params: { protocolVersion: "2025-06-18" } },
       ],
     );
     expect(run.code).toBe(0);
     expect(run.responses.get(1)?.result?.protocolVersion).toBe("2024-11-05");
-    expect((run.responses.get(1)?.result?.capabilities as Record<string, unknown>)?.tools).toEqual({});
+    const capabilities = run.responses.get(1)?.result?.capabilities as Record<string, unknown>;
+    expect(capabilities?.tools).toEqual({});
+    // P2-7：提供 resources/list|read，capabilities 必须声明 resources。
+    expect(capabilities?.resources).toEqual({});
+    expect(run.responses.get(5)?.result?.protocolVersion).toBe(MCP_PROTOCOL_VERSION);
+    expect(run.responses.get(6)?.result?.protocolVersion).toBe("2025-06-18");
     const tools = run.responses.get(2)?.result?.tools as Array<{ name: string }>;
     expect(tools.map((tool) => tool.name)).toEqual(TOOL_NAMES);
     expect(run.responses.get(4)?.result).toEqual({});
@@ -570,6 +589,229 @@ describe("stoa mcp stdio 集成（隔离后端）", () => {
     expect(run.stdout.includes(token)).toBe(false);
     expect(run.stderr.includes(token)).toBe(false);
   });
+
+  test("非法 JSON 回 -32700；非法请求回 -32600（id:null）", async () => {
+    const raw = [
+      "not json at all",
+      JSON.stringify({ jsonrpc: "2.0" }),
+      "42",
+      JSON.stringify({ jsonrpc: "2.0", id: 9 }),
+    ].join("\n");
+    const run = await runCli(["mcp"], {
+      stdin: `${raw}\n`,
+      env: {
+        ...CLEAN_ENV,
+        HOME: ws.root,
+        STOA_BASE_URL: server.url,
+        STOA_ACCOUNT: "manager",
+        STOA_DATA_DIR: ws.dataDir,
+      },
+      timeoutMs: 15_000,
+    });
+    expect(run.code).toBe(0);
+    const lines = parseJsonLines(run.stdout);
+    expect(lines[0]).toEqual({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32700, message: "Parse error" },
+    });
+    expect(lines[1]).toEqual({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32600, message: "Invalid Request" },
+    });
+    expect(lines[2]).toEqual({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32600, message: "Invalid Request" },
+    });
+    // 有 id 但缺 method：仍是 Invalid Request，错误回显该 id。
+    expect(lines[3]).toEqual({
+      jsonrpc: "2.0",
+      id: 9,
+      error: { code: -32600, message: "Invalid Request" },
+    });
+  });
+
+  test("--env-files 参与配置与凭据；--as 覆盖账号（最高优先，高于 FORCE_ACCOUNT）", async () => {
+    const envFile = join(ws.root, "mcp-cli-flags.env");
+    writeFileSync(
+      envFile,
+      [
+        `STOA_BASE_URL=${server.url}`,
+        `STOA_DATA_DIR=${ws.dataDir}`,
+        `STOA_TOKEN_OWNER=${ownerToken}`,
+        "STOA_FORCE_ACCOUNT=manager",
+        "",
+      ].join("\n"),
+    );
+    const run = await runMcpSession({ HOME: ws.root }, [statusCall(1)], [
+      "--env-files",
+      envFile,
+      "--as",
+      "owner",
+    ]);
+    expect(run.code).toBe(0);
+    const { payload, isError } = callPayload(run.responses.get(1));
+    expect(isError).toBe(false);
+    expect(payload.ok).toBe(true);
+    expect(payload.as).toBe("owner");
+    const config = payload.config as Record<string, unknown>;
+    expect(config.account).toBe("owner");
+    expect(config.token).toBe("present");
+    expect(config.baseUrl).toBe(server.url);
+    expect(run.stdout.includes(ownerToken)).toBe(false);
+    expect(run.stderr.includes(ownerToken)).toBe(false);
+  });
+
+  test("board_inbox 长轮询期间 ping 立即响应（tools/call 并发，不阻塞 stdio 循环）", async () => {
+    const cfg = resolveMcpConfig({
+      flags: { baseUrl: server.url, account: "manager", token: managerToken },
+      env: {},
+      home: "/nonexistent-home",
+    });
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const messages: Array<Record<string, unknown>> = [];
+    let buffer = "";
+    output.on("data", (chunk: Buffer | string) => {
+      buffer += chunk.toString();
+      for (;;) {
+        const nl = buffer.indexOf("\n");
+        if (nl < 0) break;
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (line) messages.push(JSON.parse(line) as Record<string, unknown>);
+      }
+    });
+    const waitFor = async (predicate: () => boolean, timeoutMs: number): Promise<void> => {
+      const deadline = Date.now() + timeoutMs;
+      while (!predicate()) {
+        if (Date.now() >= deadline) throw new Error("timed out waiting for MCP response");
+        await new Promise((r) => setTimeout(r, 20));
+      }
+    };
+    const session = runMcpServer(cfg, { input, output, env: {} });
+    try {
+      input.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "board_inbox", arguments: { timeout_seconds: 15 } },
+        })}\n`,
+      );
+      input.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "ping", params: {} })}\n`);
+      input.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          method: "resources/read",
+          params: { uri: PANEL_URI },
+        })}\n`,
+      );
+      await waitFor(
+        () => messages.some((m) => m.id === 2) && messages.some((m) => m.id === 3),
+        5000,
+      );
+      // ping/resources 已回但 inbox 仍在长轮询：证明 tools/call 没有串行阻塞后续消息。
+      expect(messages.some((m) => m.id === 1)).toBe(false);
+      expect(messages.find((m) => m.id === 2)?.result).toEqual({});
+      const panel = messages.find((m) => m.id === 3)?.result as
+        | { contents?: Array<{ uri?: string }> }
+        | undefined;
+      expect(panel?.contents?.[0]?.uri).toBe(PANEL_URI);
+      const wake = await fetch(`${server.url}/api/posts`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-report-account": "owner",
+          authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({ body: "@manager wake for inbox", kind: "note", media: [], tags: [] }),
+      });
+      expect(wake.ok).toBe(true);
+      await waitFor(() => messages.some((m) => m.id === 1), 15_000);
+      input.end();
+      await session;
+      const inbox = messages.find((m) => m.id === 1)!;
+      const result = inbox.result as
+        | { content?: Array<{ text?: string }>; isError?: boolean }
+        | undefined;
+      expect(result?.isError).not.toBe(true);
+      const payload = JSON.parse(result?.content?.[0]?.text ?? "{}") as Record<string, unknown>;
+      expect(payload.ok).toBe(true);
+      expect(Number(payload.count)).toBeGreaterThanOrEqual(1);
+    } finally {
+      input.end();
+      await session;
+    }
+  }, 30_000);
+
+  test("CLI 直连模式：无 data-dir 指针时 read/status/wait-notifications 走 --base-url/env + --as", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "stoa-direct-cwd-"));
+    try {
+      const cleanEnv = { ...CLEAN_ENV, HOME: ws.root };
+      const status = await runCli(
+        ["status", "--base-url", server.url, "--account", "manager", "--token", managerToken],
+        { cwd, env: cleanEnv },
+      );
+      expect(status.code).toBe(0);
+      const statusBody = JSON.parse(status.stdout) as {
+        ok: boolean;
+        mode: string;
+        running: boolean;
+        server: { url: string; account: string };
+      };
+      expect(statusBody.ok).toBe(true);
+      expect(statusBody.mode).toBe("direct");
+      expect(statusBody.running).toBe(true);
+      expect(statusBody.server.url).toBe(server.url);
+      expect(statusBody.server.account).toBe("manager");
+
+      // env 层：STOA_BASE_URL + STOA_TOKEN_OWNER（无 --token）；--as 覆盖 --account。
+      const read = await runCli(
+        ["read", "--as", "owner", "--account", "manager", "--limit", "1"],
+        {
+          cwd,
+          env: { ...cleanEnv, STOA_BASE_URL: server.url, STOA_TOKEN_OWNER: ownerToken },
+        },
+      );
+      expect(read.code).toBe(0);
+      expect((JSON.parse(read.stdout) as { ok: boolean }).ok).toBe(true);
+
+      // 给 owner 造一条通知，再用直连 wait-notifications 消费。
+      const posted = await fetch(`${server.url}/api/posts`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-report-account": "manager",
+          authorization: `Bearer ${managerToken}`,
+        },
+        body: JSON.stringify({ body: "@owner direct mode ping", kind: "note", media: [], tags: [] }),
+      });
+      expect(posted.ok).toBe(true);
+      const waited = await runCli(
+        [
+          "wait-notifications",
+          "--base-url",
+          server.url,
+          "--as",
+          "owner",
+          "--token",
+          ownerToken,
+          "--timeout",
+          "10",
+        ],
+        { cwd, env: cleanEnv, timeoutMs: 20_000 },
+      );
+      expect(waited.code).toBe(0);
+      const lines = parseJsonLines(waited.stdout);
+      expect(lines.some((line) => line.type === "post.created")).toBe(true);
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 // ── callTool 纯错误路径（无请求发出 / 只对不可达地址）────────────────────────

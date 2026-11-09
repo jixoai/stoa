@@ -28,7 +28,7 @@ import {
 } from "./args.ts";
 import { ApiClient, CliError, fetchAuthMode } from "./client.ts";
 import { emit, emitError, emitHuman, formatTime, postLine, summarizePost, writeLineSync } from "./output.ts";
-import { resolveMcpConfig } from "../mcp/config.ts";
+import { loadToken, resolveMcpConfig, type McpConfig } from "../mcp/config.ts";
 import { runMcpServer } from "../mcp/server.ts";
 
 export interface CliContext {
@@ -107,6 +107,101 @@ async function makeClient(
     url: info.url,
     authMode: status.mode,
   };
+}
+
+/** 只读命令里支持直连模式的命令（`--base-url` / STOA_BASE_URL 存在时不需要 data-dir 指针）。 */
+const DIRECT_MODE_COMMANDS = new Set(["read", "status", "wait-notifications"]);
+
+/**
+ * 直连模式判定的第一层（data-dir 解析失败时也要能判定）：`--base-url` 显式给值，
+ * 或进程 env / 显式 env 文件里有 `STOA_BASE_URL` / `REPORT_CHANNEL_BASE_URL`。
+ */
+function baseUrlRequested(args: ParsedArgs, cwd: string): boolean {
+  const flagBaseUrl = flagValue(args, "base-url");
+  if (flagBaseUrl !== null && flagBaseUrl.trim() !== "") return true;
+  if (envBaseUrl(process.env)) return true;
+  const explicit =
+    flagValue(args, "env-files") ?? envValue(process.env, envKeys("ENV_FILES")) ?? null;
+  // 与 context() 的 env 文件选择保持一致：显式列表优先，否则只看 cwd/.env.personal
+  // （dataDir/.env 需要 data-dir，解析失败时无从得知）。
+  const paths =
+    explicit !== null
+      ? explicit
+          .split(",")
+          .map((p) => p.trim())
+          .filter(Boolean)
+          .map((p) => resolve(cwd, p))
+      : [resolve(cwd, ".env.personal")].filter((p) => existsSync(p));
+  return paths.length > 0 && Boolean(envBaseUrl(loadEnvFiles(paths).values));
+}
+
+/** 直连模式的 baseUrl 环境层（与 `stoa mcp` 同一双前缀口径）。 */
+function envBaseUrl(env: Record<string, string | undefined>): string {
+  const stoa = (env.STOA_BASE_URL ?? "").trim();
+  if (stoa) return stoa;
+  return (env.REPORT_CHANNEL_BASE_URL ?? "").trim();
+}
+
+/** CLI 上下文里的完整 env 视图：env 文件覆盖进程 env（与 LiveEnv 一致）。 */
+function mergedEnv(ctx: CliContext): Record<string, string | undefined> {
+  return { ...process.env, ...ctx.env.values };
+}
+
+/**
+ * 直连配置（B2 修复）：显式 `--base-url` 或 `STOA_BASE_URL`/`REPORT_CHANNEL_BASE_URL`
+ * 存在时，用与 `stoa mcp` 相同的 `resolveMcpConfig` 构造配置，不依赖 data-dir 指针；
+ * 否则返回 null，保持原指针发现语义（向后兼容）。
+ */
+function directMcpConfig(ctx: CliContext): McpConfig | null {
+  const flagBaseUrl = flagValue(ctx.args, "base-url");
+  const env = mergedEnv(ctx);
+  const explicitFlag = flagBaseUrl !== null && flagBaseUrl.trim() !== "";
+  if (!explicitFlag && !envBaseUrl(env)) return null;
+  return resolveMcpConfig({
+    flags: {
+      baseUrl: flagBaseUrl,
+      token: flagValue(ctx.args, "token"),
+      account: flagValue(ctx.args, "account"),
+      dataDir: flagValue(ctx.args, "data-dir") !== null ? ctx.dataDir : null,
+      publicUrl: flagValue(ctx.args, "public-url"),
+      config: flagValue(ctx.args, "config"),
+    },
+    env,
+  });
+}
+
+interface CommandClient {
+  client: ApiClient;
+  url: string;
+  account: string;
+  authMode: "open" | "auth";
+  direct: boolean;
+}
+
+/**
+ * 只读命令的客户端解析：直连模式优先（`--as` > 配置账号；token 走 mcp 的
+ * `loadToken` 层序），否则回落 data-dir 指针发现 + 账号必填的旧语义。
+ */
+async function commandClient(
+  ctx: CliContext,
+  opts: { required?: boolean; defaultOwner?: boolean } = {},
+): Promise<CommandClient> {
+  const direct = directMcpConfig(ctx);
+  if (direct) {
+    const account = flagValue(ctx.args, "as")?.trim() || direct.account;
+    const cfg = { ...direct, account };
+    const token = loadToken(cfg, mergedEnv(ctx));
+    return {
+      client: new ApiClient({ baseUrl: cfg.baseUrl, account, token }),
+      url: cfg.baseUrl,
+      account,
+      authMode: token ? "auth" : "open",
+      direct: true,
+    };
+  }
+  const account = resolveAccount(ctx, opts);
+  const made = await makeClient(ctx, account);
+  return { ...made, account, direct: false };
 }
 
 async function readStdinAll(): Promise<string> {
@@ -350,6 +445,8 @@ function formatLeaseLine(status: ServeStatus): string {
 }
 
 async function statusCommand(ctx: CliContext): Promise<number> {
+  const direct = directMcpConfig(ctx);
+  if (direct) return directStatusCommand(ctx, direct);
   const all = hasFlag(ctx.args, "all");
   const status = await serverStatus(ctx.dataDir);
   let live: unknown = null;
@@ -407,6 +504,68 @@ async function statusCommand(ctx: CliContext): Promise<number> {
     return 0;
   }
   emit({ ok: true, running: status.running, server: { ...status, dataDir: ctx.dataDir }, live });
+  return 0;
+}
+
+/**
+ * `status` 直连模式（B2）：配置来自 `--base-url`/STOA_BASE_URL/`stoa mcp` 同源解析，
+ * 不再读 data-dir 指针；`--as` 覆盖账号，`--token`/accounts env 文件提供凭据。
+ */
+async function directStatusCommand(ctx: CliContext, cfg: McpConfig): Promise<number> {
+  const all = hasFlag(ctx.args, "all");
+  const account = flagValue(ctx.args, "as")?.trim() || cfg.account;
+  const effective = { ...cfg, account };
+  const token = loadToken(effective, mergedEnv(ctx));
+  const client = new ApiClient({ baseUrl: effective.baseUrl, account, token });
+  let live: unknown;
+  let reachable = true;
+  try {
+    live = await client.get("/api/status");
+  } catch (err) {
+    reachable = false;
+    live = { error: (err as Error).message };
+  }
+  const instance = {
+    mode: "direct",
+    running: reachable,
+    url: effective.baseUrl,
+    account,
+    data_dir: effective.dataDir || null,
+    config_path: effective.path,
+  };
+  if (ctx.human) {
+    emitHuman("mode    : direct (--base-url / STOA_BASE_URL / report-channel config)");
+    emitHuman(`url     : ${effective.baseUrl}`);
+    emitHuman(`account : @${account}`);
+    emitHuman(`config  : ${effective.path}`);
+    if (effective.dataDir) emitHuman(`data dir: ${effective.dataDir}`);
+    if (!reachable) {
+      emitHuman(`live    : ${String((live as { error?: unknown }).error ?? "unreachable")}`);
+      return 0;
+    }
+    const l = live as {
+      counts?: Record<string, number>;
+      drafts?: Array<{ id: string; author: string; items: number }>;
+      auth?: { mode: string };
+    };
+    if (l.auth) emitHuman(`auth    : ${l.auth.mode}`);
+    if (l.counts) emitHuman(`counts  : ${JSON.stringify(l.counts)}`);
+    if (l.drafts && l.drafts.length) {
+      emitHuman(`open drafts: ${l.drafts.map((d) => `${d.author}/${d.id}(${d.items})`).join(", ")}`);
+    }
+    return 0;
+  }
+  if (all) {
+    emit({
+      ok: true,
+      mode: "direct",
+      data_dir: effective.dataDir || null,
+      instances: [instance],
+      live,
+    });
+    return 0;
+  }
+  emit({ ok: true, mode: "direct", running: reachable, server: instance, live });
   return 0;
 }
 
@@ -788,8 +947,7 @@ async function cmdPostBatch(
 }
 
 async function cmdRead(ctx: CliContext): Promise<number> {
-  const account = resolveAccount(ctx, { required: true });
-  const { client } = await makeClient(ctx, account);
+  const { client } = await commandClient(ctx, { required: true });
   const args = ctx.args;
   const feed = flagValue(args, "feed");
   if (feed !== null) {
@@ -1088,8 +1246,7 @@ async function cmdProfile(ctx: CliContext): Promise<number> {
 }
 
 async function cmdWaitNotifications(ctx: CliContext): Promise<number> {
-  const account = resolveAccount(ctx, { required: true });
-  const { client } = await makeClient(ctx, account);
+  const { client, account } = await commandClient(ctx, { required: true });
   const noExport = hasFlag(ctx.args, "no-export");
   const timeoutSec = flagInt(ctx.args, "timeout");
   const deadline = timeoutSec !== null && timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : null;
@@ -1254,20 +1411,39 @@ async function cmdGc(ctx: CliContext): Promise<number> {
  * `stoa mcp`（stoa-adapters design §2）：stdio MCP server。
  * 配置自含（flags > STOA_* > 兼容旧前缀 > 配置文件 > 默认），
  * 不依赖 data-dir 指针发现；stdout 只跑 JSON-RPC，凭据绝不打印。
+ *
+ * P2-11：`--env-files` 走与其它 CLI 命令相同的 env 文件加载（显式列表 > STOA_ENV_FILES >
+ * cwd/.env.personal + <dataDir>/.env），env 文件值覆盖进程 env；`--as` 为服务级账号覆盖
+ * （最高优先，高于 FORCE_ACCOUNT 与配置账号）。
  */
 async function cmdMcp(args: ParsedArgs): Promise<number> {
-  const cfg = resolveMcpConfig({
-    flags: {
-      baseUrl: flagValue(args, "base-url"),
-      token: flagValue(args, "token"),
-      account: flagValue(args, "account"),
-      dataDir: flagValue(args, "data-dir"),
-      publicUrl: flagValue(args, "public-url"),
-      config: flagValue(args, "config"),
-    },
-    env: process.env,
-  });
-  return runMcpServer(cfg, { env: process.env });
+  const cwd = process.cwd();
+  const flags = {
+    baseUrl: flagValue(args, "base-url"),
+    token: flagValue(args, "token"),
+    account: flagValue(args, "account"),
+    dataDir: flagValue(args, "data-dir"),
+    publicUrl: flagValue(args, "public-url"),
+    config: flagValue(args, "config"),
+  };
+  // 第一遍只用进程 env 定位 dataDir（决定默认 env 文件路径），第二遍用 env 文件覆盖后的
+  // 完整 env 解析最终配置（与 CLI 其它命令的「env 文件覆盖进程 env」一致）。
+  const first = resolveMcpConfig({ flags, env: process.env });
+  const explicitEnvFiles =
+    flagValue(args, "env-files") ?? envValue(process.env, envKeys("ENV_FILES")) ?? null;
+  const envFiles =
+    explicitEnvFiles !== null
+      ? explicitEnvFiles
+          .split(",")
+          .map((p) => p.trim())
+          .filter(Boolean)
+          .map((p) => resolve(cwd, p))
+      : resolveEnvFiles({ dataDir: first.dataDir, cwd });
+  const env = { ...process.env, ...loadEnvFiles(envFiles).values };
+  const cfg = resolveMcpConfig({ flags, env });
+  const as = flagValue(args, "as")?.trim();
+  const effective = as ? { ...cfg, account: as, accountOverride: as } : cfg;
+  return runMcpServer(effective, { env });
 }
 
 export async function dispatch(args: ParsedArgs): Promise<number> {
@@ -1280,12 +1456,26 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
   // `stoa mcp` 是长驻 stdio 服务：配置自含（flags/env/配置文件），不经过
   // 通用的 --data-dir 指针发现（否则无指针目录里根本起不来）。
   if (command === "mcp") return cmdMcp(args);
-  const dataDir = resolveDataDir({
-    flag: flagValue(args, "data-dir"),
-    env: process.env,
-    cwd,
-    allowPointer: command !== "init",
-  });
+  // 直连模式（B2）：read/status/wait-notifications 允许完全没有 data-dir 指针——
+  // 只要显式 base-url/env 文件里有板地址，就跳过「data-dir 解析失败」直接走直连配置。
+  let dataDir: string;
+  try {
+    dataDir = resolveDataDir({
+      flag: flagValue(args, "data-dir"),
+      env: process.env,
+      cwd,
+      allowPointer: command !== "init",
+    });
+  } catch (err) {
+    if (
+      !DIRECT_MODE_COMMANDS.has(command) ||
+      !(err instanceof ReportError) ||
+      !baseUrlRequested(args, cwd)
+    ) {
+      throw err;
+    }
+    dataDir = "";
+  }
   const ctx = context(args, dataDir, cwd);
   switch (command) {
     case "capabilities":
