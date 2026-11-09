@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type { Block, InlineToken } from "@core/markdown";
-import { parseMarkdown } from "@core/markdown";
+import { parseInline, parseMarkdown } from "@core/markdown";
 import { filterArticleInline } from "@core/article";
 import { scanBareUrls } from "@core/link-extract";
 import { cn } from "cn";
@@ -438,5 +438,25 @@ export function Markdown({
       variant={variant}
       headingIds={headingIds}
     />
+  );
+}
+
+/**
+ * 指令块内的行内 Markdown（report-longform §3.2/§3.4）：`parseInline` 后过
+ * `filterArticleInline`（link 仅 `https?:`/`#`、image 仅 `https?`/本地媒体），
+ * 逐 token 渲染为 React 元素——`steps.expect/detail`、`callout.body/items` 用它，
+ * **不解析块级 Markdown**（无标题/列表/表格语义）。
+ */
+export function ArticleInline({ source, className }: { source: string; className?: string }) {
+  const { accounts } = useConnection();
+  const known = useMemo(
+    () => new Set(accounts.filter((account) => account.disabled !== 2).map((account) => account.id)),
+    [accounts],
+  );
+  const tokens = useMemo(() => parseInline(source), [source]);
+  return (
+    <span className={cn("min-w-0 break-words", className)} data-testid="article-inline">
+      {renderInline(tokens, known, true, true, true)}
+    </span>
   );
 }

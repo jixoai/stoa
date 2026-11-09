@@ -38,6 +38,7 @@ import {
 } from "@/components/ui/alert";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ArticleInline } from "@/components/Markdown";
 import { useConnection } from "@/state/connection";
 import { useMediaUrl, mediaKind } from "@/lib/media";
 import { useArticleMediaRefs, useArticleViewer } from "@/lib/article-media";
@@ -258,12 +259,12 @@ function StepRow({ step }: { step: StepItem }) {
         <p className="text-[15px] leading-6 font-medium">{step.title}</p>
         {step.expect ? (
           <p className="mt-0.5 text-sm text-muted-foreground" data-testid="step-expect">
-            {step.expect}
+            <ArticleInline source={step.expect} />
           </p>
         ) : null}
         {step.detail ? (
           <p className="mt-0.5 text-sm text-muted-foreground" data-testid="step-detail">
-            {step.detail}
+            <ArticleInline source={step.detail} />
           </p>
         ) : null}
         {step.command ? (
@@ -386,14 +387,14 @@ export function CalloutBlock({ data }: { data: CalloutData }) {
         <AlertDescription className="text-foreground/90">
           {data.body ? (
             <p className="leading-6" data-testid="callout-body">
-              {data.body}
+              <ArticleInline source={data.body} />
             </p>
           ) : null}
           {data.items.length > 0 ? (
             <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-5" data-testid="callout-items">
               {data.items.map((item, index) => (
                 <li key={index} className="leading-6">
-                  {item}
+                  <ArticleInline source={item} />
                 </li>
               ))}
             </ul>

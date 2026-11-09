@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { StaticReportClient, type ReportSnapshot } from "../src/ui/lib/static-api.ts";
 
-function makeSnapshot(overrides: Partial<ReportSnapshot["posts"][number]>[] = []): ReportSnapshot {
+function makeSnapshot(overrides: ReportSnapshot["posts"][number][] = []): ReportSnapshot {
   return {
     version: 1,
     as_of_seq: 20,
