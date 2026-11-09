@@ -1,7 +1,8 @@
 # report-social Specification
 
 ## Purpose
-TBD - created by archiving change report-v0. Update Purpose after archive.
+
+定义公示板的社交面：关注关系、主页双流、成员页与事件流订阅、标签、@owner 通知语义与账号私有收藏。
 
 ## Requirements
 

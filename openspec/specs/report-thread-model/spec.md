@@ -1,7 +1,8 @@
 # report-thread-model Specification
 
 ## Purpose
-TBD - created by archiving change report-v0. Update Purpose after archive.
+
+定义公示板线程模型：服务端确定线程身份、按 spine＋分支组装、自接序号（i/n）、keyset 分页、引用与祖先拓扑（lineage）只读接口。
 
 ## Requirements
 

@@ -1,7 +1,8 @@
 # report-app-ui Specification
 
 ## Purpose
-TBD - created by archiving change report-app-grade. Update Purpose after archive.
+
+定义公示板 Web 端的应用级交互契约：导航栈与返回语义、图片查看器手势、滚动位置记忆、路由转场动画、确定性头像与组件审视纪律。
 
 ## Requirements
 

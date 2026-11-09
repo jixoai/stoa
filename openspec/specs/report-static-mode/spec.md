@@ -1,7 +1,8 @@
 # report-static-mode Specification
 
 ## Purpose
-TBD - created by archiving change report-app-grade. Update Purpose after archive.
+
+定义静态归档模式：复用同一份前端、模式判定与只读 mock、只读界面表现、归档携带收藏 id、静态归档不启用视窗停留已读。
 
 ## Requirements
 

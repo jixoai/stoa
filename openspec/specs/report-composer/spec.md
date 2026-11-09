@@ -1,7 +1,8 @@
 # report-composer Specification
 
 ## Purpose
-TBD - created by archiving change report-ux-r2. Update Purpose after archive.
+
+定义发文与回复的编辑体验：标签即正文、回复框按意图展开、沉浸式与长文编辑器、长文块校验/错误定位/插入与导入。
 
 ## Requirements
 

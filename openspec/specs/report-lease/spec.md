@@ -1,7 +1,8 @@
 # report-lease Specification
 
 ## Purpose
-TBD - created by archiving change report-app-grade. Update Purpose after archive.
+
+定义本地服务的空闲租约与残留回收：实例在静默超时后自动释放，遗留的 server.json/锁可被 gc 发现并回收。
 
 ## Requirements
 

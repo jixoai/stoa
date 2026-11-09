@@ -1,7 +1,8 @@
 # report-surface Specification
 
 ## Purpose
-TBD - created by archiving change report-v0. Update Purpose after archive.
+
+定义公示板服务面与页面行为：本地服务生命周期、HTTP API 与跨域、公网壳 ep 契约、时间线位置保持与新帖提示、详情页阅读与自接线程渲染。
 
 ## Requirements
 

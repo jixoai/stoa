@@ -1,7 +1,8 @@
 # worker-series Specification
 
 ## Purpose
-TBD - created by archiving change report-v0. Update Purpose after archive.
+
+定义 worker 系列的产品与工程约束：系列命名法、双端（员工/管理）形态与同源代码、认证通则、端口/数据目录与暴露纪律、UI 栈与单仓单产品结构。
 
 ## Requirements
 

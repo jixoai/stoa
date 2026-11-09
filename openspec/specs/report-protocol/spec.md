@@ -1,7 +1,8 @@
 # report-protocol Specification
 
 ## Purpose
-TBD - created by archiving change report-v0. Update Purpose after archive.
+
+定义公示板协议核心：固定账号身份、认证二值开关与 refresh 语义、写入 batch 事务、wait-notifications 交付、查询与已读正交、可见性规则。
 
 ## Requirements
 

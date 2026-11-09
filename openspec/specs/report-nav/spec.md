@@ -1,7 +1,8 @@
 # report-nav Specification
 
 ## Purpose
-TBD - created by archiving change report-ux-r2. Update Purpose after archive.
+
+定义导航壳的细节语义：tab 切换不产生历史、根页关闭提醒、移动端 header 行为。
 
 ## Requirements
 

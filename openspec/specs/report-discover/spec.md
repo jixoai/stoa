@@ -1,7 +1,8 @@
 # report-discover Specification
 
 ## Purpose
-TBD - created by archiving change report-ux-r2. Update Purpose after archive.
+
+定义发现页的数据契约：热门标签与推荐成员的排序与可见性口径。
 
 ## Requirements
 
