@@ -175,19 +175,23 @@ export function AppShell() {
       <MobileNav />
       <LeaveGuard active={!detail && historyDepth() === 0} routeKey={routeKey(route)} />
       </div>
-      <AccountSheet
-        open={route.name === "account"}
-        onOpenChange={(open) => {
-          if (!open) closeOverlayRoute();
-        }}
-        onOpenInfo={() => navigate("/info", true)}
-      />
-      <InfoSheet
-        open={route.name === "info"}
-        onOpenChange={(open) => {
-          if (!open) closeOverlayRoute();
-        }}
-      />
+      {route.name === "account" ? (
+        <AccountSheet
+          open
+          onOpenChange={(open) => {
+            if (!open) closeOverlayRoute();
+          }}
+          onOpenInfo={() => navigate("/info", true)}
+        />
+      ) : null}
+      {route.name === "info" ? (
+        <InfoSheet
+          open
+          onOpenChange={(open) => {
+            if (!open) closeOverlayRoute();
+          }}
+        />
+      ) : null}
       {route.name === "instances" ? (
         <div
           className="fixed inset-0 z-50 bg-background"

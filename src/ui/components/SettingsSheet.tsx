@@ -235,14 +235,16 @@ export function SettingsSheetProvider({ children }: { children: ReactNode }) {
   return (
     <SettingsSheetContext.Provider value={{ open: () => navigate("/settings") }}>
       {children}
-      <SettingsSheet
-        open={open}
-        onOpenChange={(next) => {
-          if (next || !open || closing.current) return;
-          closing.current = true;
-          goBack();
-        }}
-      />
+      {open ? (
+        <SettingsSheet
+          open
+          onOpenChange={(next) => {
+            if (next || closing.current) return;
+            closing.current = true;
+            goBack();
+          }}
+        />
+      ) : null}
     </SettingsSheetContext.Provider>
   );
 }

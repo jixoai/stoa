@@ -312,6 +312,9 @@ function runTransition(direction: TransitionDirection, commit: () => void): void
       clearSharedSubject();
       commit();
     });
+    // ready 也可能被新的 startViewTransition skip 而 reject；不 catch 会冒成
+    // unhandled AbortError（E2E console error）。
+    void transition.ready.catch(() => undefined);
     void transition.finished
       .catch(() => undefined)
       .finally(() => {
