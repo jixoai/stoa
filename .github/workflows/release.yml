@@ -53,7 +53,9 @@ jobs:
         run: bun run build
 
       - name: Gates — tests
-        run: bun test
+        # CI 上限制测试并发：多个测试文件会各自 spawn serve（13680~13699 端口池），
+        # 默认并发 20 会偶发端口池耗尽/启动竞争（2026-11-10 首跑实证）。
+        run: bun test --max-concurrency=4
 
       - name: Publish to npm (trusted publishing, provenance)
         run: npm publish --provenance --access public
