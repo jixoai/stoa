@@ -38,17 +38,29 @@ function post(
   return t.store.commitOps({ author, batchId, ops: [{ op: "post", body }] }).posts[0]!;
 }
 
-describe("post_reads schema v6", () => {
-  test("fresh migrate creates post_reads + idx_post_reads_post and meta schema_version 6", () => {
+function postKindColumn(db: ReturnType<typeof openDatabase>): { name: string; dflt: unknown } | null {
+  const columns = db.query("PRAGMA table_info(posts)").all() as Array<{
+    name: string;
+    dflt_value: unknown;
+  }>;
+  const kind = columns.find((column) => column.name === "kind");
+  return kind ? { name: kind.name, dflt: kind.dflt_value } : null;
+}
+
+describe("post_reads schema v6 + posts.kind v7", () => {
+  test("fresh migrate creates post_reads + posts.kind and meta schema_version 7", () => {
     const dir = tempDir();
     try {
       const db = openDatabase({ dataDir: dir });
       try {
         migrate(db);
-        expect(SCHEMA_VERSION).toBe(6);
+        expect(SCHEMA_VERSION).toBe(7);
         expect(tableExists(db, "post_reads")).toBe(true);
         expect(indexExists(db, "idx_post_reads_post")).toBe(true);
-        expect(metaVersion(db)).toBe("6");
+        expect(metaVersion(db)).toBe("7");
+        const kind = postKindColumn(db);
+        expect(kind).not.toBeNull();
+        expect(String(kind!.dflt)).toContain("note");
         const columns = db.query("PRAGMA table_info(post_reads)").all() as Array<{
           name: string;
           notnull: number;
@@ -80,7 +92,7 @@ describe("post_reads schema v6", () => {
       expect(() => migrate(t.db)).not.toThrow();
       expect(() => migrate(t.db)).not.toThrow();
 
-      expect(metaVersion(t.db)).toBe("6");
+      expect(metaVersion(t.db)).toBe("7");
       expect((t.db.query("SELECT COUNT(*) AS c FROM posts").get() as { c: number }).c).toBe(
         postCount,
       );
@@ -96,7 +108,7 @@ describe("post_reads schema v6", () => {
     }
   });
 
-  test("a v5 database gains post_reads on migrate; existing rows are untouched", () => {
+  test("a v5 database gains post_reads + posts.kind on migrate; existing rows are untouched", () => {
     const dir = tempDir();
     try {
       const db = openDatabase({ dataDir: dir });
@@ -109,25 +121,81 @@ describe("post_reads schema v6", () => {
         batchId: "V5",
         ops: [{ op: "post", body: "legacy row" }],
       }).posts[0]!;
-      // 模拟 v5 库：没有 post_reads 表，meta 停在 5。
+      // 模拟 v5 库：没有 post_reads 表、没有 posts.kind 列，meta 停在 5。
       db.exec("DROP TABLE post_reads");
+      db.exec("ALTER TABLE posts DROP COLUMN kind");
       db.query("UPDATE meta SET value = '5' WHERE key = 'schema_version'").run();
       expect(tableExists(db, "post_reads")).toBe(false);
+      expect(postKindColumn(db)).toBeNull();
 
       migrate(db);
 
       expect(tableExists(db, "post_reads")).toBe(true);
       expect(indexExists(db, "idx_post_reads_post")).toBe(true);
-      expect(metaVersion(db)).toBe("6");
-      const posts = db.query("SELECT id, body_md, seq FROM posts").all() as Array<{
+      expect(postKindColumn(db)).not.toBeNull();
+      expect(metaVersion(db)).toBe("7");
+      const posts = db.query("SELECT id, body_md, seq, kind FROM posts").all() as Array<{
         id: string;
         body_md: string;
         seq: number;
+        kind: string;
       }>;
-      expect(posts).toEqual([{ id: created.id, body_md: "legacy row", seq: created.seq }]);
+      expect(posts).toEqual([{ id: created.id, body_md: "legacy row", seq: created.seq, kind: "note" }]);
       expect(
         (db.query("SELECT COUNT(*) AS c FROM post_reads").get() as { c: number }).c,
       ).toBe(0);
+      // 迁移幂等：连续第二次不重复 ALTER、不报错。
+      expect(() => migrate(db)).not.toThrow();
+      expect(postKindColumn(db)).not.toBeNull();
+      expect(metaVersion(db)).toBe("7");
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a v6 database gains only posts.kind; post_reads rows stay byte-identical", () => {
+    const dir = tempDir();
+    try {
+      const db = openDatabase({ dataDir: dir });
+      migrate(db);
+      const store = new Store({ dataDir: dir, db, clock: () => T0 });
+      store.ensureInitAccount({ id: "owner", role: "owner", display: "owner" });
+      store.ensureInitAccount({ id: "manager", role: "manager", display: "manager" });
+      createAgents(store, ["a"]);
+      const root = store.commitOps({
+        author: "a",
+        batchId: "V6",
+        ops: [{ op: "post", body: "v6 row" }],
+      }).posts[0]!;
+      const read = store.markPostRead("a", root.id);
+      const readRowsBefore = db
+        .query("SELECT account_id, post_id, read_at FROM post_reads ORDER BY post_id")
+        .all();
+      expect(readRowsBefore).toHaveLength(1);
+      // 模拟 v6 库：有 post_reads、无 posts.kind，meta 停在 6。
+      db.exec("ALTER TABLE posts DROP COLUMN kind");
+      db.query("UPDATE meta SET value = '6' WHERE key = 'schema_version'").run();
+      expect(postKindColumn(db)).toBeNull();
+
+      migrate(db);
+
+      expect(postKindColumn(db)).not.toBeNull();
+      expect(metaVersion(db)).toBe("7");
+      const readRowsAfter = db
+        .query("SELECT account_id, post_id, read_at FROM post_reads ORDER BY post_id")
+        .all();
+      expect(readRowsAfter).toEqual(readRowsBefore);
+      expect((readRowsAfter[0] as { read_at: number }).read_at).toBe(read.read_at);
+      const rows = db.query("SELECT body_md, seq, kind FROM posts").all() as Array<{
+        body_md: string;
+        seq: number;
+        kind: string;
+      }>;
+      expect(rows).toEqual([{ body_md: "v6 row", seq: root.seq, kind: "note" }]);
+      // 迁移幂等（第二次不再 ALTER）。
+      expect(() => migrate(db)).not.toThrow();
+      expect(metaVersion(db)).toBe("7");
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

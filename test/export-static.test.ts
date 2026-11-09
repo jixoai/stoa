@@ -212,3 +212,49 @@ describe("static export (design §2/§5)", () => {
     },
   );
 });
+
+describe("static export · longform (report-longform A10/P1-18)", () => {
+  test("article snapshot carries kind + raw markdown (blocks stay in body_md; no pre-rendered HTML)", () => {
+    const t = makeStore();
+    const ui = makeUiFixture();
+    try {
+      const articleBody =
+        "# 长文报告\n\n正文段落。\n\n````fde2e:stats\n{ \"items\": [{ \"label\": \"断言\", \"value\": \"95/95\", \"hint\": \"PASS\" }] }\n````\n\n````fde2e:callout\n{ \"tone\": \"success\", \"body\": \"结论\" }\n````";
+      const article = t.store.commitOps({
+        author: "manager",
+        batchId: "LB1",
+        ops: [{ op: "post", body: articleBody, kind: "article", tags: ["result"] }],
+      }).posts[0]!;
+      const note = t.store.commitOps({
+        author: "manager",
+        batchId: "LB2",
+        ops: [{ op: "post", body: "短帖" }],
+      }).posts[0]!;
+      t.store.commitOps({
+        author: "owner",
+        batchId: "LB3",
+        ops: [{ op: "reply", parent: article.id, body: "讨论回复" }],
+      });
+
+      const outDir = join(t.dir, "archive-longform");
+      runExport({ dataDir: t.dir, outDir, uiDir: ui.dir });
+      const snapshot = readSnapshot(readFileSync(join(outDir, "index.html"), "utf8"));
+
+      const exported = snapshot.posts.find((post) => post.id === article.id)!;
+      expect(exported.kind).toBe("article");
+      // 单一信源：块就在 body_md 的 fenced 内容里，快照不存预渲染 HTML / blocks 数组
+      expect(exported.body_md).toBe(articleBody);
+      expect("blocks" in exported).toBe(false);
+      expect(JSON.stringify(exported)).not.toContain("<div");
+      // 静态讨论区数据源：回复行随快照导出
+      expect(snapshot.posts.some((post) => post.parent_id === article.id)).toBe(true);
+      // 旧数据缺省 note
+      expect(snapshot.posts.find((post) => post.id === note.id)!.kind).toBe("note");
+      // 既有 read/read_at 透传不受影响
+      expect(exported.read_at === undefined || exported.read_at === null || typeof exported.read_at === "number").toBe(true);
+    } finally {
+      ui.cleanup();
+      t.close();
+    }
+  });
+});

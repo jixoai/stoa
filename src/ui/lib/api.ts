@@ -16,6 +16,7 @@ import type {
   LineageResponse,
   NotificationHistoryPage,
   NotificationLine,
+  PostKind,
   PostView,
   ProfilePage,
   SuggestedAccount,
@@ -464,6 +465,8 @@ export class ReportClient {
 
   async createPost(opts: {
     body: string;
+    /** 载体（report-longform D1）：缺省 note；article 上限 512,000 字符。 */
+    kind?: PostKind;
     quote?: string | null;
     media?: string[];
     tags?: string[];
@@ -472,6 +475,7 @@ export class ReportClient {
       method: "POST",
       body: {
         body: opts.body,
+        kind: opts.kind ?? "note",
         quote: opts.quote ?? null,
         media: opts.media ?? [],
         tags: opts.tags ?? [],
@@ -481,11 +485,16 @@ export class ReportClient {
 
   async createReply(
     parentId: string,
-    opts: { body: string; media?: string[]; tags?: string[] },
+    opts: { body: string; kind?: PostKind; media?: string[]; tags?: string[] },
   ): Promise<{ posts: PostView[] }> {
     return (await this.request(`/api/posts/${encodeURIComponent(parentId)}/replies`, {
       method: "POST",
-      body: { body: opts.body, media: opts.media ?? [], tags: opts.tags ?? [] },
+      body: {
+        body: opts.body,
+        kind: opts.kind ?? "note",
+        media: opts.media ?? [],
+        tags: opts.tags ?? [],
+      },
     })) as { posts: PostView[] };
   }
 

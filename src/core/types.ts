@@ -18,10 +18,19 @@ export interface Account {
   token_rotated_at: number | null;
 }
 
+/**
+ * 载体（report-longform D1）：`note` 短帖（默认，200,000 字符上限）/
+ * `article` 长文（512,000 字符上限，独立文章视图 `#/a/<id>`）。
+ * 创建后不可改；线程/引用/可见性/通知语义与 note 完全一致。
+ */
+export type PostKind = "note" | "article";
+
 export interface Post {
   id: string;
   author: string;
   body_md: string;
+  /** 载体：短帖（默认）/ 长文。创建后不可改。 */
+  kind: PostKind;
   parent_id: string | null;
   root_id: string;
   self_thread_id: string;
@@ -123,6 +132,8 @@ export interface PostOp {
   ref?: string | null;
   /** semantic labels (`result` / `discussion` / `note` / custom), defaults to [] */
   tags?: string[];
+  /** 默认 note；article 允许 512,000 字符正文。 */
+  kind?: PostKind;
 }
 
 export interface ReplyOp {
@@ -132,6 +143,8 @@ export interface ReplyOp {
   body: string;
   media?: string[];
   tags?: string[];
+  /** 默认 note；article 允许 512,000 字符正文。 */
+  kind?: PostKind;
 }
 
 export type WriteOp = PostOp | ReplyOp;
@@ -145,6 +158,8 @@ export interface QuotedView {
   media: MediaRef[];
   /** second-level quote is a link only (no body) */
   quoted_post_id: string | null;
+  /** 被引用帖的载体；引用卡据此显示摘要而不是全文。 */
+  kind: PostKind;
 }
 
 export interface MediaRef {

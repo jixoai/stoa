@@ -6,7 +6,7 @@ import { ReportError, fail } from "../core/errors.ts";
 import { accountTokenEnvKey, legacyAccountTokenEnvKey, maskSecret } from "../core/auth.ts";
 import { envKeys, envValue, loadEnvFiles, resolveEnvFiles, type LoadedEnv } from "../core/env.ts";
 import { capabilities, VERSION } from "../core/protocol.ts";
-import { validateWriteOp } from "../core/validation.ts";
+import { validateWriteOp, MAX_ARTICLE_BYTES } from "../core/validation.ts";
 import {
   discoverServer,
   readLock,
@@ -17,7 +17,7 @@ import { initDataDir, describeAuthProvision } from "../server/init.ts";
 import { serverStatus, startServer, type ServeStatus } from "../server/serve.ts";
 import { garbageCollect } from "../server/gc.ts";
 import { runExport, setPendingExportFlag } from "../server/export.ts";
-import type { SuggestedAccount, TrendingTag, WriteOp } from "../core/types.ts";
+import type { PostKind, SuggestedAccount, TrendingTag, WriteOp } from "../core/types.ts";
 import {
   flagInt,
   flagList,
@@ -132,7 +132,12 @@ async function uploadAttachments(
 function outputCommit(ctx: CliContext, result: Record<string, unknown>, label: string): void {
   const posts = Array.isArray(result.posts) ? (result.posts as never[]) : [];
   if (ctx.human) {
-    emitHuman(`${label}: batch ${result.batch_id} (${posts.length} post(s))${result.idempotent ? " [idempotent replay]" : ""}`);
+    // 载体标注（report-longform D13）：全 note 时逐字沿用旧输出，article 追加 `(article)`。
+    const kinds = new Set(
+      posts.map((post) => (post as { kind?: string }).kind ?? "note"),
+    );
+    const kindSuffix = kinds.size === 1 && kinds.has("note") ? "" : ` (${[...kinds].join(",")})`;
+    emitHuman(`${label}${kindSuffix}: batch ${result.batch_id} (${posts.length} post(s))${result.idempotent ? " [idempotent replay]" : ""}`);
     for (const post of posts) {
       emitHuman(`  - ${(post as { id?: string }).id} seq=${(post as { seq?: number }).seq}`);
     }
@@ -560,11 +565,54 @@ async function cmdAccounts(ctx: CliContext): Promise<number> {
   fail("BAD_REQUEST", `unknown accounts subcommand "${sub}" (create|ls|rotate|rm)`);
 }
 
-function bodyFromArgs(ctx: CliContext, positionals: string[], stdinFlag: boolean): Promise<string> {
+/**
+ * `--file <path>`（report-longform D13/§6.1）：UTF-8 读文件；相对 `ctx.cwd` 解析。
+ * 文件 >2 MiB 一律拒绝（与 article 字节护栏同口径，防误读大文件）。
+ */
+function bodyFromFile(ctx: CliContext, path: string): string {
+  const full = resolve(ctx.cwd, path);
+  if (!existsSync(full)) fail("BAD_REQUEST", `body: file not found: ${path}`);
+  const size = statSync(full).size;
+  if (size > MAX_ARTICLE_BYTES) {
+    fail("BAD_REQUEST", `body: file too large (max 2 MiB utf-8, got ${size} bytes)`);
+  }
+  let text: string;
+  try {
+    text = readFileSync(full, "utf8");
+  } catch (err) {
+    fail("BAD_REQUEST", `body: cannot read ${path}: ${(err as Error).message}`);
+  }
+  if (!text.trim()) fail("BAD_REQUEST", "body must not be empty");
+  return text;
+}
+
+/** `--format note|article`（缺省 note）；非法值 BAD_REQUEST。 */
+function formatKind(ctx: CliContext): PostKind {
+  const raw = flagValue(ctx.args, "format");
+  if (raw === null || raw === "") return "note";
+  if (raw === "note" || raw === "article") return raw;
+  fail("BAD_REQUEST", `--format must be "note" or "article" (got ${JSON.stringify(raw)})`);
+}
+
+async function bodyFromArgs(
+  ctx: CliContext,
+  positionals: string[],
+  stdinFlag: boolean,
+): Promise<string> {
   const message = flagValue(ctx.args, "message");
+  const file = flagValue(ctx.args, "file");
   const positional = positionals.join(" ").trim();
-  if (stdinFlag && (message !== null || positional)) {
-    fail("BAD_REQUEST", "body: --stdin cannot be combined with positional text or -m/--message");
+  if (stdinFlag && (message !== null || positional || file !== null)) {
+    fail(
+      "BAD_REQUEST",
+      "body: --stdin cannot be combined with positional text, -m/--message or --file",
+    );
+  }
+  if (file !== null) {
+    if (message !== null || positional) {
+      fail("BAD_REQUEST", "body: --file cannot be combined with positional text or -m/--message");
+    }
+    return bodyFromFile(ctx, file);
   }
   if (stdinFlag) return readStdinAll();
   if (message !== null && positional) {
@@ -572,7 +620,7 @@ function bodyFromArgs(ctx: CliContext, positionals: string[], stdinFlag: boolean
   }
   const body = message ?? positional;
   if (!body.trim()) {
-    fail("BAD_REQUEST", "body is required (positional text, -m/--message, or --stdin)");
+    fail("BAD_REQUEST", "body is required (positional text, -m/--message, --file, or --stdin)");
   }
   return Promise.resolve(body);
 }
@@ -582,12 +630,20 @@ async function cmdPost(ctx: CliContext): Promise<number> {
   const { client } = await makeClient(ctx, account);
   if (hasFlag(ctx.args, "batch")) {
     if (hasFlag(ctx.args, "stdin")) fail("BAD_REQUEST", "--batch already reads stdin; drop --stdin");
+    if (flagValue(ctx.args, "file") !== null) {
+      fail("BAD_REQUEST", "--batch already reads stdin; drop --file");
+    }
+    if (flagValue(ctx.args, "format") !== null) {
+      fail("BAD_REQUEST", "--format does not apply to --batch (put kind in each JSONL line)");
+    }
     return cmdPostBatch(ctx, client, account);
   }
   const body = await bodyFromArgs(ctx, ctx.args.positionals, hasFlag(ctx.args, "stdin"));
+  const kind = formatKind(ctx);
   const media = await uploadAttachments(client, ctx.cwd, flagList(ctx.args, "attach"));
   const result = await client.post<Record<string, unknown>>("/api/posts", {
     body,
+    kind,
     quote: flagValue(ctx.args, "quote"),
     media,
     tags: flagList(ctx.args, "tag"),
@@ -606,9 +662,11 @@ async function cmdReply(ctx: CliContext): Promise<number> {
     ctx.args.positionals.slice(1),
     hasFlag(ctx.args, "stdin"),
   );
+  const kind = formatKind(ctx);
   const media = await uploadAttachments(client, ctx.cwd, flagList(ctx.args, "attach"));
   const result = await client.post<Record<string, unknown>>(`/api/posts/${parent}/replies`, {
     body,
+    kind,
     media,
     tags: flagList(ctx.args, "tag"),
   });

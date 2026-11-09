@@ -1,10 +1,14 @@
+import { useMemo } from "react";
 import type { PostView, QuotedView } from "@core/types";
 import { cn } from "cn";
-import { ChevronRightIcon, EyeOffIcon } from "lucide-react";
+import { ChevronRightIcon, EyeOffIcon, FileTextIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/Markdown";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { mediaFileName, mediaKind, useMediaUrl } from "@/lib/media";
 import { timeShort } from "@/lib/format";
+import { postHashHref } from "@/lib/post-href";
+import { articleSummary } from "@core/article";
 import { useConnection } from "@/state/connection";
 
 function QuoteThumb({ quoted }: { quoted: QuotedView }) {
@@ -41,6 +45,11 @@ function QuoteThumb({ quoted }: { quoted: QuotedView }) {
  * 只渲染一层；二级引用降级为链接（design §12.5）。
  */
 export function QuoteCard({ post, className }: { post: PostView; className?: string }) {
+  const rawQuoted = post.quoted;
+  const quotedSummary = useMemo(
+    () => (rawQuoted?.kind === "article" ? articleSummary(rawQuoted.body_md) : null),
+    [rawQuoted?.kind, rawQuoted?.body_md],
+  );
   if (!post.quoted_post_id) return null;
   if (!post.quoted_visible || !post.quoted) {
     return (
@@ -58,8 +67,9 @@ export function QuoteCard({ post, className }: { post: PostView; className?: str
   const quoted = post.quoted;
   return (
     <a
-      href={`#/p/${encodeURIComponent(quoted.id)}`}
+      href={postHashHref(quoted)}
       data-testid="quote-card"
+      data-quote-kind={quoted.kind}
       onClick={(event) => event.stopPropagation()}
       className={cn(
         "mt-2 block rounded-xl border border-border bg-panel px-3 py-2 text-sm transition-colors hover:bg-muted/40",
@@ -89,9 +99,29 @@ export function QuoteCard({ post, className }: { post: PostView; className?: str
           {timeShort(quoted.created_at)}
         </span>
       </div>
-      <div className="mt-1 line-clamp-3 text-muted-foreground">
-        <Markdown source={quoted.body_md} className="[&_p]:my-0" linkTags={false} />
-      </div>
+      {quoted.kind === "article" && quotedSummary ? (
+        // 长文引用（report-longform §2.1/§4.3）：只显示「长文」徽标 + 标题 + 摘要，
+        // 不渲染全文（D10）；整卡链接按 kind 指向 `#/a/<id>`。
+        <div className="mt-1" data-testid="quote-article-summary">
+          <div className="flex items-center gap-1.5">
+            <Badge variant="outline" className="shrink-0 gap-1 text-[10px]">
+              <FileTextIcon className="size-3" aria-hidden />
+              长文
+            </Badge>
+            <span className="line-clamp-1 min-w-0 flex-1 font-medium text-foreground">
+              {quotedSummary.title}
+            </span>
+          </div>
+          {quotedSummary.excerpt ? (
+            <p className="mt-0.5 line-clamp-2 text-muted-foreground">{quotedSummary.excerpt}</p>
+          ) : null}
+          <p className="mt-0.5 text-xs text-muted-foreground">约 {quotedSummary.minutes} 分钟</p>
+        </div>
+      ) : (
+        <div className="mt-1 line-clamp-3 text-muted-foreground">
+          <Markdown source={quoted.body_md} className="[&_p]:my-0" linkTags={false} />
+        </div>
+      )}
       <QuoteThumb quoted={quoted} />
       {quoted.quoted_post_id ? (
         <span className="mt-1 inline-flex items-center gap-1 text-xs text-link">

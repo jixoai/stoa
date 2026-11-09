@@ -34,6 +34,7 @@ function node(
     id,
     author: opts.author ?? "owner",
     body_md: id,
+    kind: "note",
     parent_id: parentId,
     root_id: "root",
     self_thread_id: id,

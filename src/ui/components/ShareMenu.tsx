@@ -5,6 +5,7 @@
  * 分享 URL 一律使用帖子 canonical `postLink(id)`；静态归档同样可分享。
  */
 import { useMemo, useState } from "react";
+import type { PostKind } from "@core/types";
 import {
   AtSignIcon,
   CheckIcon,
@@ -18,11 +19,14 @@ import {
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@/components/ui/popover";
 import { copyText, postLink } from "@/lib/copy";
+import { articleSummary } from "@core/article";
 import { toast } from "@/components/ui/toast";
 
 export interface ShareMenuPost {
   id: string;
   body_md: string;
+  /** 载体（report-longform）：article 的 canonical 链接是 `#/a/<id>`。 */
+  kind?: PostKind;
 }
 
 interface ShareMenuProps {
@@ -34,8 +38,11 @@ interface ShareMenuProps {
 export function ShareMenu({ post, onCopy }: ShareMenuProps) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const url = postLink(post.id);
-  const title = post.body_md.replace(/\s+/g, " ").trim().slice(0, 80) || "report 帖子";
+  const url = postLink(post.id, post.kind ?? "note");
+  const title = useMemo(() => {
+    if (post.kind === "article") return articleSummary(post.body_md).title || "长文";
+    return post.body_md.replace(/\s+/g, " ").trim().slice(0, 80) || "report 帖子";
+  }, [post.kind, post.body_md]);
   const canNativeShare =
     typeof navigator !== "undefined" && typeof navigator.share === "function";
 

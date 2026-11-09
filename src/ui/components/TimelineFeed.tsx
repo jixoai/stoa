@@ -27,6 +27,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useConnection } from "@/state/connection";
 import type { FeedController, TimelineAnchor } from "@/state/feed";
 import { navigate } from "@/lib/router";
+import { postHref } from "@/lib/post-href";
 import { displayCount } from "@/lib/format";
 import { loadScrollMemory, saveScrollMemory, scrollMemoryKey } from "@/lib/scroll-memory";
 
@@ -396,7 +397,8 @@ export function TimelineFeed({
         const post = posts[selectedIndex];
         if (!post) return;
         event.preventDefault();
-        leaveFor(`/p/${encodeURIComponent(post.id)}`);
+        // article 打开文章视图、note 打开线程页（report-longform D9/§4.1）。
+        leaveFor(postHref(post));
       } else if (event.key === "r" && selectedIndex >= 0) {
         const post = posts[selectedIndex];
         if (!post) return;
@@ -415,7 +417,7 @@ export function TimelineFeed({
     prepareReturn();
     navigate(path);
   };
-  const openPost = (post: PostView) => leaveFor(`/p/${encodeURIComponent(post.id)}`);
+  const openPost = (post: PostView) => leaveFor(postHref(post));
   const replyPost = (post: PostView) => leaveFor(`/p/${encodeURIComponent(post.id)}?reply=1`);
   const quotePost = (post: PostView) =>
     leaveFor(`/compose?quote=${encodeURIComponent(post.id)}`);

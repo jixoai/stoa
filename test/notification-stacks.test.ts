@@ -648,6 +648,7 @@ function syntheticThreadView(topology: ThreadTopology): ThreadView {
       id: node.id,
       author: "manager",
       body_md: `${node.id} 正文`,
+      kind: "note",
       parent_id: node.parent_id,
       root_id: node.root_id,
       self_thread_id: node.id,

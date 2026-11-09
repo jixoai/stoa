@@ -5,7 +5,7 @@ import { errorMessage, fail, ReportError } from "../core/errors.ts";
 import { envValue, FILEVIEWER_BASE_KEYS } from "../core/env.ts";
 import { capabilities, LINEAGE_IDS_LIMIT, READ_POST_ID_MAX_CHARS, READS_BATCH_LIMIT, READS_QUERY_LIMIT } from "../core/protocol.ts";
 import { parseLimit, parseTime } from "../core/pagination.ts";
-import { validateWriteOp, assertBody, MAX_MEDIA_BYTES, MEDIA_TYPES, ALLOWED_EXTS, EXT_CONTENT_TYPE } from "../core/validation.ts";
+import { validateWriteOp, assertBody, normalizeKind, MAX_MEDIA_BYTES, MEDIA_TYPES, ALLOWED_EXTS, EXT_CONTENT_TYPE } from "../core/validation.ts";
 import type { Account, NotificationLine, Role, WriteOp } from "../core/types.ts";
 import { newUlid } from "../core/ids.ts";
 import type { AuthManager } from "./auth.ts";
@@ -676,12 +676,14 @@ export function createApp(deps: AppDeps): Hono {
   app.post("/api/posts", async (c) => {
     const account = identity(c, deps);
     const body = await readJson(c);
+    const kind = normalizeKind(body.kind);
     const op: WriteOp = {
       op: "post",
-      body: assertBody(body.body),
+      body: assertBody(body.body, kind),
       quote: typeof body.quote === "string" && body.quote ? body.quote : null,
       media: Array.isArray(body.media) ? (body.media as string[]) : [],
       tags: Array.isArray(body.tags) ? (body.tags as string[]) : [],
+      kind,
     };
     const result = deps.store.commitOps({
       author: account.id,
@@ -694,12 +696,14 @@ export function createApp(deps: AppDeps): Hono {
   app.post("/api/posts/:id/replies", async (c) => {
     const account = identity(c, deps);
     const body = await readJson(c);
+    const kind = normalizeKind(body.kind);
     const op: WriteOp = {
       op: "reply",
       parent: c.req.param("id"),
-      body: assertBody(body.body),
+      body: assertBody(body.body, kind),
       media: Array.isArray(body.media) ? (body.media as string[]) : [],
       tags: Array.isArray(body.tags) ? (body.tags as string[]) : [],
+      kind,
     };
     const result = deps.store.commitOps({
       author: account.id,

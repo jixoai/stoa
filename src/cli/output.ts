@@ -30,6 +30,8 @@ export function summarizePost(post: PostView): Record<string, unknown> {
   return {
     id: post.id,
     author: post.author,
+    // 载体（report-longform D13/§6.1）：机器输出带 kind，代理可区分 note/article。
+    kind: post.kind,
     // body is the point of reading a board: the default machine output carries it
     // (deleted posts expose no text).
     body_md: post.deleted_at ? null : post.body_md,

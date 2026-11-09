@@ -4,9 +4,11 @@ import { QuoteIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PostComposer } from "@/components/PostComposer";
+import { ArticleEditor } from "@/components/ArticleEditor";
 import { PageHeader } from "@/components/PageHeader";
 import { useConnection } from "@/state/connection";
 import { goBack, navigate, routeSource, usePageRoute } from "@/lib/router";
+import { postHref } from "@/lib/post-href";
 
 export function ComposePage() {
   const route = usePageRoute();
@@ -16,9 +18,11 @@ export function ComposePage() {
   const [quoted, setQuoted] = useState<PostView | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [loadingQuote, setLoadingQuote] = useState(false);
+  // 长文编辑器是整页形态（report-longform D12/§5）：自带页头/返回保护/静态分支与引用加载。
+  const articleFormat = route.name === "compose" && route.format === "article";
 
   useEffect(() => {
-    if (!client || !quoteId) {
+    if (!client || !quoteId || articleFormat) {
       setQuoted(null);
       setQuoteError(null);
       return;
@@ -41,7 +45,9 @@ export function ComposePage() {
     return () => {
       alive = false;
     };
-  }, [client, quoteId]);
+  }, [client, quoteId, articleFormat]);
+
+  if (articleFormat) return <ArticleEditor />;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -83,7 +89,7 @@ export function ComposePage() {
             autoFocus
             onPosted={(posts) => {
               const first = posts[0];
-              if (first) navigate(`/p/${encodeURIComponent(first.id)}`);
+              if (first) navigate(postHref(first));
               else navigate("/");
             }}
           />

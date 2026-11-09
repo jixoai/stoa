@@ -38,6 +38,8 @@ import {
 import { useConnection } from "@/state/connection";
 import { useNotifications } from "@/state/notifications";
 import { navigate } from "@/lib/router";
+import { postHref } from "@/lib/post-href";
+import { articleSummary } from "@core/article";
 import { toastReadOnly } from "@/lib/readonly";
 import { dateTimeShort } from "@/lib/format";
 import { cn } from "cn";
@@ -72,6 +74,29 @@ function eventText(event: NotificationEventLine, post: PostView | null): string 
   if (post?.quoted_post_id || payload.quoted_post_id) return "引用了帖子";
   if (post?.parent_id || payload.parent_id) return "回复了帖子";
   return "发布了新帖";
+}
+
+/** 通知行正文片段（report-longform §4.3）：article 用 title/excerpt 纯文本，不渲染全文。 */
+function notificationSnippet(post: PostView): string {
+  if (post.kind !== "article") return post.body_md;
+  const summary = articleSummary(post.body_md);
+  return summary.excerpt ? `${summary.title} — ${summary.excerpt}` : summary.title;
+}
+
+/** 通知行摘要槽：note 保持既有 Markdown 片段；article 只出标题/摘要纯文本（永不进全文）。 */
+function NotificationBody({ post, className }: { post: PostView; className?: string }) {
+  if (post.kind === "article") {
+    return (
+      <div className={className} data-testid="notification-article-summary">
+        {notificationSnippet(post)}
+      </div>
+    );
+  }
+  return (
+    <div className={className}>
+      <Markdown source={post.body_md} className="[&_p]:my-0" />
+    </div>
+  );
 }
 
 export function NotificationsPage() {
@@ -358,10 +383,14 @@ export function NotificationsPage() {
     });
   }, []);
 
-  /** 打开某帖：共享元素 + 导航；**不**写已读（D11，读由 read-dwell 的停留触发）。 */
+  /**
+   * 打开某帖：共享元素 + 导航；**不**写已读（D11，读由 read-dwell 的停留触发）。
+   * 目标按载体分派（report-longform §4.1）：article → `#/a/<id>`；帖子投影未加载时
+   * 缺省 note（`/a/<note>` 有回退，不会死链）。
+   */
   const openPost = (host: HTMLElement, postId: string) => {
     markSharedSubject(host, postId);
-    navigate(`/p/${encodeURIComponent(postId)}`);
+    navigate(postHref({ id: postId, kind: postOf(postId)?.kind ?? "note" }));
   };
 
   /** 单成员叠（D8）：沿用既有行 DOM（notification-row + 全部 data-* 契约）。 */
@@ -429,9 +458,7 @@ export function NotificationsPage() {
           {member.deleted ? (
             <div className="mt-1 text-xs text-muted-foreground">此帖已删除</div>
           ) : member.post ? (
-            <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-              <Markdown source={member.post.body_md} className="[&_p]:my-0" />
-            </div>
+            <NotificationBody post={member.post} className="mt-1 line-clamp-2 text-sm text-muted-foreground" />
           ) : null}
         </div>
       </div>
@@ -484,7 +511,9 @@ export function NotificationsPage() {
             <span className="shrink-0 text-muted-foreground">{dateTimeShort(event.created_at)}</span>
           </div>
           {member.post ? (
-            <div className="truncate text-xs text-muted-foreground">{member.post.body_md}</div>
+            <div className="truncate text-xs text-muted-foreground">
+              {notificationSnippet(member.post)}
+            </div>
           ) : null}
         </div>
       </div>
@@ -613,9 +642,7 @@ export function NotificationsPage() {
                 ) : null}
               </div>
               {member.post ? (
-                <div className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                  <Markdown source={member.post.body_md} className="[&_p]:my-0" />
-                </div>
+                <NotificationBody post={member.post} className="mt-1 line-clamp-2 text-sm text-muted-foreground" />
               ) : null}
               <div className="mt-1 text-xs text-muted-foreground">
                 共 {stack.size} 条会话提醒

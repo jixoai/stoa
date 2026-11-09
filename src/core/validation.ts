@@ -1,9 +1,13 @@
 import { fail } from "./errors.ts";
-import type { WriteOp } from "./types.ts";
+import type { PostKind, WriteOp } from "./types.ts";
 
 export const SLUG_RE = /^[a-z][a-z0-9_-]{0,31}$/;
 export const RESERVED_IDS = new Set(["owner", "manager"]);
 export const MAX_BODY_CHARS = 200_000;
+/** 长文（`kind: "article"`）字符上限（report-longform D2；产品口径「512KB」）。 */
+export const MAX_ARTICLE_CHARS = 512_000;
+/** 长文正文 UTF-8 字节护栏（防 512k 四字节字符/JSON 转义放大内存）。 */
+export const MAX_ARTICLE_BYTES = 2 * 1024 * 1024;
 export const MAX_ATTACHMENTS = 4;
 export const MAX_BATCH_ITEMS = 500;
 export const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
@@ -67,10 +71,36 @@ export function assertSlug(id: string, what = "account id"): string {
   return id;
 }
 
-export function assertBody(body: unknown): string {
+/**
+ * 归一化载体字段（report-longform P1-2）：缺省/空值为 `note`；未知值 `BAD_REQUEST`。
+ * 只允许 `"note" | "article"` 两个字面量。
+ */
+export function normalizeKind(input: unknown): PostKind {
+  if (input === undefined || input === null || input === "") return "note";
+  if (input === "note" || input === "article") return input;
+  fail(
+    "BAD_REQUEST",
+    `invalid kind ${JSON.stringify(input)} (expected "note" or "article")`,
+  );
+}
+
+export function assertBody(body: unknown, kind: PostKind = "note"): string {
   if (typeof body !== "string") fail("BAD_REQUEST", "body must be a string");
   const trimmed = body.trim();
   if (!trimmed) fail("BAD_REQUEST", "body must not be empty");
+  if (kind === "article") {
+    // 字节护栏先判（report-longform §2.2）：超 2 MiB 的正文直接按体积拒绝
+    // （防 512k 多字节字符/JSON 转义放大内存），再用字符上限给精确口径。
+    // TextEncoder 是 core 跨端可用的（浏览器/Node/Bun 同一 API）。
+    const bytes = new TextEncoder().encode(body).length;
+    if (bytes > MAX_ARTICLE_BYTES) {
+      fail("BAD_REQUEST", "body too large (max 2 MiB utf-8 for article)");
+    }
+    if (body.length > MAX_ARTICLE_CHARS) {
+      fail("BAD_REQUEST", `body too long (max ${MAX_ARTICLE_CHARS.toLocaleString("en-US")} chars for article)`);
+    }
+    return body;
+  }
   if (body.length > MAX_BODY_CHARS) {
     fail("BAD_REQUEST", `body too long (max ${MAX_BODY_CHARS} chars)`);
   }
@@ -139,7 +169,8 @@ export function validateWriteOp(input: unknown): WriteOp {
   if (obj.commit === true) fail("BAD_REQUEST", "commit marker is not a write op");
   const op = obj.op;
   if (op === "post") {
-    const body = assertBody(obj.body);
+    const kind = normalizeKind(obj.kind);
+    const body = assertBody(obj.body, kind);
     const media = normalizeMedia(obj.media);
     const quote = typeof obj.quote === "string" && obj.quote ? assertRefSpec(obj.quote) : null;
     return {
@@ -149,13 +180,15 @@ export function validateWriteOp(input: unknown): WriteOp {
       media,
       ref: normalizeRef(obj.ref),
       tags: normalizeTags(obj.tags),
+      kind,
     };
   }
   if (op === "reply") {
     if (typeof obj.parent !== "string" || !obj.parent) {
       fail("BAD_REQUEST", "reply op requires parent");
     }
-    const body = assertBody(obj.body);
+    const kind = normalizeKind(obj.kind);
+    const body = assertBody(obj.body, kind);
     const media = normalizeMedia(obj.media);
     return {
       op: "reply",
@@ -163,6 +196,7 @@ export function validateWriteOp(input: unknown): WriteOp {
       body,
       media,
       tags: normalizeTags(obj.tags),
+      kind,
     };
   }
   fail("BAD_REQUEST", `unknown op ${JSON.stringify(op)} (expected "post" or "reply")`);

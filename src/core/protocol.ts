@@ -1,6 +1,13 @@
 /** Product/protocol constants. `scripts/check.mjs` cross-checks routes/commands. */
 
+<<<<<<< HEAD
 export const PRODUCT = "stoa";
+=======
+import { ARTICLE_BLOCK_NAMES } from "./article.ts";
+import { MAX_ARTICLE_BYTES, MAX_ARTICLE_CHARS } from "./validation.ts";
+
+export const PRODUCT = "fde2e-report-worker";
+>>>>>>> 737e621 (wip(longform): 长文章 P1 部分实现存档（两次子代理 502 中断；解析/渲染/编辑/测试初稿）)
 export const VERSION = "0.1.0";
 export const PROTOCOL_VERSION = 1;
 
@@ -124,9 +131,20 @@ export interface Capabilities {
     post_reads: boolean;
     /** 只读会话链拓扑（`GET /api/posts/lineage`；通知叠放分组用） */
     post_lineage: boolean;
+    /** 长文载体（report-longform）：`Post.kind`/512,000 上限/`#/a/<id>` 文章视图 */
+    article: boolean;
+    /**
+     * 长文指令块白名单（P1 四块；P2 追加 `gallery`/`log`）。未知块在客户端安全降级，
+     * 该表供代理/客户端声明式识别当前版本支持的块集。
+     */
+    article_blocks: string[];
   };
   limits: {
     body_chars: number;
+    /** `kind: "article"` 的字符上限（512,000；`body_chars` 仍是 note 上限） */
+    article_chars: number;
+    /** `kind: "article"` 的 UTF-8 字节护栏（2 MiB） */
+    article_bytes: number;
     media_bytes: number;
     attachments: number;
     batch_items: number;
@@ -166,9 +184,13 @@ export function capabilities(): Capabilities {
       preview_events: true,
       post_reads: true,
       post_lineage: true,
+      article: true,
+      article_blocks: [...ARTICLE_BLOCK_NAMES],
     },
     limits: {
       body_chars: 200_000,
+      article_chars: MAX_ARTICLE_CHARS,
+      article_bytes: MAX_ARTICLE_BYTES,
       media_bytes: 10 * 1024 * 1024,
       attachments: 4,
       batch_items: 500,

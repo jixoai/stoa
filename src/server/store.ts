@@ -9,6 +9,7 @@ import {
   MAX_MEDIA_BYTES,
   assertSlug,
   assertBody,
+  normalizeKind,
   normalizeTagFilter,
   normalizeTags,
 } from "../core/validation.ts";
@@ -26,6 +27,7 @@ import { assembleThread } from "../core/thread.ts";
 import { LINEAGE_DEPTH_LIMIT } from "../core/protocol.ts";
 import { isGlobalRole, visibleRootsClause } from "../core/visibility.ts";
 import { NOTIFICATION_TYPES } from "../core/types.ts";
+import type { PostKind } from "../core/types.ts";
 import { builtinPlugin, LINK_PREVIEW } from "../core/plugins/builtin.ts";
 import type { PhaseFields, PreviewLink, PreviewPhase, PreviewStatus, PreviewErrorCode } from "../core/plugins/types.ts";
 import { indexPostPreviewLinks } from "./preview/indexer.ts";
@@ -178,8 +180,16 @@ function toEventLine(row: EventRow): EventLine {
   };
 }
 
+/**
+ * 载体归一（report-longform D3）：旧只读库（v5/v6）无 `kind` 列 / 历史行缺值 →
+ * `note`；非字符串值同样降级 `note`（写路径已由 core 校验，这里只做读投影兜底）。
+ */
+function postKindOf(value: unknown): PostKind {
+  return value === "article" ? "article" : "note";
+}
+
 function toPost(row: PostRow): Post {
-  return { ...row, tags: parseTagsJson(row.tags) };
+  return { ...row, tags: parseTagsJson(row.tags), kind: postKindOf(row.kind) };
 }
 
 function mediaRef(row: MediaRowDb): MediaRef {
@@ -917,7 +927,8 @@ export class Store {
       for (const rawOp of opts.ops) {
         const op = rawOp;
         if (op.op === "post") {
-          const body = assertBody(op.body);
+          const kind = normalizeKind(op.kind);
+          const body = assertBody(op.body, kind);
           const tags = normalizeTags(op.tags);
           const id = newUlid(now);
           let quoted: PostRow | null = null;
@@ -930,12 +941,13 @@ export class Store {
           }
           run(
             this.db,
-            `INSERT INTO posts(id, author, body_md, parent_id, root_id, self_thread_id,
+            `INSERT INTO posts(id, author, body_md, kind, parent_id, root_id, self_thread_id,
                self_thread_is_leaf, reply_to_account_id, quoted_post_id, tags, created_at, seq, batch_id, deleted_at)
-             VALUES (?, ?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, 0, ?, NULL)`,
+             VALUES (?, ?, ?, ?, NULL, ?, ?, 1, NULL, ?, ?, ?, 0, ?, NULL)`,
             id,
             opts.author,
             body,
+            kind,
             id,
             id,
             op.quote ?? null,
@@ -965,7 +977,8 @@ export class Store {
             batchRefs.set(op.ref, post.id);
           }
         } else if (op.op === "reply") {
-          const body = assertBody(op.body);
+          const kind = normalizeKind(op.kind);
+          const body = assertBody(op.body, kind);
           const tags = normalizeTags(op.tags);
           const parentId = resolveBatchRef(op.parent);
           const parent = this.postRow(parentId);
@@ -980,12 +993,13 @@ export class Store {
           const replyTo = sameAuthor ? parent.reply_to_account_id : parent.author;
           run(
             this.db,
-            `INSERT INTO posts(id, author, body_md, parent_id, root_id, self_thread_id,
+            `INSERT INTO posts(id, author, body_md, kind, parent_id, root_id, self_thread_id,
                self_thread_is_leaf, reply_to_account_id, quoted_post_id, tags, created_at, seq, batch_id, deleted_at)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?, 0, ?, NULL)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?, 0, ?, NULL)`,
             id,
             opts.author,
             body,
+            kind,
             parent.id,
             parent.root_id,
             selfThreadId,
@@ -1351,6 +1365,7 @@ export class Store {
             created_at: visibleQuoted.created_at,
             media: mediaByPost.get(visibleQuoted.id) ?? [],
             quoted_post_id: visibleQuoted.quoted_post_id,
+            kind: postKindOf(visibleQuoted.kind),
           };
         }
       }

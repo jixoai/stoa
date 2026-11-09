@@ -46,7 +46,7 @@ export function run(
   return { changes: Number(res.changes), lastInsertRowid: Number(res.lastInsertRowid) };
 }
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 function hasColumn(db: Database, table: string, column: string): boolean {
   const rows = db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
@@ -92,6 +92,8 @@ export function migrate(db: Database): void {
       reply_to_account_id TEXT,
       quoted_post_id TEXT,
       tags TEXT NOT NULL DEFAULT '[]',
+      -- v7: 载体（report-longform D3）；旧库由下方 hasColumn 守卫补列。
+      kind TEXT NOT NULL DEFAULT 'note',
       created_at INTEGER NOT NULL,
       seq INTEGER NOT NULL,
       batch_id TEXT NOT NULL,
@@ -251,6 +253,12 @@ export function migrate(db: Database): void {
   // explicit ALTER. The PRAGMA guard makes re-running `migrate()` idempotent.
   if (!hasColumn(db, "posts", "tags")) {
     db.exec("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
+  }
+
+  // v7：载体列（report-longform D3）。旧库（v5/v6）零拷贝升级，旧数据自动 note；
+  // PRAGMA 守卫保证重复 migrate 幂等。
+  if (!hasColumn(db, "posts", "kind")) {
+    db.exec("ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'note'");
   }
 
   // Backfill the default follow for existing instances (design §5.0: owner only

@@ -9,7 +9,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { cn } from "cn";
-import type { PostView } from "@core/types";
+import type { PostKind, PostView } from "@core/types";
 import {
   HashIcon,
   ImagePlusIcon,
@@ -87,6 +87,8 @@ interface PostComposerProps {
   textareaClassName?: string;
   /** 提交按钮的 testid（回复编辑器用 reply-submit；发帖箱默认 composer-submit）。 */
   submitTestId?: string;
+  /** 载体（report-longform D1）：缺省 note；article 由正文上限/渲染分支消费。 */
+  kind?: PostKind;
 }
 
 function extOf(name: string): string {
@@ -154,6 +156,7 @@ export function PostComposer({
   tall = false,
   textareaClassName,
   submitTestId = "composer-submit",
+  kind = "note",
 }: PostComposerProps) {
   const { client, accounts, staticMode } = useConnection();
   const key = draftKey ?? draftKeyOf(mode, parentId);
@@ -439,11 +442,12 @@ export function PostComposer({
         mode === "post"
           ? await client.createPost({
               body,
+              kind,
               quote: quotedPost?.id ?? null,
               media: mediaHashes,
               tags,
             })
-          : await client.createReply(parentId!, { body, media: mediaHashes, tags });
+          : await client.createReply(parentId!, { body, kind, media: mediaHashes, tags });
       setBody("");
       clearDraft(key);
       setItems((prev) => {

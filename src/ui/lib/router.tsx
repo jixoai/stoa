@@ -9,8 +9,9 @@
  * - `startViewTransition` 不存在时由调用方（RouteTransition）用 motion 降级；
  * - `prefers-reduced-motion` 时全部瞬时（不调用 View Transitions）。
  *
- * 路由表：`#/`、`#/?tab=following`、`#/p/<id>`、`#/u/<account>`、`#/tag/<tag>`、
- *         `#/search[?q=]`、`#/notifications`、`#/bookmarks`、`#/compose[?quote=]`、
+ * 路由表：`#/`、`#/?tab=following`、`#/p/<id>`、`#/a/<id>`（长文）、
+ *         `#/u/<account>`、`#/tag/<tag>`、`#/search[?q=]`、`#/notifications`、
+ *         `#/bookmarks`、`#/compose[?quote=&format=article]`、
  *         `#/instances`（实例管理；从应用内进入保留当前连接，返回正常退回原页）
  */
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
@@ -21,12 +22,14 @@ import { clearSharedSubject } from "@/lib/shared-element";
 export type Route =
   | { name: "home"; tab: FeedTab }
   | { name: "post"; id: string; reply?: boolean }
+  /** 长文视图（report-longform D9；详情层 depth 1）。 */
+  | { name: "article"; id: string }
   | { name: "profile"; account: string }
   | { name: "tag"; tag: string }
   | { name: "search"; q: string }
   | { name: "notifications" }
   | { name: "bookmarks" }
-  | { name: "compose"; quote: string | null }
+  | { name: "compose"; quote: string | null; format: "note" | "article" }
   | { name: "instances" }
   | { name: "account" }
   | { name: "settings" }
@@ -42,6 +45,9 @@ function parseHash(hash: string): Route {
   if (segments[0] === "p" && segments[1]) {
     return { name: "post", id: decodeURIComponent(segments[1]), reply: params.get("reply") === "1" };
   }
+  if (segments[0] === "a" && segments[1]) {
+    return { name: "article", id: decodeURIComponent(segments[1]) };
+  }
   if (segments[0] === "u" && segments[1]) {
     return { name: "profile", account: decodeURIComponent(segments[1]) };
   }
@@ -55,7 +61,13 @@ function parseHash(hash: string): Route {
   if (segments[0] === "account") return { name: "account" };
   if (segments[0] === "settings") return { name: "settings" };
   if (segments[0] === "info") return { name: "info" };
-  if (segments[0] === "compose") return { name: "compose", quote: params.get("quote") };
+  if (segments[0] === "compose") {
+    return {
+      name: "compose",
+      quote: params.get("quote"),
+      format: params.get("format") === "article" ? "article" : "note",
+    };
+  }
   return { name: "home", tab: params.get("tab") === "following" ? "following" : "recommended" };
 }
 
@@ -63,6 +75,8 @@ export function routePath(route: Route): string {
   switch (route.name) {
     case "post":
       return `/p/${encodeURIComponent(route.id)}${route.reply ? "?reply=1" : ""}`;
+    case "article":
+      return `/a/${encodeURIComponent(route.id)}`;
     case "profile":
       return `/u/${encodeURIComponent(route.account)}`;
     case "tag":
@@ -73,8 +87,13 @@ export function routePath(route: Route): string {
       return "/notifications";
     case "bookmarks":
       return "/bookmarks";
-    case "compose":
-      return route.quote ? `/compose?quote=${encodeURIComponent(route.quote)}` : "/compose";
+    case "compose": {
+      const params = new URLSearchParams();
+      if (route.quote) params.set("quote", route.quote);
+      if (route.format === "article") params.set("format", "article");
+      const query = params.toString();
+      return query ? `/compose?${query}` : "/compose";
+    }
     case "instances":
       return "/instances";
     case "account":
@@ -93,6 +112,8 @@ export function routeKey(route: Route): string {
   switch (route.name) {
     case "post":
       return `post:${route.id}${route.reply ? ":reply" : ""}`;
+    case "article":
+      return `article:${route.id}`;
     case "profile":
       return `profile:${route.account}`;
     case "tag":
@@ -104,7 +125,7 @@ export function routeKey(route: Route): string {
     case "bookmarks":
       return "bookmarks";
     case "compose":
-      return `compose:${route.quote ?? ""}`;
+      return `compose:${route.quote ?? ""}:${route.format}`;
     case "instances":
       return "instances";
     case "account":
@@ -122,6 +143,8 @@ export function routeLabel(route: Route): string {
   switch (route.name) {
     case "post":
       return "帖子";
+    case "article":
+      return "长文";
     case "profile":
       return "成员";
     case "tag":
@@ -133,7 +156,7 @@ export function routeLabel(route: Route): string {
     case "bookmarks":
       return "收藏";
     case "compose":
-      return "发帖";
+      return route.format === "article" ? "写长文" : "发帖";
     case "instances":
       return "实例";
     case "account":

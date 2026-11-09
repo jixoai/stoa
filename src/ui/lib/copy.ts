@@ -1,4 +1,7 @@
 /** 复制链接：clipboard API 不可用（非安全上下文）时退回 execCommand。 */
+import type { PostKind } from "@core/types";
+import { postHashHref } from "@/lib/post-href";
+
 export async function copyText(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard && window.isSecureContext) {
@@ -24,6 +27,7 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function postLink(postId: string): string {
-  return `${window.location.origin}${window.location.pathname}${window.location.search}#/p/${encodeURIComponent(postId)}`;
+/** 帖子 canonical 链接：article → `#/a/<id>`，note → `#/p/<id>`（report-longform）。 */
+export function postLink(postId: string, kind: PostKind = "note"): string {
+  return `${window.location.origin}${window.location.pathname}${window.location.search}${postHashHref({ id: postId, kind })}`;
 }

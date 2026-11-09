@@ -8,6 +8,7 @@ import { HomePage } from "@/pages/HomePage";
 import { ProfilePage } from "@/pages/ProfilePage";
 import { TagPage } from "@/pages/TagPage";
 import { ThreadPage } from "@/pages/ThreadPage";
+import { ArticlePage } from "@/pages/ArticlePage";
 import { SearchPage } from "@/pages/SearchPage";
 import { NotificationsPage } from "@/pages/NotificationsPage";
 import { BookmarksPage } from "@/pages/BookmarksPage";
@@ -47,6 +48,8 @@ function DetailView({ route }: { route: Route }) {
   switch (route.name) {
     case "post":
       return <ThreadPage />;
+    case "article":
+      return <ArticlePage />;
     case "profile":
       return <ProfilePage />;
     case "tag":

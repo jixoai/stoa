@@ -10,6 +10,7 @@ import {
   QuoteIcon,
 } from "lucide-react";
 import { Markdown } from "@/components/Markdown";
+import { ArticleSummaryCard } from "@/components/ArticleSummaryCard";
 import { MediaGrid } from "@/components/MediaGrid";
 import { QuoteCard } from "@/components/QuoteCard";
 import { LinkPreviews } from "@/components/LinkPreviews";
@@ -127,7 +128,10 @@ export function PostCard({
   // 由点击处理器按「被点击的主体」打标（lib/shared-element）。
   const canShare = variant === "focal";
 
-  const canClamp = variant === "feed" && !deleted;
+  // 长文（report-longform D10）：列表里永不渲染全文，正文槽位换成摘要卡；
+  // 不走 longBody/clamp（那是 note 的 6 行截断逻辑）。
+  const isArticle = post.kind === "article";
+  const canClamp = variant === "feed" && !deleted && !isArticle;
   const longBody = post.body_md.length > 420 || post.body_md.split("\n").length > 6;
   const clamped = canClamp && longBody && !expanded;
 
@@ -135,6 +139,13 @@ export function PostCard({
     if (deleted) return;
     // 共享元素主体＝被点的这条帖子（不是“列表里第一张同名卡片”）。
     markSharedSubject(host, post.id);
+    onOpen?.(post);
+  };
+
+  /** 摘要卡内「阅读全文」：与整卡点击同一出口（补齐共享元素标记）。 */
+  const openFromSummary = () => {
+    if (deleted) return;
+    markSharedSubject(articleRef.current, post.id);
     onOpen?.(post);
   };
 
@@ -181,9 +192,13 @@ export function PostCard({
             <DeletedBody compact />
           ) : (
             <>
-              <div data-testid="post-body" className={cn(THREAD_BODY, selfHeader && "mt-0.5")}>
-                <Markdown source={source} />
-              </div>
+              {isArticle ? (
+                <ArticleSummaryCard post={post} onOpen={onOpen ? openFromSummary : undefined} />
+              ) : (
+                <div data-testid="post-body" className={cn(THREAD_BODY, selfHeader && "mt-0.5")}>
+                  <Markdown source={source} />
+                </div>
+              )}
               <MediaGrid media={post.media} />
               <QuoteCard post={post} />
               <LinkPreviews post={post} />
@@ -254,15 +269,19 @@ export function PostCard({
             <DeletedBody />
           ) : (
             <>
-              <div
-                data-testid="post-body"
-                className={cn(
-                  variant === "feed" ? "mt-1 text-[0.95rem]" : cn("-mt-2", THREAD_BODY),
-                  clamped && "report-clamp-6",
-                )}
-              >
-                <Markdown source={post.body_md} />
-              </div>
+              {isArticle ? (
+                <ArticleSummaryCard post={post} onOpen={onOpen ? openFromSummary : undefined} />
+              ) : (
+                <div
+                  data-testid="post-body"
+                  className={cn(
+                    variant === "feed" ? "mt-1 text-[0.95rem]" : cn("-mt-2", THREAD_BODY),
+                    clamped && "report-clamp-6",
+                  )}
+                >
+                  <Markdown source={post.body_md} />
+                </div>
+              )}
               {canClamp && longBody ? (
                 <Button
                   type="button"

@@ -19,6 +19,7 @@ import { PostCard } from "@/components/PostCard";
 import { PostListSkeleton } from "@/components/Skeletons";
 import { useConnection } from "@/state/connection";
 import { navigate, usePageRoute } from "@/lib/router";
+import { postHref } from "@/lib/post-href";
 import { roleLabel } from "@/lib/format";
 import { prefetchProfile, rememberAuthors, rememberSuggested } from "@/state/cache";
 import type { SuggestedAccount, TrendingTag, WhoRow } from "@/lib/api";
@@ -111,7 +112,7 @@ export function SearchPage() {
     navigate(`/search?q=${encodeURIComponent(q)}`);
   };
 
-  const openPost = (post: PostView) => navigate(`/p/${encodeURIComponent(post.id)}`);
+  const openPost = (post: PostView) => navigate(postHref(post));
   const replyPost = (post: PostView) => navigate(`/p/${encodeURIComponent(post.id)}?reply=1`);
   const quotePost = (post: PostView) => navigate(`/compose?quote=${encodeURIComponent(post.id)}`);
 

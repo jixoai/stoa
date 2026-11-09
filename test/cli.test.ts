@@ -534,3 +534,74 @@ describe("CLI body flags (report-cli-message-flag)", () => {
     expect(unknown.stderr).toContain("unknown flag");
   });
 });
+
+describe("CLI longform (report-longform A11/D13)", () => {
+  test("post/reply --file + --format article; conflicts, size guard, batch kind", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "report-longform-cli-"));
+    try {
+      const md = "# 报告\n\n正文段落，含 `code`。\n\n```fde2e:callout\n{ \"tone\": \"info\", \"body\": \"ok\" }\n```\n";
+      const file = join(dir, "report.md");
+      writeFileSync(file, md, "utf8");
+
+      const res = await runCli(["post", "--file", file, "--format", "article", ...base(), "--as", "a"]);
+      expect(res.code).toBe(0);
+      const created = (JSON.parse(res.stdout) as { posts: Array<{ id: string; kind: string; body_md: string }> }).posts;
+      expect(created[0]!.kind).toBe("article");
+      expect(created[0]!.body_md).toBe(md);
+
+      const replyFile = join(dir, "followup.md");
+      writeFileSync(replyFile, "# 后续\n\n补充细节。", "utf8");
+      const reply = await runCli([
+        "reply", created[0]!.id, "--file", replyFile, "--format", "article", ...base(), "--as", "a",
+      ]);
+      expect(reply.code).toBe(0);
+      expect((JSON.parse(reply.stdout) as { posts: Array<{ kind: string }> }).posts[0]!.kind).toBe("article");
+
+      // note 默认路径逐字不变：仍返回 kind=note
+      const note = await runCli(["post", "-m", "短帖", ...base(), "--as", "a"]);
+      expect(note.code).toBe(0);
+      expect((JSON.parse(note.stdout) as { posts: Array<{ kind: string }> }).posts[0]!.kind).toBe("note");
+
+      // 人类输出带载体标注
+      const human = await runCli(["post", "--file", file, "--format", "article", ...base(), "--as", "a", "--human"]);
+      expect(human.code).toBe(0);
+      expect(human.stdout).toContain("posted (article)");
+
+      // --file 与位置参数互斥
+      const fileAndPositional = await runCli(["post", "--file", file, "extra", ...base(), "--as", "a"]);
+      expect(fileAndPositional.code).not.toBe(0);
+      expect(fileAndPositional.stderr).toContain("--file");
+
+      // --file 与 --stdin 互斥
+      const fileAndStdin = await runCli(["post", "--file", file, "--stdin", ...base(), "--as", "a"], {
+        stdin: "stdin body",
+      });
+      expect(fileAndStdin.code).not.toBe(0);
+
+      // 非法 --format
+      const bogus = await runCli(["post", "-m", "x", "--format", "bogus", ...base(), "--as", "a"]);
+      expect(bogus.code).not.toBe(0);
+      expect(bogus.stderr).toContain("--format");
+
+      // >2MiB 文件拒绝
+      const big = join(dir, "big.md");
+      writeFileSync(big, "x".repeat(2 * 1024 * 1024 + 1), "utf8");
+      const bigRes = await runCli(["post", "--file", big, "--format", "article", ...base(), "--as", "a"]);
+      expect(bigRes.code).not.toBe(0);
+      expect(bigRes.stderr).toContain("too large");
+
+      // batch JSONL 每行 kind 生效
+      const batch = await runCli(["post", "--batch", ...base(), "--as", "a"], {
+        stdin:
+          JSON.stringify({ op: "post", body: "batch 长文", kind: "article" }) +
+          "\n" +
+          JSON.stringify({ commit: true }) +
+          "\n",
+      });
+      expect(batch.code).toBe(0);
+      expect((JSON.parse(batch.stdout) as { posts: Array<{ kind: string }> }).posts[0]!.kind).toBe("article");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60000);
+});

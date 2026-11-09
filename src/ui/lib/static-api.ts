@@ -17,6 +17,7 @@ import type {
   LineageResponse,
   MediaRef,
   NotificationHistoryPage,
+  PostKind,
   PostView,
   ProfilePage,
   QuotedView,
@@ -77,6 +78,8 @@ export interface SnapshotPost {
   /** 服务端按帖已读（report-server-read-state；旧归档缺省 false/null）。 */
   read?: boolean;
   read_at?: number | null;
+  /** 载体（report-longform；旧归档缺省 note）。 */
+  kind?: PostKind;
 }
 
 export interface ReportSnapshot {
@@ -291,11 +294,16 @@ export class StaticReportClient extends ReportClient {
 
   private hydrate(post: SnapshotPost): PostView {
     const deleted = post.deleted_at !== null && post.deleted_at !== undefined;
+    // 载体：快照带 `kind` 用原值，旧归档（无字段）按 note（report-longform D15）。
+    const kind: PostKind = post.kind === "article" ? "article" : "note";
     // 后端 export 已内联 quoted/reply_count/author_account；手写快照缺少时再派生。
     let quoted: QuotedView | null = null;
-    if (post.quoted !== undefined) {
-      quoted = post.quoted;
-    } else {
+    if (post.quoted) {
+      quoted = {
+        ...post.quoted,
+        kind: post.quoted.kind === "article" ? "article" : "note",
+      };
+    } else if (post.quoted === undefined) {
       const quotedPost = post.quoted_post_id ? this.postsById.get(post.quoted_post_id) : null;
       if (quotedPost && (quotedPost.deleted_at === null || quotedPost.deleted_at === undefined)) {
         quoted = {
@@ -306,6 +314,7 @@ export class StaticReportClient extends ReportClient {
           created_at: quotedPost.created_at,
           media: quotedPost.media ?? [],
           quoted_post_id: quotedPost.quoted_post_id ?? null,
+          kind: quotedPost.kind === "article" ? "article" : "note",
         };
       }
     }
@@ -320,6 +329,7 @@ export class StaticReportClient extends ReportClient {
       id: post.id,
       author: post.author,
       body_md: deleted ? "" : post.body_md,
+      kind,
       parent_id: post.parent_id ?? null,
       root_id: post.root_id ?? post.id,
       self_thread_id: post.self_thread_id ?? post.root_id ?? post.id,

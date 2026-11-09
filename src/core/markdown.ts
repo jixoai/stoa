@@ -17,7 +17,15 @@ export type Block =
   | { type: "paragraph"; children: InlineToken[] }
   | { type: "list"; ordered: boolean; items: InlineToken[][] }
   | { type: "quote"; children: InlineToken[] }
-  | { type: "code"; lang: string; text: string }
+  | {
+      type: "code";
+      lang: string;
+      text: string;
+      /** fence 起始行（1-based）；note 渲染忽略，report-longform 指令块定位用。 */
+      line?: number;
+      /** 开启 fence 的反引号 run 长度（默认 3）；闭合 run 长度 ≥ 该值。 */
+      fence?: number;
+    }
   | { type: "table"; header: InlineToken[][]; rows: InlineToken[][][] }
   | { type: "hr" };
 
@@ -35,6 +43,11 @@ function isSafeHref(href: string): boolean {
 }
 
 export function parseInline(input: string): InlineToken[] {
+  // 快路径（report-longform 解析预算）：不含任何行内标记字符时直接返回单个 text token，
+  // 跳过逐字符扫描——长文正文绝大多数段落是纯文本。
+  if (!/[`![*_]/.test(input)) {
+    return input ? [{ type: "text", text: input }] : [];
+  }
   const tokens: InlineToken[] = [];
   let i = 0;
   let buffer = "";
@@ -160,18 +173,50 @@ export function parseMarkdown(markdown: string): Block[] {
       i += 1;
       continue;
     }
-    const fence = /^```(.*)$/.exec(line);
+    // 块级快路径（report-longform 解析预算）：普通文本行不进入正则瀑布。
+    // 起始字符不是任何块标记、且无表格分隔符时，唯一可能的分支就是段落累积。
+    const probe = line.charCodeAt(0) === 32 || line.charCodeAt(0) === 9 ? line.trimStart() : line;
+    const head = probe.charAt(0);
+    if (
+      head !== "`" &&
+      head !== "#" &&
+      head !== "*" &&
+      head !== "-" &&
+      head !== "+" &&
+      head !== "_" &&
+      head !== ">" &&
+      !(head >= "0" && head <= "9") &&
+      !probe.includes("|")
+    ) {
+      paragraph.push(line);
+      i += 1;
+      continue;
+    }
+    // fence：3 个及以上反引号；闭合 run 长度 SHALL ≥ 开启 run（report-longform
+    // design §3.1 的加性扩展——3 反引号块的既有行为不变，4 反引号块可安全包含
+    // ``` 示例）。info string 原样保留为 `lang`。
+    const fence = /^(`{3,})(.*)$/.exec(line);
     if (fence) {
       flushParagraph();
-      const lang = fence[1]!.trim();
+      const marker = fence[1]!;
+      const lang = fence[2]!.trim();
       const body: string[] = [];
+      const startLine = i + 1;
       i += 1;
-      while (i < lines.length && !/^```\s*$/.test(lines[i]!)) {
+      while (i < lines.length) {
+        const close = /^(`{3,})\s*$/.exec(lines[i]!);
+        if (close && close[1]!.length >= marker.length) break;
         body.push(lines[i]!);
         i += 1;
       }
       i += 1;
-      blocks.push({ type: "code", lang, text: body.join("\n") });
+      blocks.push({
+        type: "code",
+        lang,
+        text: body.join("\n"),
+        line: startLine,
+        fence: marker.length,
+      });
       continue;
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(line);

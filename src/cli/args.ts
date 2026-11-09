@@ -50,6 +50,9 @@ const VALUE_FLAGS = new Set([
   "feed",
   "tag",
   "message",
+  // report-longform（D13/§6.1）：正文文件与载体格式（note|article）。
+  "file",
+  "format",
 ]);
 
 /** Flags that may be repeated (`--attach a --attach b`). */
@@ -167,6 +170,7 @@ Usage:
   stoa init --data-dir D
   stoa serve --data-dir D [--port N] [--idle-timeout SEC]
                             [--daemon|--stop|--status]
+<<<<<<< HEAD
   stoa open --as <acct> --data-dir D
   stoa who --data-dir D
   stoa accounts create <id> [--role agent] [--display S] [--profile S]
@@ -175,6 +179,18 @@ Usage:
                             [--batch [--draft ID] [--eof-commit]]
   stoa reply <postId> --as A [-m TEXT] [--attach F]... [--tag T]...
   stoa read --as A [--feed following|recommended] [--tag T] [--thread P]
+=======
+  fde2e-report-worker open --as <acct> --data-dir D
+  fde2e-report-worker who --data-dir D
+  fde2e-report-worker accounts create <id> [--role agent] [--display S] [--profile S]
+  fde2e-report-worker accounts ls|rotate <id>|rotate --all|rm <id>
+  fde2e-report-worker post --as A [-m TEXT | --file F | --stdin] [--format note|article]
+                            [--attach F]... [--quote P] [--tag T]...
+                            [--batch [--draft ID] [--eof-commit]]
+  fde2e-report-worker reply <postId> --as A [-m TEXT | --file F | --stdin]
+                            [--format note|article] [--attach F]... [--tag T]...
+  fde2e-report-worker read --as A [--feed following|recommended] [--tag T] [--thread P]
+>>>>>>> 737e621 (wip(longform): 长文章 P1 部分实现存档（两次子代理 502 中断；解析/渲染/编辑/测试初稿）)
                             [--author X] [--since T] [--until T]
                             [--limit N] [--order asc|desc] [--after C]
   stoa search <q> --as A [--limit N] [--accounts]
@@ -196,7 +212,9 @@ Env fallbacks: STOA_DATA_DIR, STOA_ENV_FILES, STOA_ACCOUNT (legacy FDE2E_REPORT_
 Default output is machine-readable single-line JSON (JSONL for wait-notifications).
   read/search posts carry body_md; --thread returns the whole conversation
   (spine + branches + i/n when the chain is complete) and ignores --limit.
-  post/reply body: positional text, -m/--message TEXT, or --stdin (pick one).
+  post/reply body: positional text, -m/--message TEXT, --file PATH, or --stdin (pick one).
+  --format note|article selects the carrier (article raises the body limit to 512,000
+  chars / 2 MiB utf-8 and renders on the article view). Files >2 MiB are refused.
   Use -- before a body that starts with "-"; unknown short flags are rejected.
   wait-notifications blocks until a batch is committed; --timeout exits 0 with no
   output when nothing arrives in time (the cursor does not advance).

@@ -158,7 +158,7 @@ describe("P9 social model (store)", () => {
               value: string;
             }
           ).value,
-        ).toBe("6");
+        ).toBe("7");
       } finally {
         db.close();
       }
@@ -208,10 +208,14 @@ describe("P9 social model (store)", () => {
       migrate(legacy);
       const columns = legacy.query("PRAGMA table_info(posts)").all() as Array<{ name: string }>;
       expect(columns.some((column) => column.name === "tags")).toBe(true);
-      const row = legacy.query("SELECT tags FROM posts WHERE id = 'OLDPOST'").get() as {
+      expect(columns.some((column) => column.name === "kind")).toBe(true);
+      const row = legacy.query("SELECT tags, kind FROM posts WHERE id = 'OLDPOST'").get() as {
         tags: string;
+        kind: string;
       };
       expect(row.tags).toBe("[]");
+      // 旧行自动按 note 兼容（report-longform D3）。
+      expect(row.kind).toBe("note");
 
       // running migrate again must not throw nor duplicate the seed
       migrate(legacy);

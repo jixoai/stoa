@@ -5,17 +5,15 @@ import {
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
-  type ReactNode,
-  type Ref,
   type RefObject,
 } from "react";
 import type { PostView, ThreadNode, ThreadView } from "@core/types";
-import { ArrowDownIcon, ChevronRightIcon } from "lucide-react";
+import { ArrowDownIcon } from "lucide-react";
 import { PostCard } from "@/components/PostCard";
 import { ReplyComposer } from "@/components/ReplyComposer";
 import { ContentSwap } from "@/components/ContentSwap";
-import { PostSkeleton, ThreadSkeleton } from "@/components/Skeletons";
+import { ThreadTimelineRows } from "@/components/ThreadTimelineRows";
+import { ThreadSkeleton } from "@/components/Skeletons";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PageHeader } from "@/components/PageHeader";
@@ -32,13 +30,13 @@ import {
   useTransitionEpoch,
 } from "@/lib/router";
 import { fullTime } from "@/lib/format";
+import { postHref } from "@/lib/post-href";
 import { loadThreadScrollMemory, saveThreadScrollMemory } from "@/lib/scroll-memory";
 import {
   buildTimelinePlan,
   countAddedInScope,
   firstAddedInScope,
   planForThreadView,
-  type PlanRow,
   type TimelinePlan,
 } from "@/lib/thread-plan";
 
@@ -50,105 +48,9 @@ import {
 // DFS）平铺：每个节点的子节点按 `(created_at, seq, id)` 升序，先输出自身再输出它的子树，
 // 子树结束后继续同级。同根兄弟分支不进入本页（兄弟分支经祖先详情/子线程入口进入）。
 
-// 线程 timeline 行几何（design §3；2026-11-08 视觉复核：头像 46 / 正文列 68 / 导轨 x=38）
-const THREAD_AVATAR = 46;
-const THREAD_AVATAR_GAP = 6;      // 16 + 46 + 6 = 正文列 x=68
-const THREAD_PAD_TOP = 12;        // 普通行 pt-3
-const FOCAL_PAD_TOP = 22;         // focal 多 10px：首字到吸顶栏 20→28–30
-const COMPACT_PAD_TOP = 6;        // 紧凑行 py-1.5
-const COMPACT_AVATAR = 24;
-
-// ── timeline 行 + 主轨（design §3.2）─────────────────────────────────────────
-//
-// 导轨画在行包裹层（不是 PostCard 内部），因此 focal footer / 子线程入口 / 删除占位
-// 都在同一条 trunk 上；头像 `relative z-[1]` 盖住导轨，视觉上是「头像上方一段 +
-// 下方一段」。
-
-type RowKind = "ancestor" | "focal" | "reply" | "subthread" | "context-gap" | "reply-skeleton";
-
-interface TimelineRowProps {
-  kind: RowKind;
-  /** 头像上下缘（CSS px）：普通行 pt-3(12) + 46 头像；focal pt-[22px]；紧凑行 6 + 24。 */
-  avatarTop?: number;
-  avatarBottom?: number;
-  first?: boolean;
-  last?: boolean;
-  postId?: string;
-  testId?: string;
-  /** focal 的上段导轨同时是贴顶 stub（data-testid=thread-rail-stub）。 */
-  stub?: boolean;
-  rowRef?: Ref<HTMLDivElement>;
-  children: ReactNode;
-}
-
-function TimelineRow({
-  kind,
-  avatarTop = 12,
-  avatarBottom = 58,
-  first = false,
-  last = false,
-  postId,
-  testId,
-  stub = false,
-  rowRef,
-  children,
-}: TimelineRowProps) {
-  const control = kind === "subthread" || kind === "context-gap" || kind === "reply-skeleton";
-  const single = first && last;
-  const railPosition = single ? "single" : first ? "first" : last ? "last" : "middle";
-  return (
-    <div
-      ref={rowRef}
-      className="relative"
-      data-timeline-row={kind}
-      data-post-id={postId}
-      data-rail-position={railPosition}
-      data-testid={testId}
-      style={
-        {
-          "--rail-avatar-top": `${avatarTop}px`,
-          "--rail-avatar-bottom": `${avatarBottom}px`,
-        } as CSSProperties
-      }
-    >
-      {control ? (
-        // 控制行（缺口/子线程入口）没有头像可截断：中间行贯穿整行；末行不再画下段，
-        // 否则会留下一截悬空导轨（review 2026-11-08：入口行 y=467 硬切 47px）。
-        single || last ? null : (
-          <span
-            aria-hidden
-            data-testid="thread-rail"
-            data-thread-rail="full"
-            className="pointer-events-none absolute left-[38px] w-0.5 bg-thread-rail"
-            style={{ top: 0, bottom: 0 }}
-          />
-        )
-      ) : (
-        <>
-          {!first ? (
-            <span
-              aria-hidden
-              data-testid={stub ? "thread-rail-stub" : "thread-rail"}
-              data-thread-rail="top"
-              className="pointer-events-none absolute left-[38px] w-0.5 bg-thread-rail"
-              style={{ top: 0, height: avatarTop }}
-            />
-          ) : null}
-          {!last ? (
-            <span
-              aria-hidden
-              data-testid="thread-rail"
-              data-thread-rail="bottom"
-              className="pointer-events-none absolute left-[38px] w-0.5 bg-thread-rail"
-              style={{ top: avatarBottom, bottom: 0 }}
-            />
-          ) : null}
-        </>
-      )}
-      {children}
-    </div>
-  );
-}
+// 线程 timeline 行几何与「行 + 导轨 + 子线程入口」渲染件已抽到共享组件
+// `@/components/ThreadTimelineRows`（report-longform §4.2/§11）：ThreadPage 与
+// ArticlePage 的嵌入式讨论区共用同一份度量，禁止第二套。
 
 // ── 锚定 / 恢复（design §4）─────────────────────────────────────────────────
 
@@ -745,28 +647,6 @@ export function ThreadPage() {
     });
   }, [focal, ancestorChain, nodes, nodeMap, collapsedCounts, deepGap, unresolvedGap, loaded]);
 
-  type RenderRow =
-    | { kind: "context-gap"; key: string; parentId: string | null }
-    | PlanRow
-    | { kind: "reply-skeleton"; key: string };
-
-  const rows = useMemo<RenderRow[]>(() => {
-    const out: RenderRow[] = [];
-    if (plan.gapVisible && (plan.gapParentId || plan.gapVisible)) {
-      out.push({
-        kind: "context-gap",
-        key: "context-gap",
-        parentId: plan.gapParentId,
-      });
-    }
-    out.push(...plan.rows);
-    if (!loaded) {
-      out.push({ kind: "reply-skeleton", key: "reply-skeleton-1" });
-      out.push({ kind: "reply-skeleton", key: "reply-skeleton-2" });
-    }
-    return out;
-  }, [plan.rows, plan.gapParentId, plan.gapVisible, loaded]);
-
   /** 只随布局变化的键：锚定/补偿只在它变化时跑，选中态等纯渲染不触发。 */
   const anchorKey = `${postId}|${ancestorChain.length}|${plan.rows.length}|${loaded ? 1 : 0}|${thread?.as_of_seq ?? 0}`;
 
@@ -900,14 +780,16 @@ export function ThreadPage() {
         event.preventDefault();
         if (event.key === "r") {
           if (node.deleted_at === null) navigate(`/p/${encodeURIComponent(node.id)}?reply=1`);
-        } else if (node.id !== focal?.id) navigate(`/p/${encodeURIComponent(node.id)}`);
+        } else if (node.id !== focal?.id) navigate(postHref(node));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [kbNodes, selectedIndex, focal?.id]);
 
-  const openPost = (post: PostView) => navigate(`/p/${encodeURIComponent(post.id)}`);
+  // 「打开帖子」按载体分派（report-longform §4.1）：article → `#/a/<id>`。
+  // 回复入口仍进线程页（`/p/<id>?reply=1`），文章页自身的回复用当前页编辑器。
+  const openPost = (post: PostView) => navigate(postHref(post));
   const replyPost = (post: PostView) => navigate(`/p/${encodeURIComponent(post.id)}?reply=1`);
   const quotePost = (post: PostView) => navigate(`/compose?quote=${encodeURIComponent(post.id)}`);
 
@@ -954,8 +836,6 @@ export function ThreadPage() {
     );
   }
 
-  const lastIndex = rows.length - 1;
-
   return (
     <div className="relative flex h-full min-h-0 flex-col">
       <ThreadHeader source={source} />
@@ -974,137 +854,28 @@ export function ThreadPage() {
           >
             {focal ? (
               <>
-                <div data-testid="thread-timeline" className="divide-y divide-border/60">
-                  {rows.map((row, index) => {
-                    const first = index === 0;
-                    const last = index === lastIndex;
-
-                    if (row.kind === "context-gap") {
-                      return (
-                        <TimelineRow
-                          key={row.key}
-                          kind="context-gap"
-                          first={first}
-                          last={last}
-                          testId="context-gap"
-                        >
-                          <div className="py-3 pl-[68px] pr-4">
-                            <p className="text-sm text-muted-foreground">
-                              更早的回复未加载
-                            </p>
-                            {row.parentId ? (
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                data-testid="context-gap-open"
-                                data-node-id={row.parentId}
-                                className="-ml-2 mt-1 h-8 px-2 text-sm"
-                                onClick={() => navigate(`/p/${encodeURIComponent(row.parentId!)}`)}
-                              >
-                                <ChevronRightIcon data-icon="inline-start" />
-                                查看上一帖
-                              </Button>
-                            ) : null}
-                          </div>
-                        </TimelineRow>
-                      );
-                    }
-
-                    if (row.kind === "subthread") {
-                      return (
-                        <TimelineRow
-                          key={row.key}
-                          kind="subthread"
-                          first={first}
-                          last={last}
-                        >
-                          <div className="py-2 pl-[68px] pr-4">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              data-testid="subthread-entry"
-                              data-node-id={row.nodeId}
-                              className="-ml-2 h-8 gap-1.5 px-2 text-sm text-muted-foreground hover:text-foreground"
-                              onClick={() => navigate(`/p/${encodeURIComponent(row.nodeId)}`)}
-                            >
-                              <ChevronRightIcon data-icon="inline-start" />
-                              查看该子线程 · {row.count} 条回复
-                            </Button>
-                          </div>
-                        </TimelineRow>
-                      );
-                    }
-
-                    if (row.kind === "reply-skeleton") {
-                      return (
-                        <TimelineRow
-                          key={row.key}
-                          kind="reply-skeleton"
-                          first={first}
-                          last={last}
-                        >
-                          <PostSkeleton compact />
-                        </TimelineRow>
-                      );
-                    }
-
-                    const node = row.node;
-                    const isFocal = row.role === "focal";
-                    const kbIndex = isFocal
-                      ? 0
-                      : kbNodes.findIndex((candidate) => candidate.id === node.id);
-                    return (
-                      <TimelineRow
-                        key={row.key}
-                        kind={row.role}
-                        first={first}
-                        last={last}
-                        postId={node.id}
-                        stub={isFocal && !first}
-                        testId={isFocal ? "focal-card-row" : undefined}
-                        avatarTop={
-                          row.compact ? COMPACT_PAD_TOP : isFocal ? FOCAL_PAD_TOP : THREAD_PAD_TOP
-                        }
-                        avatarBottom={
-                          row.compact
-                            ? COMPACT_PAD_TOP + COMPACT_AVATAR
-                            : (isFocal ? FOCAL_PAD_TOP : THREAD_PAD_TOP) + THREAD_AVATAR
-                        }
-                        rowRef={isFocal ? focalRowRef : undefined}
-                      >
-                        <div data-testid={isFocal ? "focal-card" : undefined}>
-                          <PostCard
-                            post={node}
-                            variant={isFocal ? "focal" : row.role === "ancestor" ? "ancestor" : "reply"}
-                            selected={kbIndex >= 0 && kbIndex === selectedIndex}
-                            replyingTo={row.replyingTo}
-                            selfContinuation={row.compact}
-                            selfHeader={row.compactHeader}
-                            avatarPx={row.compact ? undefined : THREAD_AVATAR}
-                            avatarGapPx={THREAD_AVATAR_GAP}
-                            paddingTop={isFocal ? FOCAL_PAD_TOP : THREAD_PAD_TOP}
-                            onOpen={isFocal ? undefined : openPost}
-                            onReply={replyPost}
-                            onQuote={quotePost}
-                          />
-                          {isFocal ? (
-                            <div className="flex flex-wrap items-center gap-2 border-t border-border/60 py-2 pl-[68px] pr-4 text-xs text-muted-foreground">
-                              <span>{fullTime(node.created_at)}</span>
-                              <span aria-hidden>·</span>
-                              <span data-testid="reply-count">
-                                {node.reply_count > 0
-                                  ? `${node.reply_count} 条回复`
-                                  : "还没有回复"}
-                              </span>
-                            </div>
-                          ) : null}
-                        </div>
-                      </TimelineRow>
-                    );
-                  })}
-                </div>
+                {/* 行渲染 = 共享 ThreadTimelineRows（ArticlePage 讨论区同一实现） */}
+                <ThreadTimelineRows
+                  rows={plan.rows}
+                  loaded={loaded}
+                  gapVisible={plan.gapVisible}
+                  gapParentId={plan.gapParentId}
+                  selectedId={selectedIndex >= 0 ? (kbNodes[selectedIndex]?.id ?? null) : null}
+                  focalRowRef={focalRowRef}
+                  renderFocalExtra={(node) => (
+                    <div className="flex flex-wrap items-center gap-2 border-t border-border/60 py-2 pl-[68px] pr-4 text-xs text-muted-foreground">
+                      <span>{fullTime(node.created_at)}</span>
+                      <span aria-hidden>·</span>
+                      <span data-testid="reply-count">
+                        {node.reply_count > 0 ? `${node.reply_count} 条回复` : "还没有回复"}
+                      </span>
+                    </div>
+                  )}
+                  onOpen={openPost}
+                  onReply={replyPost}
+                  onQuote={quotePost}
+                  onOpenThread={(id) => navigate(`/p/${encodeURIComponent(id)}`)}
+                />
 
                 {staticMode ? (
                   <div
