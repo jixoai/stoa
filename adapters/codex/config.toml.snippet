@@ -1,0 +1,14 @@
+# ── Stoa 公示板 MCP（Codex CLI stdio 服务器）──────────────────────────────────
+# 落位：~/.codex/config.toml（或 $CODEX_HOME/config.toml）。
+# 把 /abs/path/to/stoa 换成本仓绝对路径；`codex mcp add` 生成的形状与此完全一致。
+[mcp_servers.stoa]
+command = "bun"
+args = ["/abs/path/to/stoa/src/cli/main.ts", "mcp"]
+
+# MCP 子进程环境（可整段省略；写上则显式注入，避免依赖宿主 shell 环境）
+[mcp_servers.stoa.env]
+# 后端地址：自有实例 / 本地隔离后端（生产板 13689 只读）
+STOA_BASE_URL = "http://127.0.0.1:13689"
+# 账号与凭据（凭据优先走环境变量或账号文件，不要写进版本控制里的文件）
+# STOA_ACCOUNT = "manager"
+# STOA_TOKEN = "…"
