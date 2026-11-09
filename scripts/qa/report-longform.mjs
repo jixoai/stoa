@@ -731,22 +731,48 @@ try {
     JSON.stringify({ ...dwell, readHit: (ownerReads.reads ?? []).map((r) => r.post_id) }),
   );
 
-  // 线程页 focal 摘要卡（A8）：单独打开 MAIN_ID 的线程页
+  // 线程页 focal 摘要卡（A8 + B1）：单独打开 MAIN_ID 的线程页
   await gotoHash(`/p/${MAIN_ID}`);
   await waitSel('[data-testid="thread-timeline"]');
   await sleep(page, 600);
-  const threadFocal = await page.evaluate(() => ({
-    summary: Boolean(document.querySelector('[data-testid="focal-card"] [data-testid="article-summary"]')),
-    openFull: Boolean(document.querySelector('[data-testid="article-open-full"]')),
-    paragraphs: document.querySelector('[data-testid="focal-card"]')?.querySelectorAll("p").length ?? 0,
-  }));
+  const threadFocal = await page.evaluate(() => {
+    // B1：断言必须限定 focal 作用域——详情层下的背景 feed（根页仍挂载）也有摘要卡，
+    // 全局选择器会命中背景卡造成假阳（复核实证：修前全局 openFull=true 仍通过）。
+    const focal = document.querySelector('[data-testid="focal-card"]');
+    return {
+      summary: Boolean(focal?.querySelector('[data-testid="article-summary"]')),
+      openFull: focal ? focal.querySelectorAll('[data-testid="article-open-full"]').length : 0,
+      paragraphs: focal?.querySelectorAll("p").length ?? 0,
+    };
+  });
   await check(
-    "A8 线程页 focal＝摘要卡 + 「阅读全文」入口（不渲染全文）",
-    threadFocal.summary && threadFocal.openFull && threadFocal.paragraphs <= 6,
+    "A8/B1 线程页 focal＝摘要卡 + 恰好 1 个「阅读全文」入口（focal 作用域；不渲染全文）",
+    threadFocal.summary && threadFocal.openFull === 1 && threadFocal.paragraphs <= 6,
     JSON.stringify(threadFocal),
   );
   await shot(page, "a1-1280-thread-focal.png");
-  attachShot("A8 线程页 focal＝摘要卡 + 「阅读全文」入口（不渲染全文）", "a1-1280-thread-focal.png", "1280×800 · png");
+  attachShot(
+    "A8/B1 线程页 focal＝摘要卡 + 恰好 1 个「阅读全文」入口（focal 作用域；不渲染全文）",
+    "a1-1280-thread-focal.png",
+    "1280×800 · png",
+  );
+
+  // B1：focal「阅读全文」点击 → `#/a/<id>`（修前按钮不渲染，本断言直接锁行为）
+  await page.click('[data-testid="focal-card"] [data-testid="article-open-full"]');
+  let focalOpenNav = true;
+  try {
+    await page.waitForFunction((id) => location.hash === `#/a/${id}`, MAIN_ID, { timeout: 10_000 });
+  } catch {
+    focalOpenNav = false;
+  }
+  const focalOpenHash = await page.evaluate(() => location.hash);
+  await check(
+    "B1 线程页 focal「阅读全文」→ #/a/<id>",
+    focalOpenNav && focalOpenHash === `#/a/${MAIN_ID}`,
+    JSON.stringify({ hash: focalOpenHash }),
+  );
+  await waitSel('[data-testid="article-view"]');
+  await sleep(page, 400);
 
   // 通知类型：article 仍只产生既有事件类型（post.created + 既有 read-sync 事件）
   const peek = await apiJson(BASE, "/api/notifications?peek=1&limit=200", OWNER_TOKEN);
@@ -940,6 +966,66 @@ try {
     `articleFirstPaint=${articleFirstPaint}ms`,
   );
 
+  // ── B2 长文入口（产品 UI）：发帖页「帖子/长文」切换 → 编辑器（修前只能直达 hash）──
+  await gotoHash("/compose");
+  await waitSel('[data-testid="compose-format-tabs"]');
+  await sleep(page, 400);
+  const b2Before = await page.evaluate(() => ({
+    hash: location.hash,
+    noteComposer: Boolean(document.querySelector('[data-testid="composer-submit"]')),
+    tabs: Boolean(document.querySelector('[data-testid="compose-format-tabs"]')),
+  }));
+  await page.click('[data-testid="compose-format-article"]');
+  let b2Entered = true;
+  try {
+    await page.waitForFunction(() => location.hash.includes("format=article"), null, { timeout: 10_000 });
+  } catch {
+    b2Entered = false;
+  }
+  let b2Editor = true;
+  try {
+    await waitSel('[data-testid="article-editor"]', 10_000);
+  } catch {
+    b2Editor = false;
+  }
+  const b2After = await page.evaluate(() => ({
+    hash: location.hash,
+    tabs: Boolean(document.querySelector('[data-testid="compose-format-tabs"]')),
+  }));
+  await check(
+    "A14/B2 发帖页「长文」入口：点击 → hash 含 format=article → 编辑器挂载",
+    b2Before.hash === "#/compose" &&
+      b2Before.noteComposer &&
+      b2Before.tabs &&
+      b2Entered &&
+      b2Editor &&
+      b2After.hash === "#/compose?format=article" &&
+      b2After.tabs,
+    JSON.stringify({ before: b2Before, after: b2After, entered: b2Entered, editor: b2Editor }),
+  );
+  await shot(page, "b2-1280-compose-tabs.png");
+  attachShot(
+    "A14/B2 发帖页「长文」入口：点击 → hash 含 format=article → 编辑器挂载",
+    "b2-1280-compose-tabs.png",
+    "1280×800 · png",
+  );
+
+  // 反向：长文编辑器「帖子」→ 回 `/compose`（双向切换，不是单向死路）
+  await page.click('[data-testid="compose-format-note"]');
+  let b2Back = true;
+  try {
+    await page.waitForFunction(() => location.hash === "#/compose", null, { timeout: 10_000 });
+    await waitSel('[data-testid="composer-submit"]', 10_000);
+  } catch {
+    b2Back = false;
+  }
+  const b2BackHash = await page.evaluate(() => location.hash);
+  await check(
+    "A14/B2 长文编辑器可切回「帖子」（双向）",
+    b2Back && b2BackHash === "#/compose",
+    JSON.stringify({ hash: b2BackHash, b2Back }),
+  );
+
   // ── A14 编辑器 ────────────────────────────────────────────────────────────
   await gotoHash("/compose?format=article");
   await waitSel('[data-testid="article-editor"]');
@@ -1007,6 +1093,64 @@ try {
   await shot(page, "a14-1280-editor-error.png");
   attachShot("A14 坏 JSON 禁止提交 + 错误面板 line/block/fix + 点击定位到行", "a14-1280-editor-error.png", "1280×800 · png");
 
+  // O5 提交门竞态：防抖窗口内的点击必须被「提交前同步现算」拦住（不许只靠防抖结果）。
+  // 手法：先回到合法内容并等防抖落定（按钮可用、errors=[]），随后在同一 evaluate 内
+  // 同步换入非法内容 + 点提交（距 input 仅约两帧，300ms 防抖尚未到期 → 旧 errors 仍空）。
+  await page.fill('[data-testid="article-editor-input"]', "# O5 前缀合法\n\n正文。");
+  await sleep(page, 700);
+  const o5PostsBefore = apiRequests.filter((row) => row.method === "POST" && row.url.endsWith("/api/posts")).length;
+  const o5 = await page.evaluate(async (text) => {
+    const area = document.querySelector('[data-testid="article-editor-input"]');
+    const submit = document.querySelector('[data-testid="article-submit"]');
+    if (!area || !submit) return { ok: false, reason: "editor missing" };
+    // React 受控组件：原型 setter 写入 + 派发 input（React onChange 才收得到）。
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(area, text);
+    area.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const enabledAtClick = !submit.disabled;
+    submit.click();
+    return { ok: true, enabledAtClick };
+  }, "# O5 竞态\n\n````fde2e:stats\n{ \"items\": }\n````\n");
+  await sleep(page, 700);
+  const o5PostsAfter = apiRequests.filter((row) => row.method === "POST" && row.url.endsWith("/api/posts")).length;
+  const o5After = await page.evaluate(() => ({
+    error: document.querySelector('[data-testid="article-editor-error"]')?.textContent?.trim() ?? null,
+    submitDisabled: document.querySelector('[data-testid="article-submit"]')?.disabled ?? null,
+    hash: location.hash,
+  }));
+  await check(
+    "O5 提交门竞态：防抖窗口内点击被同步校验拦住（无 POST、错误面板出现、仍在本页）",
+    o5.ok === true &&
+      o5.enabledAtClick === true &&
+      o5PostsAfter === o5PostsBefore &&
+      /校验错误/.test(o5After.error ?? "") &&
+      o5After.submitDisabled === true &&
+      o5After.hash.startsWith("#/compose"),
+    JSON.stringify({ enabledAtClick: o5.enabledAtClick, posts: [o5PostsBefore, o5PostsAfter], ...o5After }),
+  );
+
+  // O6 超限禁提交：>512,000 字符 → 提交禁用 + 可见护栏提示（服务端同口径）。
+  await page.fill('[data-testid="article-editor-input"]', "# 超限\n\n" + "a".repeat(520_000));
+  await sleep(page, 800);
+  const o6 = await page.evaluate(() => ({
+    chars: document.querySelector('[data-testid="article-editor-input"]')?.value.length ?? 0,
+    submitDisabled: document.querySelector('[data-testid="article-submit"]')?.disabled ?? null,
+    alert: document.querySelector('[data-testid="article-over-limit"]')?.textContent?.trim() ?? null,
+    counter: document.querySelector('[data-testid="article-counter"]')?.textContent?.trim() ?? null,
+  }));
+  await check(
+    "O6 超限禁提交（520,000 > 512,000）：提交按钮禁用 + 可见护栏提示",
+    o6.chars > 512_000 &&
+      o6.submitDisabled === true &&
+      /512,000/.test(o6.alert ?? "") &&
+      (o6.counter ?? "").includes("512,000"),
+    JSON.stringify({ chars: o6.chars, disabled: o6.submitDisabled, alert: (o6.alert ?? "").slice(0, 80) }),
+  );
+  // 清掉超限内容（后续用例从干净态开始）
+  await page.fill('[data-testid="article-editor-input"]', "");
+  await sleep(page, 500);
+
   // 草稿恢复/清除
   await page.fill('[data-testid="article-editor-input"]', "# 草稿恢复样例\n\n正文。");
   await sleep(page, 600);
@@ -1023,6 +1167,47 @@ try {
     restored.includes("草稿恢复样例") && draftCleared === false,
     JSON.stringify({ restored: restored.slice(0, 24), draftCleared }),
   );
+
+  // O4 引用草稿键：quoted 异步到达前不得按 `article:root` 读写（复核实证竞态）。
+  // 手法：预置「根草稿污染」与「引用草稿」两份，进入引用编辑器——必须恢复引用草稿、
+  // 且根草稿原样未被读取/覆盖/清除。
+  await page.evaluate((quoteId) => {
+    localStorage.setItem(
+      "report.draft.v1:article:root",
+      JSON.stringify({ body: "# 根草稿污染\n\n不应出现在引用编辑器里。" }),
+    );
+    localStorage.setItem(
+      `report.draft.v1:article:quote:${quoteId}`,
+      JSON.stringify({ body: "# 引用草稿恢复\n\n应恢复这一份。" }),
+    );
+  }, QUOTE_ID);
+  await gotoHash(`/compose?format=article&quote=${QUOTE_ID}`);
+  await waitSel('[data-testid="article-editor"]', 15_000);
+  await sleep(page, 700);
+  const quoteDraft = await page.evaluate(() => ({
+    value: document.querySelector('[data-testid="article-editor-input"]')?.value ?? "",
+    quoteCard: Boolean(document.querySelector('[data-testid="article-editor-quote"]')),
+    rootDraft: localStorage.getItem("report.draft.v1:article:root") ?? null,
+    quoteKeys: Object.keys(localStorage).filter((key) => key.includes("report.draft.v1:article:quote:")),
+  }));
+  await check(
+    "O4 引用草稿按 article:quote:<id> 恢复（不被 article:root 串写；根草稿未被动过）",
+    quoteDraft.value.includes("引用草稿恢复") &&
+      !quoteDraft.value.includes("根草稿污染") &&
+      quoteDraft.quoteCard &&
+      (quoteDraft.rootDraft ?? "").includes("根草稿污染") &&
+      quoteDraft.quoteKeys.some((key) => key.includes(`article:quote:${QUOTE_ID}`)),
+    JSON.stringify({ ...quoteDraft, value: quoteDraft.value.slice(0, 32) }),
+  );
+  // 清理两份草稿，回干净的长文编辑器（后续用例环境与之前保持一致）
+  await page.evaluate(() => {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith("report.draft.v1:article:")) localStorage.removeItem(key);
+    }
+  });
+  await gotoHash("/compose?format=article");
+  await waitSel('[data-testid="article-editor"]');
+  await sleep(page, 400);
 
   // 双击提交只发一次
   const postRequests = [];
