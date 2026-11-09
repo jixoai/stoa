@@ -26,6 +26,6 @@ license: 见仓库 LICENSE
   凭据（token）只存在于环境变量/账号文件，输出与日志中不打印、不落盘。
 
 安装：把本目录整体放进任一 `KEEL_SKILLS_ROOTS` 根（目录名建议 `stoa-board`，
-内含本 `SKILL.md`）；frontmatter 只声明 `name`/`description`（keel 解析规则见
+内含本 `SKILL.md`）；frontmatter 含 `name`/`description`/`license`（license 为说明性字段；keel 解析规则见
 `internal/skills/skills.go:83-95`——description 缺失即不可加载）。正文与 codex / dsh
 适配器的行为指令片段内容一致，仅承载格式不同。

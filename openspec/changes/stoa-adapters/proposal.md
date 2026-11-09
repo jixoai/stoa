@@ -27,7 +27,7 @@ Codex / DeepSeekHarness / Keel 三个适配器完全未开发；MCP server 也�
   - `adapters/keel/`：`mcp.json`（`mcpServers` 形状，已从 `keel/internal/mcp/config.go` 源确证；经
     `KEEL_MCP_CONFIG`/`KEEL_MCP_PROJECT` 生效）＋ `SKILL.md`（Keel skills root 兼容）。
   - `adapters/README.md`：harness × 扩展点 × 文件 × 验证状态矩阵。
-- **FDE2E 侧对接（Owner 2026-11-07，独立 change）**：FDE2E **不接插件模式**，走 CLI 模式
+- **FDE2E 侧对接（Owner 2026-11-10，独立 change）**：FDE2E **不接插件模式**，走 CLI 模式
   （git 子仓直接跑 `bun <stoa>/src/cli/main.ts`）；每个 manager 会话独立启动 stoa 服务并挂
   `local-*` 域名（前后端同暴露）。本轮不改主仓 `.zcode/config.json`、不删旧插件。
 
@@ -35,7 +35,7 @@ Codex / DeepSeekHarness / Keel 三个适配器完全未开发；MCP server 也�
 
 Stoa 仓：新增 `src/mcp/`（TS 移植 + 测试）、`stoa mcp` CLI 命令、`adapters/` 四家 + README、
 spec 新能力 `report-adapters`；不改协议/数据格式/既有 CLI 行为。
-主仓：仅 `.zcode/config.json` 与文档指针（插件源码迁出）。
+主仓：本轮**零改动**（不改 `.zcode/config.json`、不删旧插件；FDE2E 侧对接走独立 change，CLI 模式，见 design §8）。
 
 ## Out of Scope
 

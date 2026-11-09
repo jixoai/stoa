@@ -16,7 +16,7 @@
 
 ## P1. 适配器
 
-- [ ] P1-4. `adapters/zcode/`（Owner 2026-11-07：按 plugin-creator 标准开发）：`.zcode-plugin/plugin.json`
+- [ ] P1-4. `adapters/zcode/`（Owner 2026-11-10：按 plugin-creator 标准开发）：`.zcode-plugin/plugin.json`
   （name=`stoa`，资源路径在插件根内，`${CLAUDE_PLUGIN_ROOT}` 占位）+ `.mcp.json` 薄桥 `stoa mcp`
   + commands/skills/scripts（watch/state-path/session-start/report-to-article）；config/state 路径新主用
   + 旧路径回退；**新增 Stop 钩子 `scripts/stop-wait.mjs`**（有界 wait-notifications → 新消息输出
@@ -25,10 +25,10 @@
     `watch.mjs --state-file …`（隔离后端）与 `state-path.mjs` 冒烟通过；旧配置
     （`~/.config/fde2e/report-channel.json`）零迁移可用；Stop 钩子以伪造输入实测「无消息放行 /
     有消息 block+reason 注入」两态（不依赖真实会话）。
-- [ ] P1-5. `adapters/codex/`：`README.md`（`codex mcp add` 与 `config.toml [mcp_servers.stoa]` 两种）+ 
+- [ ] P1-5. `adapters/codex/`：`README.md`（`codex mcp add` 与 `config.toml [mcp_servers.stoa]` 两种）+
   `AGENTS.md.snippet`（行为指令）+ 验证步骤。
   - 判据：本机 `codex mcp list` 实测含 stoa（配置加载）；可行时 `codex exec` 一次工具 roundtrip；否则登记原因。
-- [ ] P1-6. `adapters/deepseekharness/`（Owner 2026-11-07：参考 dsh「创造模式」）：`README.md`
+- [ ] P1-6. `adapters/deepseekharness/`（Owner 2026-11-10：参考 dsh「创造模式」）：`README.md`
   （创造模式 Plugin Manager `install_bundle` 安装 MCP 配置组合包；`@deepseek-ai/dsh-mcp-client`
   `transport: stdio` 直连 `stoa mcp`，附最小 YAML；另附 Streamable HTTP 形态）+ `instructions.md`
   （**含 stop 前 wait 纪律**）。
@@ -42,14 +42,14 @@
 
 ## P1. 工作区迁移与收口
 
-- [ ] P1-9. 旧插件去向登记（Owner 2026-11-07 指令）：FDE2E 不接插件模式（走 CLI 模式），本轮**不改**
+- [ ] P1-9. 旧插件去向登记（Owner 2026-11-10 指令）：FDE2E 不接插件模式（走 CLI 模式），本轮**不改**
   主仓 `.zcode/config.json`、不删 `plugins/report-channel`（当前会话依赖）；退役/删除归 §8 的
   FDE2E 对接 change。本任务只交付适配器侧 + 在 adapters/README 与 change 报告里写明该决定。
 - [ ] P1-10. 绿门：`bun test`、`check`、`typecheck(:ui)`、`build`、`openspec validate --strict`；回归
   `thread-scope` 82/82、`thread-nesting` 30/30；报告（含各 harness 模式/验证状态与未覆盖登记）；
   归档 + 推送。
 
-## P2. 后续（FDE2E 对接，Owner 2026-11-07 指令，不在本轮 change）
+## P2. 后续（FDE2E 对接，Owner 2026-11-10 指令，不在本轮 change）
 
 - [ ] P2-1. 主仓新建 change：Stoa git 子仓模式引入（不发布 npm）；会话用 **CLI 模式**
   （`bun <stoa>/src/cli/main.ts`），不用插件模式；更新相关 skills 与 `.zcode/commands/manager.md`。

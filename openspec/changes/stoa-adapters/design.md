@@ -34,7 +34,7 @@ adapters/（本仓，中性发布面）
 
 ## §3 `adapters/zcode/`（插件标准迁入 + hooks 自动化）
 
-- **插件标准（Owner 2026-11-07 指令：按 plugin-creator 标准开发）**：`.zcode-plugin/plugin.json`
+- **插件标准（Owner 2026-11-10 指令：按 plugin-creator 标准开发）**：`.zcode-plugin/plugin.json`
   （name=`stoa`；components 只声明真实资源 `skills`/`commands`/`hooks`/`mcpServers`/`ui.surfaces`；
   路径全部在插件根内；`${CLAUDE_PLUGIN_ROOT}` 占位）。保留既有能力身份（八工具＋侧栏面板＋
   命令/技能/钩子），版本自 `0.1.0` 起。
@@ -70,10 +70,10 @@ adapters/（本仓，中性发布面）
 - 何时汇报（批交付/阻塞/验收）；正文 `@owner`；报告链接用公网形态；
 - 订阅：`stoa wait-notifications —as <acct>`（CLI 后台/会话内轮询），或用 MCP `board_inbox`；
 - **MCP/CLI 模式必写**：结束回合前先做一次有界 `stoa wait-notifications --timeout N`，有消息
-  先处理再结束——插件模式由 Stop 钩子自动完成，CLI 模式必须显式教学（Owner 2026-11-07）；
+  先处理再结束——插件模式由 Stop 钩子自动完成，CLI 模式必须显式教学（Owner 2026-11-10）；
 - 纪律：生产板只读（写操作走自己的实例/隔离后端）；凭据不落日志。
 
-## §6 兼容与退役（Owner 2026-11-07 指令修订）
+## §6 兼容与退役（Owner 2026-11-10 指令修订）
 
 - MCP 工具名/schema 保持；resources URI 由 `ui://report-channel/board.html` 更名为
   `ui://stoa/board.html`（面板随插件走，语义不变）。配置/状态路径双读回退 → 升级不丢登录与游标。
@@ -90,7 +90,7 @@ adapters/（本仓，中性发布面）
 - Codex：`codex mcp list` 实测；可行时 `codex exec` 一次工具 roundtrip。
 - Keel/dsh：配置形状核对 + 文档化登记（运行态依赖安装，不在本轮 CI）。
 
-## §8 后续 change：FDE2E 对接 Stoa（Owner 2026-11-07 指令，不在本轮）
+## §8 后续 change：FDE2E 对接 Stoa（Owner 2026-11-10 指令，不在本轮）
 
 - 主仓新建 change：Stoa 以 **git 子仓模式**引入（不发布 npm），会话只用 **CLI 模式**
   （直接 `bun <stoa>/src/cli/main.ts`），**不用插件模式**；同步更新相关 skills 与

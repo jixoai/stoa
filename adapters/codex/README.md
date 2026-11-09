@@ -106,6 +106,11 @@ mcp: stoa/board_status (completed)
 （QA 板 11 帖＝`qa-serve` 种子；`token: present` 证明凭据经 `<dataDir>/accounts/manager.env`
 被 MCP server 读到；token 本体从未出现在输出里。）
 
+> 复现提示：roundtrip 那一轮的 shell 里**额外导出了** `STOA_DATA_DIR=/tmp/report-qa-stoa-cx`
+> （`qa-serve` 生成的 `accounts/manager.env` 就在该目录），MCP server 因此拿到 `token: present`；
+> 若只按上面「注册」命令给 `STOA_BASE_URL`（不设 dataDir/token），`board_status` 会回报
+> `token: absent` 并对受保护接口 401——属预期，不是工具坏了。
+
 三条环境观察（复现时注意）：
 
 1. **模型网关要走可用代理**：本机 env 代理 `127.0.0.1:17890` 对 `api.a6api.com:443`
