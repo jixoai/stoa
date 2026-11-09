@@ -5,9 +5,13 @@
  * 隔离纪律：只对 `qa-serve.mjs` 起的 /tmp/report-qa-* 后端写入（qa-env 拒绝生产板
  * 13689）；进程结束 kill 隔离服务并打印 PID。
  *
- * 覆盖：A1 文章视图 + 嵌入讨论、A2 四块、A3 未知块降级、A4 raw HTML 转义、
- * A5 上限、A6 性能、A8 feed 摘要、A9 通知/已读不变、A10 静态归档、A11 CLI、
- * A12 插件、A13 迁移、A14 编辑器/无障碍/响应式。（A7 TOC 属 P2，不在本轮。）
+ * 覆盖：A1 文章视图 + 嵌入讨论、A2 四块（+ P1-17 模板交付物）、A3 未知块降级、
+ * A4 raw HTML 转义、A5 上限、A6 性能、A8 feed 摘要、A9 通知/已读不变、A10 静态归档、
+ * A11 CLI、A12 插件、A13 迁移、A14 编辑器/无障碍/响应式/键盘流。（A7 TOC 属 P2。）
+ *
+ * 产物：截图/请求记录/结果默认落 `src/ui/.qa/longform/`（--report-dir 改址）；
+ * 交付报告用 `--report-dir <主仓>/.agents/reports/manager/report-longform` 生成
+ * steps.json → report.html（e2e-report-gen）。
  *
  * Run:
  *   bun scripts/qa/report-longform.mjs [--no-build] [--report-dir D]
@@ -36,9 +40,11 @@ const MANAGER_TOKEN = accountToken(qa.dataDir, "manager");
 const OWNER_TOKEN = accountToken(qa.dataDir, "owner");
 const REPORT_DIR = resolve(
   argValue(argv, "report-dir") ??
-    join(REPO_ROOT, "..", "..", ".agents", "reports", "manager", "report-longform"),
+    join(REPO_ROOT, "src", "ui", ".qa", "longform"),
 );
 const PLUGIN_DIR = resolve(REPO_ROOT, "..", "..", "plugins", "report-channel");
+/** P1-17 报告模板（steps.json → article）。 */
+const TEMPLATE = join(PLUGIN_DIR, "scripts", "report-to-article.mjs");
 mkdirSync(REPORT_DIR, { recursive: true });
 if (!argv.includes("--no-build")) {
   execFileSync("bun", ["run", "build"], { cwd: REPO_ROOT, stdio: "inherit" });
@@ -50,16 +56,32 @@ const checks = [];
 const steps = [];
 const screenshots = [];
 let stepSeq = 0;
-const check = (name, ok, detail = "", extra = {}) => {
+/** 当前活动页面（失败时留档截图用；每段主体切换时更新）。 */
+let activePage = null;
+const check = async (name, ok, detail = "", extra = {}) => {
   stepSeq += 1;
-  checks.push({ name, ok: Boolean(ok), detail, at: Date.now() - startedAt });
-  steps.push({
+  const row = { name, ok: Boolean(ok), detail, at: Date.now() - startedAt };
+  checks.push(row);
+  const step = {
     id: `S${stepSeq}`,
     intent: name,
     assertion: detail || (ok ? "PASS" : "FAIL"),
     ok: Boolean(ok),
     ...extra,
-  });
+  };
+  if (!ok && activePage) {
+    // 失败截图留档（P1-20 判据：「失败截图+响应状态留档」）。
+    const file = `fail-${String(stepSeq).padStart(2, "0")}.png`;
+    try {
+      await activePage.screenshot({ path: join(REPORT_DIR, file) });
+      screenshots.push(file);
+      step.image = file;
+      step.imageMeta = "FAIL 现场截图";
+    } catch {
+      // 页面已关闭等场景：detail 仍在 results.json 中
+    }
+  }
+  steps.push(step);
   console.log(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${String(detail).slice(0, 220)}` : ""}`);
 };
 const sleep = (page, ms) => page.waitForTimeout(ms);
@@ -188,7 +210,7 @@ const MAIN_BODY = [
     "steps",
     JSON.stringify({
       steps: [
-        { title: "构建", status: "done", expect: "零错误", detail: "bun run build ok", command: "bun run build", output: "built in 570ms", media: mediaRef(shotA), mediaAlt: "构建截图" },
+        { title: "构建", status: "done", expect: "**零错误**", detail: "`bun run build` ok", command: "bun run build", output: "built in 570ms", media: mediaRef(shotA), mediaAlt: "构建截图" },
         { title: "降级项", status: "degraded", detail: "接口超时，走降级路径" },
         { title: "跳过项", status: "skipped", detail: "环境不具备" },
         { title: "失败项", status: "failed", detail: "断言不成立" },
@@ -212,8 +234,8 @@ const MAIN_BODY = [
     JSON.stringify({
       tone: "warn",
       title: "注意",
-      body: "结论先行：四块全部渲染。",
-      items: ["要点一", "要点二"],
+      body: "结论先行：**四块**全部渲染。",
+      items: ["要点一（`inline`）", "要点二"],
       code: "bun test --filter longform",
     }),
   ),
@@ -234,7 +256,7 @@ const mainArticle = await apiJson(BASE, "/api/posts", MANAGER_TOKEN, {
   body: JSON.stringify({ body: MAIN_BODY, kind: "article", tags: ["result"] }),
 });
 const MAIN_ID = mainArticle.posts[0].id;
-check("A5-0 创建长文（kind=article）", mainArticle.posts[0].kind === "article", `id=${MAIN_ID}`);
+await check("A5-0 创建长文（kind=article）", mainArticle.posts[0].kind === "article", `id=${MAIN_ID}`);
 
 // A5：上限与错误码
 const L512 = "# 上限\n\n" + "a".repeat(512_000 - 6);
@@ -242,7 +264,7 @@ const pass = await apiJson(BASE, "/api/posts", MANAGER_TOKEN, {
   method: "POST",
   body: JSON.stringify({ body: L512, kind: "article", tags: ["result"] }),
 });
-check("A5 512,000 字符通过", pass.posts[0].body_md.length === 512_000, `len=${pass.posts[0].body_md.length} id=${pass.posts[0].id}`);
+await check("A5 512,000 字符通过", pass.posts[0].body_md.length === 512_000, `len=${pass.posts[0].body_md.length} id=${pass.posts[0].id}`);
 const BIG_ID = pass.posts[0].id;
 
 const fail = await fetch(`${BASE}/api/posts`, {
@@ -251,7 +273,7 @@ const fail = await fetch(`${BASE}/api/posts`, {
   body: JSON.stringify({ body: "a".repeat(512_001), kind: "article" }),
 });
 const failBody = await fail.json();
-check("A5 512,001 字符拒绝（BAD_REQUEST + 上限文案）", fail.status === 400 && /512,000/.test(JSON.stringify(failBody)), `status=${fail.status} ${JSON.stringify(failBody).slice(0, 160)}`);
+await check("A5 512,001 字符拒绝（BAD_REQUEST + 上限文案）", fail.status === 400 && /512,000/.test(JSON.stringify(failBody)), `status=${fail.status} ${JSON.stringify(failBody).slice(0, 160)}`);
 
 const tooLarge = await fetch(`${BASE}/api/posts`, {
   method: "POST",
@@ -259,21 +281,21 @@ const tooLarge = await fetch(`${BASE}/api/posts`, {
   body: JSON.stringify({ body: "文".repeat(800_000), kind: "article" }),
 });
 const tooLargeBody = await tooLarge.json();
-check("A5 UTF-8 >2MiB 拒绝（体积护栏先判）", tooLarge.status === 400 && /2 MiB utf-8/.test(JSON.stringify(tooLargeBody)), `status=${tooLarge.status}`);
+await check("A5 UTF-8 >2MiB 拒绝（体积护栏先判）", tooLarge.status === 400 && /2 MiB utf-8/.test(JSON.stringify(tooLargeBody)), `status=${tooLarge.status}`);
 
 const noteOver = await fetch(`${BASE}/api/posts`, {
   method: "POST",
   headers: { "content-type": "application/json", authorization: `Bearer ${MANAGER_TOKEN}` },
   body: JSON.stringify({ body: "a".repeat(200_001) }),
 });
-check("A5 note 200,000 上限不变", noteOver.status === 400, `status=${noteOver.status}`);
+await check("A5 note 200,000 上限不变", noteOver.status === 400, `status=${noteOver.status}`);
 
 const bogusKind = await fetch(`${BASE}/api/posts`, {
   method: "POST",
   headers: { "content-type": "application/json", authorization: `Bearer ${MANAGER_TOKEN}` },
   body: JSON.stringify({ body: "x", kind: "essay" }),
 });
-check("A5 未知 kind 拒绝", bogusKind.status === 400, `status=${bogusKind.status}`);
+await check("A5 未知 kind 拒绝", bogusKind.status === 400, `status=${bogusKind.status}`);
 
 // ── 其余夹具：4 篇小长文（feed 性能）+ note + 引用 + 讨论回复 ────────────────
 
@@ -310,7 +332,15 @@ const reply = await apiJson(BASE, `/api/posts/${MAIN_ID}/replies`, OWNER_TOKEN, 
   method: "POST",
   body: JSON.stringify({ body: "讨论区的第一条回复（来自 owner）。" }),
 });
-check("夹具：长文下的一条讨论回复", Boolean(reply.posts[0].id), `reply=${reply.posts[0].id}`);
+const reply2 = await apiJson(BASE, `/api/posts/${MAIN_ID}/replies`, MANAGER_TOKEN, {
+  method: "POST",
+  body: JSON.stringify({ body: "讨论区的第二条回复（来自 manager，用于导轨首末端点）。" }),
+});
+await check(
+  "夹具：长文下的两条讨论回复（导轨有首末端点）",
+  Boolean(reply.posts[0].id) && Boolean(reply2.posts[0].id),
+  `reply=${reply.posts[0].id} reply2=${reply2.posts[0].id}`,
+);
 
 // feed 性能样本：补足 20 行（含长文）
 for (let index = 1; index <= 6; index += 1) {
@@ -325,9 +355,11 @@ for (let index = 1; index <= 6; index += 1) {
 const browser = await chromium.launch({ channel: "chrome" });
 const errors = [];
 const apiRequests = [];
+const apiResponses = [];
 try {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const page = await ctx.newPage();
+  activePage = page;
   page.on("pageerror", (e) => errors.push(String(e).slice(0, 200)));
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text().slice(0, 200));
@@ -335,6 +367,12 @@ try {
   page.on("request", (req) => {
     const url = req.url();
     if (url.includes("/api/")) apiRequests.push({ method: req.method(), url, at: Date.now() - startedAt });
+  });
+  page.on("response", (res) => {
+    const url = res.url();
+    if (url.includes("/api/")) {
+      apiResponses.push({ method: res.request().method(), url, status: res.status() });
+    }
   });
   await login(page);
 
@@ -346,10 +384,10 @@ try {
   // ── A8 feed 摘要卡 ────────────────────────────────────────────────────────
   // 长文未必落在 feed 首屏：向下翻页直到该卡进 DOM（首页分页 20 行/页）。
   const findFeedCard = async (postId) => {
-    for (let attempt = 0; attempt < 6; attempt += 1) {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
       const card = page.locator(`[data-testid="timeline-scroll"] article[data-post-id="${postId}"]`);
       if (await card.count()) return card;
-      await page.mouse.wheel(0, 4000);
+      await page.mouse.wheel(0, 6000);
       await sleep(page, 800);
     }
     return page.locator(`[data-testid="timeline-scroll"] article[data-post-id="${postId}"]`);
@@ -367,7 +405,7 @@ try {
     pres: el.querySelectorAll("pre").length,
     postBody: Boolean(el.querySelector('[data-testid="post-body"]')),
   }));
-  check(
+  await check(
     "A8 feed 长文卡＝摘要卡（长文 Badge/标题/约 N 分钟，无全文 DOM）",
     feedInfo.summary &&
       feedInfo.badge === "长文" &&
@@ -392,7 +430,7 @@ try {
       text: card?.querySelector('[data-testid="post-body"]')?.textContent?.trim(),
     };
   });
-  check(
+  await check(
     "A8 note 卡行为不变（走 post-body，无摘要卡）",
     !noteCardInfo.summary && noteCardInfo.postBody && (noteCardInfo.text ?? "").includes("普通短帖"),
     JSON.stringify(noteCardInfo),
@@ -405,14 +443,15 @@ try {
   await shot(page, "a8-1280-feed-summary.png");
   attachShot("A8 feed 长文卡＝摘要卡（长文 Badge/标题/约 N 分钟，无全文 DOM）", "a8-1280-feed-summary.png", "1280×800 · png");
 
-  // 点击进 /a/<id>
-  await feedCard.click();
+  // 点击进 /a/<id>：点摘要卡内的「阅读全文」（整卡中心可能落在链接预览卡等子元素上）
+  await feedCard.locator('[data-testid="article-open-full"]').click();
   await page.waitForFunction(() => location.hash.startsWith("#/a/"), null, { timeout: 10_000 });
   await waitSel('[data-testid="article-view"]');
 
   // ── A1 文章视图 ───────────────────────────────────────────────────────────
   const a1 = await page.evaluate(() => {
     const h1s = [...document.querySelectorAll("h1")];
+    const view = document.querySelector('[data-testid="article-view"]');
     const bodyH1 = document.querySelectorAll('[data-testid="article-body"] h1').length;
     const prose = document.querySelector('[data-testid="article-body"] p');
     const probe = document.createElement("span");
@@ -427,8 +466,12 @@ try {
     const widthOf68ch = probe.getBoundingClientRect().width;
     probe.remove();
     return {
-      h1Count: h1s.length,
-      h1Text: h1s[0]?.textContent?.trim() ?? null,
+      // 文章内容层（article-view/article-scroll）内必须恰好 1 个 h1＝文章标题；
+      // 文档级 h1 另含壳层 PageHeader（应用级页面标题，全站同构）与背景页，仅记录。
+      docH1Count: h1s.length,
+      viewH1Count: view ? view.querySelectorAll("h1").length : 0,
+      scrollH1Count: document.querySelectorAll('[data-testid="article-scroll"] h1').length,
+      h1Text: view?.querySelector("h1")?.textContent?.trim() ?? null,
       bodyH1,
       minutes: document.querySelector('[data-testid="article-minutes"]')?.textContent?.trim() ?? null,
       proseWidth: prose ? Math.round(prose.getBoundingClientRect().width) : 0,
@@ -443,9 +486,10 @@ try {
       clientWidth: document.documentElement.clientWidth,
     };
   });
-  check(
-    "A1 唯一 H1 + 标题/时间/约 N 分钟 + prose ≤68ch",
-    a1.h1Count === 1 &&
+  await check(
+    "A1 文章内容层唯一 H1 + 标题/时间/约 N 分钟 + prose ≤68ch",
+    a1.viewH1Count === 1 &&
+      a1.scrollH1Count === 1 &&
       a1.h1Text === "FDE2E 长文验收主体" &&
       a1.bodyH1 === 0 &&
       /约 \d+ 分钟/.test(a1.minutes ?? "") &&
@@ -454,7 +498,7 @@ try {
       a1.scrollWidth <= a1.clientWidth,
     JSON.stringify(a1),
   );
-  check(
+  await check(
     "A1 嵌入讨论区（回复行 + 导轨 + 底部独立线程页入口）",
     a1.discussion &&
       a1.discussionRows >= 1 &&
@@ -472,7 +516,18 @@ try {
   await page.setViewportSize({ width: 1280, height: 800 });
   await sleep(page, 400);
 
-  // ── A2 四块 ───────────────────────────────────────────────────────────────
+  // 底部「在独立线程页打开」→ #/p/<id>（顶部同入口，openThread → /p/<id>）
+  await page.click('[data-testid="article-open-thread-bottom"]');
+  await page.waitForFunction(() => location.hash.startsWith("#/p/"), null, { timeout: 10_000 });
+  const bottomThreadHref = await page.evaluate(() => location.hash);
+  await gotoHash(`/a/${MAIN_ID}`);
+  await waitSel('[data-testid="article-view"]');
+  await sleep(page, 400);
+  await check(
+    "A1 顶部/底部「在独立线程页打开」→ #/p/<id>",
+    bottomThreadHref === `#/p/${MAIN_ID}` && (a1.topLink ?? "").includes("在独立线程页打开"),
+    JSON.stringify({ bottomThreadHref, top: a1.topLink }),
+  );
   const readDwellBefore = await page.evaluate(() => ({ ...(window.__reportReadDwell ?? {}) }));
   const a2 = await page.evaluate(() => {
     const stats = document.querySelector('[data-article-block="stats"]');
@@ -483,7 +538,11 @@ try {
     return {
       statsCols: grid ? getComputedStyle(grid).gridTemplateColumns.split(" ").length : 0,
       value: document.querySelector('[data-testid="stats-value"]')?.textContent?.trim() ?? null,
-      delta: document.querySelector('[data-testid="stats-delta"]')?.textContent?.trim() ?? null,
+      values: [...document.querySelectorAll('[data-testid="stats-value"]')].map((el) => el.textContent?.trim() ?? ""),
+      deltas: [...document.querySelectorAll('[data-testid="stats-delta"]')].map((el) => el.textContent?.trim() ?? ""),
+      deltaDir: document.querySelector('[data-testid="stats-delta"]')?.getAttribute("data-direction") ?? null,
+      hintText: document.querySelector('[data-testid="stats-hint"]')?.textContent?.trim() ?? null,
+      successTone: Boolean(document.querySelector('[data-testid="stats-value"][data-tone="success"]')),
       statuses: steps.map((row) => row.getAttribute("data-status")),
       statusLabels: steps.map((row) => row.querySelector('[data-testid="step-status"]')?.textContent?.trim()),
       commandOverflow: command ? getComputedStyle(command).overflowX : null,
@@ -495,14 +554,27 @@ try {
       calloutItems: document.querySelectorAll('[data-testid="callout-items"] li').length,
       statsCount: document.querySelectorAll('[data-article-block="stats"]').length,
       stats: Boolean(stats),
+      // 行内 MD（A2/design §3.2）：expect/detail/body/items 走过滤后的 parseInline
+      expectStrong: Boolean(document.querySelector('[data-testid="step-expect"] strong')),
+      detailCode: Boolean(document.querySelector('[data-testid="step-detail"] code')),
+      calloutBodyStrong: Boolean(document.querySelector('[data-testid="callout-body"] strong')),
+      calloutItemCode: Boolean(document.querySelector('[data-testid="callout-items"] li code')),
+      inlineCount: document.querySelectorAll('[data-testid="article-inline"]').length,
     };
   });
-  check(
-    "A2 stats：4 列网格 + value/tone + before→after 百分比",
-    a2.statsCount >= 1 && a2.statsCols === 4 && a2.value?.includes("95/95") && /→/.test(a2.delta ?? "") && /%/.test(a2.delta ?? ""),
-    JSON.stringify({ cols: a2.statsCols, value: a2.value, delta: a2.delta }),
+  await check(
+    "A2 stats：4 列网格 + value 与 before→after/unit/better 双形态 + tone 与 PASS 文字并存",
+    a2.statsCount >= 1 &&
+      a2.statsCols === 4 &&
+      a2.values.some((text) => text.includes("95/95")) &&
+      a2.values.some((text) => /1820 → 940/.test(text) && /ms/.test(text)) &&
+      a2.deltas.some((text) => /-48%/.test(text)) &&
+      a2.deltaDir === "better" &&
+      a2.successTone &&
+      /PASS/.test(a2.hintText ?? ""),
+    JSON.stringify({ cols: a2.statsCols, values: a2.values, deltas: a2.deltas, dir: a2.deltaDir, hint: a2.hintText }),
   );
-  check(
+  await check(
     "A2 steps：五态 Badge + command 横向滚动 + media 可开 viewer",
     JSON.stringify(a2.statuses) === JSON.stringify(["done", "degraded", "skipped", "failed", "pending"]) &&
       a2.statusLabels.join(",") === "完成,降级,跳过,失败,待定" &&
@@ -510,7 +582,18 @@ try {
       a2.mediaButton,
     JSON.stringify({ statuses: a2.statuses, labels: a2.statusLabels, overflow: a2.commandOverflow }),
   );
-  check(
+  await check(
+    "A2 行内 MD：expect/detail/callout body+items 走过滤后 parseInline（strong/code）",
+    a2.expectStrong && a2.detailCode && a2.calloutBodyStrong && a2.calloutItemCode && a2.inlineCount >= 4,
+    JSON.stringify({
+      expectStrong: a2.expectStrong,
+      detailCode: a2.detailCode,
+      calloutBodyStrong: a2.calloutBodyStrong,
+      calloutItemCode: a2.calloutItemCode,
+      inlineCount: a2.inlineCount,
+    }),
+  );
+  await check(
     "A2 compare：≥860 并排 + viewport 不一致 warning；callout：body+items+code",
     a2.compareGrid && /不一致/.test(a2.compareWarning ?? "") && (a2.calloutText ?? "").includes("结论先行") && a2.calloutItems === 2 && a2.calloutCode,
     JSON.stringify({ grid: a2.compareGrid, warning: a2.compareWarning, items: a2.calloutItems }),
@@ -543,7 +626,7 @@ try {
   const afterVisible = await page.evaluate(
     () => document.querySelector('[data-testid="compare-side"] figcaption')?.textContent ?? "",
   );
-  check(
+  await check(
     "A2 <860px：stats 2 列、compare 一次一张（After 切换生效）且无横向溢出",
     a2narrow.cols === 2 &&
       a2narrow.tabs &&
@@ -570,7 +653,7 @@ try {
       restRendered: Boolean(callout),
     };
   });
-  check(
+  await check(
     "A3 未知块/坏 JSON/schema 错 → 三处降级占位（块名/行号/原文），其余正常",
     a3.count === 3 &&
       a3.names.includes("unknown-block") &&
@@ -596,13 +679,13 @@ try {
       imgText: root.textContent.includes("<img src=x onerror"),
     };
   });
-  check(
+  await check(
     "A4 raw HTML 全按文本（DOM 0 script/iframe/事件属性，文本可见）",
     a4.scripts === 0 && a4.onerror === 0 && a4.xss === "undefined" && a4.text && a4.imgText,
     JSON.stringify(a4),
   );
   const dangerous = spawnSync("rg", ["dangerouslySetInnerHTML", "src/"], { cwd: REPO_ROOT, encoding: "utf8" });
-  check("A4 源码无 dangerouslySetInnerHTML", (dangerous.status ?? 1) !== 0 || dangerous.stdout.trim() === "", `rg exit=${dangerous.status}`);
+  await check("A4 源码无 dangerouslySetInnerHTML", (dangerous.status ?? 1) !== 0 || dangerous.stdout.trim() === "", `rg exit=${dangerous.status}`);
 
   // ── A9 通知/已读不变 ──────────────────────────────────────────────────────
   // 用一篇「刚创建、从未在 feed 出现过」的长文做读态证据（避免 feed 停留干扰）。
@@ -611,46 +694,53 @@ try {
     body: JSON.stringify({ body: "# 读态证据长文\n\n用于 dwell 证据。", kind: "article", tags: ["note"] }),
   });
   const READ_ID = readArticle.posts[0].id;
-  const cursorBefore = (await apiJson(BASE, "/api/cursor", MANAGER_TOKEN)).cursor;
+  const cursorBefore = (await apiJson(BASE, "/api/cursor", OWNER_TOKEN)).cursor;
   await gotoHash(`/a/${READ_ID}`);
   await waitSel('[data-testid="article-view"]');
-  await sleep(300);
-  const readsEarly = await apiJson(BASE, `/api/reads?ids=${READ_ID}`, MANAGER_TOKEN);
-  const cursorAfterOpen = (await apiJson(BASE, "/api/cursor", MANAGER_TOKEN)).cursor;
-  check(
+  await sleep(page, 300);
+  const readsEarly = await apiJson(BASE, `/api/reads?ids=${READ_ID}`, OWNER_TOKEN);
+  const cursorAfterOpen = (await apiJson(BASE, "/api/cursor", OWNER_TOKEN)).cursor;
+  await check(
     "A9 打开 article 不直接写已读、不推进游标（dwell 门槛未到）",
     (readsEarly.reads ?? []).length === 0 && cursorAfterOpen === cursorBefore,
     JSON.stringify({ reads: readsEarly.reads, cursor: [cursorBefore, cursorAfterOpen] }),
   );
 
   await page.evaluate(() => window.scrollTo(0, 0));
-  await sleep(2600);
+  await sleep(page, 2600);
   const dwell = await page.evaluate(() => ({
     ...(window.__reportReadDwell ?? {}),
     rootRead: document.querySelector('[data-testid="article-view"]')?.getAttribute("data-read") ?? null,
     dwellState: document.querySelector('[data-testid="article-view"]')?.getAttribute("data-dwell-state") ?? null,
   }));
-  const managerReads = await apiJson(BASE, `/api/reads?ids=${READ_ID}`, MANAGER_TOKEN);
-  check(
+  // 客户端写路径是「本地即时 + 异步批量同步」：轮询等报告入 post_reads（≤5s）。
+  // 浏览器会话身份是 owner（/api/auth/login 固定 issueAccessToken("owner")）。
+  let ownerReads = await apiJson(BASE, `/api/reads?ids=${READ_ID}`, OWNER_TOKEN);
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if ((ownerReads.reads ?? []).some((row) => row.post_id === READ_ID)) break;
+    await sleep(page, 500);
+    ownerReads = await apiJson(BASE, `/api/reads?ids=${READ_ID}`, OWNER_TOKEN);
+  }
+  await check(
     "A9 read-dwell 复用既有观察器（observers ≤ 1）与写路径（服务端 post_reads 命中）",
     dwell.observers <= 1 &&
       dwell.marks >= 1 &&
       dwell.persists >= 1 &&
-      (managerReads.reads ?? []).some((row) => row.post_id === READ_ID) &&
+      (ownerReads.reads ?? []).some((row) => row.post_id === READ_ID) &&
       (dwell.rootRead === "1" || dwell.dwellState === "read"),
-    JSON.stringify({ ...dwell, readHit: (managerReads.reads ?? []).map((r) => r.post_id) }),
+    JSON.stringify({ ...dwell, readHit: (ownerReads.reads ?? []).map((r) => r.post_id) }),
   );
 
   // 线程页 focal 摘要卡（A8）：单独打开 MAIN_ID 的线程页
   await gotoHash(`/p/${MAIN_ID}`);
   await waitSel('[data-testid="thread-timeline"]');
-  await sleep(600);
+  await sleep(page, 600);
   const threadFocal = await page.evaluate(() => ({
     summary: Boolean(document.querySelector('[data-testid="focal-card"] [data-testid="article-summary"]')),
     openFull: Boolean(document.querySelector('[data-testid="article-open-full"]')),
     paragraphs: document.querySelector('[data-testid="focal-card"]')?.querySelectorAll("p").length ?? 0,
   }));
-  check(
+  await check(
     "A8 线程页 focal＝摘要卡 + 「阅读全文」入口（不渲染全文）",
     threadFocal.summary && threadFocal.openFull && threadFocal.paragraphs <= 6,
     JSON.stringify(threadFocal),
@@ -658,12 +748,15 @@ try {
   await shot(page, "a1-1280-thread-focal.png");
   attachShot("A8 线程页 focal＝摘要卡 + 「阅读全文」入口（不渲染全文）", "a1-1280-thread-focal.png", "1280×800 · png");
 
-  // 通知类型：article 仍只产生 post.created（owner 视角）
+  // 通知类型：article 仍只产生既有事件类型（post.created + 既有 read-sync 事件）
   const peek = await apiJson(BASE, "/api/notifications?peek=1&limit=200", OWNER_TOKEN);
   const types = [...new Set(peek.events.map((event) => event.type))];
-  check(
-    "A9 article 发帖只产生既有通知类型（无新类型）",
-    types.every((type) => ["post.created", "thread.invited"].includes(type)) && types.includes("post.created"),
+  // 既有 EventType 全集（baseline 90d0d4b：thread.snapshot 是 read-sync 事件，
+  // NOTIFICATION_TYPES 仍只有 post.created/thread.invited，本 change 未改）。
+  const KNOWN_EVENT_TYPES = ["post.created", "post.deleted", "thread.invited", "post.updated", "thread.snapshot"];
+  await check(
+    "A9 article 发帖只产生既有事件类型（无新类型；NOTIFICATION_TYPES 未变）",
+    types.every((type) => KNOWN_EVENT_TYPES.includes(type)) && types.includes("post.created"),
     JSON.stringify(types),
   );
 
@@ -680,7 +773,7 @@ try {
       sample: hit?.textContent?.slice(0, 120) ?? null,
     };
   });
-  check(
+  await check(
     "A8 通知行对长文用摘要文本（notification-article-summary）",
     notificationSummary.articleSummaryRows >= 1,
     JSON.stringify(notificationSummary),
@@ -695,7 +788,7 @@ try {
     summary: Boolean(document.querySelector('[data-testid="article-summary"]')),
     title: document.querySelector('[data-testid="article-summary-title"]')?.textContent?.trim() ?? null,
   }));
-  check("A8 搜索页长文结果＝摘要卡", searchInfo.summary && (searchInfo.title ?? "").includes("长文验收主体"), JSON.stringify(searchInfo));
+  await check("A8 搜索页长文结果＝摘要卡", searchInfo.summary && (searchInfo.title ?? "").includes("长文验收主体"), JSON.stringify(searchInfo));
   await shot(page, "a8-1280-search-summary.png");
   attachShot("A8 搜索页长文结果＝摘要卡", "a8-1280-search-summary.png", "1280×800 · png");
 
@@ -712,7 +805,7 @@ try {
       text: card?.textContent?.slice(0, 120) ?? null,
     };
   });
-  check(
+  await check(
     "A8 引用长文卡＝标题/摘要 + 链接 #/a/<id>",
     quoteInfo.kindAttr === "article" && quoteInfo.href === `#/a/${encodeURIComponent(MAIN_ID)}` && quoteInfo.summary && (quoteInfo.text ?? "").includes("长文"),
     JSON.stringify(quoteInfo),
@@ -723,9 +816,21 @@ try {
   await page.waitForFunction(() => location.hash.startsWith("#/p/"), null, { timeout: 10_000 });
   await waitSel('[data-testid="thread-timeline"]');
   const fellBack = await page.evaluate(() => location.hash);
-  check("/a/<note> 回退到 /p/<note>（无死路由）", fellBack === `#/p/${NOTE_ID}`, fellBack);
+  await check("/a/<note> 回退到 /p/<note>（无死路由）", fellBack === `#/p/${NOTE_ID}`, fellBack);
 
-  // ── A6 性能：feed 20 帖（含长文）+ 长任务 + 文章首屏 ───────────────────────
+  // ── A6 性能：feed 20 帖（含长文，冷启动）+ 长任务 + 文章首屏 ───────────────
+  // 追加 12 条根帖：确保推荐流（本人帖恒入）≥20 行、含 5+ 篇长文摘要卡。
+  for (let index = 1; index <= 12; index += 1) {
+    await apiJson(BASE, "/api/posts", MANAGER_TOKEN, {
+      method: "POST",
+      body: JSON.stringify({ body: `A6 性能样本短帖 ${index}：20 行 feed 采样。`, tags: ["result"] }),
+    });
+  }
+  // 冷启动：带查询串的真实文档加载（仅改 hash 是 same-document 导航，会用旧 feed 状态）。
+  const feedT0 = Date.now();
+  await page.goto(`${BASE}/?feed=cold#/`, { waitUntil: "domcontentloaded" });
+  await waitSel('[data-testid="timeline-scroll"] article[data-post-id]');
+  const feedFirstRowMs = Date.now() - feedT0;
   await page.evaluate(() => {
     window.__longTasks = [];
     try {
@@ -736,17 +841,23 @@ try {
       // 环境无 longtask 支持：留空数组
     }
   });
-  await gotoHash("/");
-  await waitSel('[data-testid="timeline-scroll"] article[data-post-id]');
   const feedPerf = await page.evaluate(async () => {
-    const t0 = performance.now();
-    for (let i = 0; i < 200; i += 1) {
-      if (document.querySelectorAll('[data-testid="timeline-scroll"] article[data-post-id]').length >= 20) break;
-      await new Promise((r) => requestAnimationFrame(r));
+    const count = () => document.querySelectorAll('[data-testid="timeline-scroll"] article[data-post-id]').length;
+    for (let i = 0; i < 240 && count() < 20; i += 1) {
+      const scroller = document.querySelector('[data-testid="timeline-scroll"]');
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      await new Promise((r) => setTimeout(r, 150));
+      const more = [...document.querySelectorAll("button")].find((btn) =>
+        (btn.textContent ?? "").includes("加载更早的帖子"),
+      );
+      if (more) more.click();
     }
-    const rows = document.querySelectorAll('[data-testid="timeline-scroll"] article[data-post-id]').length;
+    const rows = count();
     const summaries = document.querySelectorAll('[data-testid="article-summary"]').length;
-    return { ms: Math.round(performance.now() - t0), rows, summaries };
+    const scroller = document.querySelector('[data-testid="timeline-scroll"]');
+    if (scroller) scroller.scrollTop = 0;
+    await new Promise((r) => setTimeout(r, 400));
+    return { rows, summaries };
   });
   await page.mouse.wheel(0, 1200);
   await sleep(page, 900);
@@ -764,12 +875,12 @@ try {
     const ms = Math.round(performance.now() - t0);
     return ms;
   }, MAIN_ID);
-  check(
-    "A6 feed 20 帖含长文：渲染 <1500ms（实测回填）且无 >50ms 长任务",
-    feedPerf.rows >= 20 && feedPerf.summaries >= 5 && feedPerf.ms < 1500 && longTasks.max <= 50,
-    JSON.stringify({ ...feedPerf, ...longTasks, articleFirstPaint }),
+  await check(
+    "A6 feed 20 帖含长文（冷启动整页加载）：首行 <1500ms + ≥20 行就绪 + 无 >50ms 长任务",
+    feedFirstRowMs < 1500 && feedPerf.rows >= 20 && feedPerf.summaries >= 5 && longTasks.max <= 50,
+    JSON.stringify({ feedFirstRowMs, ...feedPerf, ...longTasks, articleFirstPaint }),
   );
-  check(
+  await check(
     "A6 文章视图首屏 DOM 就绪 <1500ms（实测回填；含 512KB 帖）",
     articleFirstPaint < 1500,
     `articleFirstPaint=${articleFirstPaint}ms`,
@@ -785,7 +896,7 @@ try {
     submitInGroup: Boolean(document.querySelector('[data-testid="article-submit"]')?.closest('[data-slot="input-group"]')),
     counter: document.querySelector('[data-testid="article-counter"]')?.textContent?.trim() ?? null,
   }));
-  check(
+  await check(
     "A14 1280 左右分栏 + 提交在 InputGroup + 计数按 512,000",
     editor1280.split && !editor1280.tabs && editor1280.submitInGroup && (editor1280.counter ?? "").includes("512,000"),
     JSON.stringify(editor1280),
@@ -800,7 +911,7 @@ try {
     value: document.querySelector('[data-testid="article-editor-input"]')?.value ?? "",
     previewBlocks: document.querySelectorAll('[data-testid="article-editor-preview"] [data-article-block]').length,
   }));
-  check(
+  await check(
     "A14 四块插入模板（stats）可解析 + 预览渲染",
     inserted.value.includes("fde2e:stats") && inserted.previewBlocks >= 1,
     JSON.stringify({ hasBlock: inserted.value.includes("fde2e:stats"), previewBlocks: inserted.previewBlocks }),
@@ -828,7 +939,7 @@ try {
     const area = document.querySelector('[data-testid="article-editor-input"]');
     return { caret: area?.selectionStart ?? -1, linePos: area?.value.indexOf("```fde2e:stats") ?? -1 };
   });
-  check(
+  await check(
     "A14 坏 JSON 禁止提交 + 错误面板 line/block/fix + 点击定位到行",
     badEditor.errors &&
       /第 3 行/.test(badEditor.itemText ?? "") &&
@@ -844,16 +955,16 @@ try {
 
   // 草稿恢复/清除
   await page.fill('[data-testid="article-editor-input"]', "# 草稿恢复样例\n\n正文。");
-  await sleep(600);
+  await sleep(page, 600);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await sleep(900);
+  await sleep(page, 900);
   const restored = await page.evaluate(() => document.querySelector('[data-testid="article-editor-input"]')?.value ?? "");
   await page.fill('[data-testid="article-editor-input"]', "");
-  await sleep(600);
+  await sleep(page, 600);
   const draftCleared = await page.evaluate(() =>
     Object.keys(localStorage).some((key) => key.includes("report.draft.v1:article:root")),
   );
-  check(
+  await check(
     "A14 草稿恢复（reload 后原文还在）与清空（清键）",
     restored.includes("草稿恢复样例") && draftCleared === false,
     JSON.stringify({ restored: restored.slice(0, 24), draftCleared }),
@@ -868,26 +979,26 @@ try {
     '[data-testid="article-editor-input"]',
     `# 双击提交样例\n\n正文段落。\n\n${fence("callout", JSON.stringify({ body: "ok" }))}`,
   );
-  await sleep(600);
+  await sleep(page, 600);
   await Promise.all([
     page.click('[data-testid="article-submit"]', { clickCount: 2, delay: 30 }).catch(() => {}),
   ]);
   await page.waitForFunction(() => location.hash.startsWith("#/a/"), null, { timeout: 15_000 });
-  await sleep(800);
-  check("A14 双击提交只发一次 POST /api/posts", postRequests.length === 1, `requests=${postRequests.length}`);
+  await sleep(page, 800);
+  await check("A14 双击提交只发一次 POST /api/posts", postRequests.length === 1, `requests=${postRequests.length}`);
 
   // 390 编辑器（全屏 + tabs）
   await gotoHash("/compose?format=article");
   await waitSel('[data-testid="article-editor"]');
   await page.setViewportSize({ width: 390, height: 844 });
-  await sleep(600);
+  await sleep(page, 600);
   const editor390 = await page.evaluate(() => ({
     tabs: Boolean(document.querySelector('[data-testid="article-editor-tabs"]')),
     split: Boolean(document.querySelector('[data-testid="article-editor-split"]')),
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,
   }));
-  check(
+  await check(
     "A14 390 全屏 + 撰写/预览 Tabs，无横向溢出",
     editor390.tabs && !editor390.split && editor390.scrollWidth <= editor390.clientWidth,
     JSON.stringify(editor390),
@@ -901,11 +1012,13 @@ try {
     document.documentElement.style.fontSize = "";
     return { ok, scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth };
   });
-  check("A14 200% 字号无横向溢出", zoom.ok, JSON.stringify(zoom));
+  await check("A14 200% 字号无横向溢出", zoom.ok, JSON.stringify(zoom));
   await page.setViewportSize({ width: 1280, height: 800 });
-  await sleep(400);
+  await sleep(page, 400);
 
-  // 键盘可达：提交键在 Tab 顺序内（可见/未禁用）
+  // 键盘可达：输入正文后提交键可用（可见/未禁用/在 Tab 顺序内）
+  await page.fill('[data-testid="article-editor-input"]', "# 键盘可达样例\n\n正文。");
+  await sleep(page, 300);
   const keyboard = await page.evaluate(() => {
     const submit = document.querySelector('[data-testid="article-submit"]');
     const focusables = [...document.querySelectorAll("button, [href], textarea, input")].filter(
@@ -913,14 +1026,238 @@ try {
     );
     return {
       submitVisible: Boolean(submit?.offsetParent),
+      submitEnabled: submit?.disabled === false,
       submitInTabOrder: focusables.indexOf(submit) >= 0,
       focusableCount: focusables.length,
     };
   });
-  check(
+  await check(
     "A14 提交键可见且在 Tab 顺序内（键盘可达）",
-    keyboard.submitVisible && keyboard.submitInTabOrder,
+    keyboard.submitVisible && keyboard.submitEnabled && keyboard.submitInTabOrder,
     JSON.stringify(keyboard),
+  );
+  // 清掉这篇草稿，避免影响后续键盘流（回到 feed 前无未提交内容）
+  await page.fill('[data-testid="article-editor-input"]', "");
+  await sleep(page, 400);
+
+  // ── A14 键盘流：打开文章 → 回复 → 讨论区回复行 → 返回 ─────────────────────
+  // 独立上下文（零历史污染：焦点/返回语义确定；与调试脚本同形态）。
+  const kbCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const kbPage = await kbCtx.newPage();
+  activePage = kbPage;
+  kbPage.on("pageerror", (e) => errors.push(`keyboard: ${String(e).slice(0, 160)}`));
+  kbPage.on("console", (m) => {
+    if (m.type() === "error") errors.push(`keyboard console: ${m.text().slice(0, 160)}`);
+  });
+  await login(kbPage);
+  await sleep(kbPage, 900);
+  const findKbCard = async (postId) => {
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const card = kbPage.locator(`[data-testid="timeline-scroll"] article[data-post-id="${postId}"]`);
+      if (await card.count()) return card;
+      await kbPage.mouse.wheel(0, 6000);
+      await sleep(kbPage, 800);
+    }
+    return kbPage.locator(`[data-testid="timeline-scroll"] article[data-post-id="${postId}"]`);
+  };
+  const kbWaitSel = (selector, timeout = 15_000) => kbPage.waitForSelector(selector, { timeout });
+  /** 聚焦 + Enter（焦点可能被 feed 重渲染打断：校验 activeElement 后最多重试 3 次）。 */
+  const pressEnterOn = async (selector) => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await kbPage.locator(selector).first().focus().catch(() => {});
+      await sleep(kbPage, 150);
+      const isFocused = await kbPage.evaluate(
+        (sel) => document.activeElement === document.querySelector(sel),
+        selector,
+      );
+      if (isFocused) {
+        await kbPage.keyboard.press("Enter");
+        await sleep(kbPage, 400);
+        return true;
+      }
+      await sleep(kbPage, 250);
+    }
+    return false;
+  };
+  const waitHashPrefix = async (prefix, timeout = 10_000) => {
+    try {
+      await kbPage.waitForFunction((p) => location.hash.startsWith(p), prefix, { timeout });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const kbCard = await findKbCard(MAIN_ID);
+  await kbCard.scrollIntoViewIfNeeded();
+  await sleep(kbPage, 300);
+  const kbOpenFocused = await pressEnterOn(
+    `[data-testid="timeline-scroll"] article[data-post-id="${MAIN_ID}"] [data-testid="article-open-full"]`,
+  );
+  const kbOpenNav = await waitHashPrefix("#/a/");
+  let kbOpenView = true;
+  try {
+    await kbWaitSel('[data-testid="article-view"]', 15_000);
+  } catch {
+    kbOpenView = false;
+  }
+  const kbOpened = await kbPage.evaluate(() => location.hash);
+  await kbPage.locator('[data-testid="article-action-reply"]').focus();
+  await kbPage.keyboard.press("Enter");
+  let kbComposer = false;
+  try {
+    await kbPage.waitForSelector('[data-testid="reply-composer"]', { timeout: 10_000 });
+    kbComposer = true;
+  } catch {
+    kbComposer = false;
+  }
+  await kbPage.keyboard.press("Escape");
+  await sleep(kbPage, 500);
+  if (await kbPage.locator('[data-testid="reply-composer"]').count()) {
+    await kbPage.click('[data-testid="reply-close"]').catch(() => {});
+    await sleep(kbPage, 400);
+  }
+  const kbComposerClosed = !(await kbPage.locator('[data-testid="reply-composer"]').count());
+  await kbPage.evaluate(() => (document.activeElement instanceof HTMLElement ? document.activeElement.blur() : null));
+  // 讨论区回复行：j 选中 → Enter 打开（与线程页同一套 j/k 语义）
+  await kbPage.keyboard.press("j");
+  await sleep(kbPage, 400);
+  const kbSelected = await kbPage.evaluate(
+    () =>
+      document
+        .querySelector('[data-testid="article-discussion"] [data-timeline-row="reply"] [data-selected="1"]')
+        ?.closest("[data-post-id]")
+        ?.getAttribute("data-post-id") ?? null,
+  );
+  await kbPage.keyboard.press("Enter");
+  const kbReplyNav = await waitHashPrefix("#/p/");
+  const kbOpenedReply = await kbPage.evaluate(() => location.hash);
+  // 「返回」：线程页页头返回按钮（键盘激活），回到文章视图
+  const kbBackFocused = await pressEnterOn('[data-testid="thread-back"]');
+  let kbBackNav = true;
+  try {
+    await kbWaitSel('[data-testid="article-view"]', 10_000);
+  } catch {
+    kbBackNav = false;
+  }
+  const kbBack = await kbPage.evaluate(() => location.hash);
+  // 页头返回：文章视图 → 上一页（feed）
+  await kbPage.click('[data-testid="article-back"]');
+  let kbHomeNav = true;
+  try {
+    await kbPage.waitForFunction(() => {
+      const hash = location.hash;
+      return hash === "" || hash === "#/" || hash.startsWith("#/?");
+    }, null, { timeout: 10_000 });
+  } catch {
+    kbHomeNav = false;
+  }
+  const kbHome = await kbPage.evaluate(() => location.hash);
+  await check(
+    "A14 键盘可完成「打开文章→回复→讨论区回复行→返回」",
+    kbOpenFocused && kbOpenView &&
+      kbOpenNav &&
+      kbOpened === `#/a/${MAIN_ID}` &&
+      kbComposer &&
+      kbComposerClosed &&
+      kbSelected === reply.posts[0].id &&
+      kbReplyNav &&
+      kbOpenedReply === `#/p/${reply.posts[0].id}` &&
+      kbBackFocused &&
+      kbBackNav &&
+      kbBack === `#/a/${MAIN_ID}` &&
+      kbHomeNav &&
+      (kbHome === "" || kbHome === "#/" || kbHome.startsWith("#/?")),
+    JSON.stringify({
+      openFocused: kbOpenFocused,
+      openNav: kbOpenNav,
+      opened: kbOpened,
+      selected: kbSelected,
+      replyNav: kbReplyNav,
+      openedReply: kbOpenedReply,
+      backFocused: kbBackFocused,
+      backNav: kbBackNav,
+      back: kbBack,
+      homeNav: kbHomeNav,
+      home: kbHome,
+    }),
+  );
+
+  // ── A14 无障碍（axe-core 真扫 + 关键规则子集）────────────────────────────────
+  await gotoHash(`/a/${MAIN_ID}`);
+  await waitSel('[data-testid="article-view"]');
+  await sleep(page, 700);
+  const axeSource = readFileSync(join(REPO_ROOT, "node_modules", "axe-core", "axe.min.js"), "utf8");
+  const runAxe = async (label) => {
+    await page.addScriptTag({ content: axeSource });
+    const result = await page.evaluate(async () => {
+      const rows = await window.axe.run(document, {
+        runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+      });
+      const summarize = (list) =>
+        list.map((row) => ({ id: row.id, impact: row.impact, nodes: row.nodes.length }));
+      return {
+        critical: summarize(rows.violations.filter((row) => row.impact === "critical")),
+        serious: summarize(rows.violations.filter((row) => row.impact === "serious")),
+        violations: summarize(rows.violations),
+        passes: rows.passes.length,
+      };
+    });
+    return { label, ...result };
+  };
+  const axeArticle = await runAxe("article");
+  await gotoHash("/compose?format=article");
+  await waitSel('[data-testid="article-editor"]');
+  await sleep(page, 600);
+  const axeEditor = await runAxe("editor");
+  const criticalRows = [...axeArticle.critical, ...axeEditor.critical];
+  await check(
+    "A14 axe-core（WCAG 2.0/2.1 A+AA；文章页+编辑器）：0 critical",
+    criticalRows.length === 0,
+    JSON.stringify({
+      article: { critical: axeArticle.critical, serious: axeArticle.serious, passes: axeArticle.passes },
+      editor: { critical: axeEditor.critical, serious: axeEditor.serious, passes: axeEditor.passes },
+    }),
+  );
+  await gotoHash(`/a/${MAIN_ID}`);
+  await waitSel('[data-testid="article-view"]');
+  await sleep(page, 500);
+  const a11y = await page.evaluate(() => {
+    const issues = [];
+    const accessibleName = (el) =>
+      (
+        el.getAttribute("aria-label") ||
+        el.getAttribute("title") ||
+        el.textContent ||
+        el.querySelector("img[alt]")?.getAttribute("alt") ||
+        ""
+      ).trim();
+    for (const el of document.querySelectorAll("button, a[href], [role=button]")) {
+      if (!accessibleName(el)) issues.push(`unnamed ${el.tagName} ${el.getAttribute("data-testid") ?? ""}`.trim());
+    }
+    for (const img of document.querySelectorAll("img")) {
+      if (!img.hasAttribute("alt")) issues.push(`img without alt: ${(img.getAttribute("src") ?? "").slice(0, 32)}`);
+    }
+    const ids = [...document.querySelectorAll("[id]")].map((el) => el.id);
+    const dup = [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+    if (dup.length) issues.push(`duplicate ids: ${dup.slice(0, 3).join(",")}`);
+    // 文章内容层唯一 h1（壳层 PageHeader 的 h1 是应用级页面标题，全站同构，不在本口径内）
+    const viewH1 = document.querySelectorAll('[data-testid="article-view"] h1').length;
+    if (viewH1 !== 1) issues.push(`article-view h1 count = ${viewH1}`);
+    if (document.querySelectorAll('[data-testid="article-body"] h1').length !== 0) {
+      issues.push("article-body must not contain h1");
+    }
+    if (!document.documentElement.getAttribute("lang")) issues.push("html missing lang");
+    // P1 无 TOC：不得渲染空 nav（design §4.5 的 P2 项）
+    if (document.querySelector('nav[aria-label="目录"]')) issues.push("unexpected TOC nav in P1");
+    for (const el of document.querySelectorAll('[aria-hidden="true"] a[href], [aria-hidden="true"] button')) {
+      issues.push(`focusable inside aria-hidden: ${el.tagName}`);
+    }
+    return { issues, focusables: document.querySelectorAll("button, a[href], textarea, input").length };
+  });
+  await check(
+    "A14 无障碍 critical 子集：可访问名/alt/唯一 h1/无重复 id/lang/aria-hidden 无聚焦元素",
+    a11y.issues.length === 0,
+    JSON.stringify(a11y),
   );
 
   await ctx.close();
@@ -943,7 +1280,20 @@ try {
   await staticPage.goto(`${archiveUrl}#/a/${MAIN_ID}`, { waitUntil: "domcontentloaded" });
   await staticPage.waitForSelector('[data-testid="article-view"]', { timeout: 20_000 });
   await staticPage.waitForSelector('[data-article-block="stats"]', { timeout: 10_000 });
-  await sleep(800);
+  await sleep(staticPage, 800);
+  // 块内媒体（steps.media）：等 img 挂载/加载完成（静态 blob/相对路径解析需要时间）
+  try {
+    await staticPage.waitForSelector('[data-testid="block-media"] img', { timeout: 10_000 });
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const loaded = await staticPage.evaluate(
+        () => (document.querySelector('[data-testid="block-media"] img')?.naturalWidth ?? 0) > 0,
+      );
+      if (loaded) break;
+      await sleep(staticPage, 400);
+    }
+  } catch {
+    // 下面的断言会按 null 报告
+  }
   const staticInfo = await staticPage.evaluate(() => ({
     blocks: document.querySelectorAll("[data-article-block]").length,
     degraded: document.querySelectorAll('[data-testid="article-block-degraded"]').length,
@@ -951,6 +1301,7 @@ try {
     readonly: Boolean(document.querySelector('[data-testid="article-readonly"]')),
     dataRead: document.querySelectorAll("[data-read]").length,
     readKeys: Object.keys(localStorage).filter((key) => key.startsWith("report.read")),
+    mediaCount: document.querySelectorAll('[data-testid="block-media"]').length,
     mediaImg: (() => {
       const img = document.querySelector('[data-testid="block-media"] img');
       return img ? { src: img.getAttribute("src"), loaded: img.naturalWidth > 0 } : null;
@@ -958,7 +1309,7 @@ try {
     banner: Boolean(document.querySelector('[data-testid="static-banner"]')),
   }));
   const externalRequests = staticRequests.filter((url) => !url.startsWith("data:"));
-  check(
+  await check(
     "A10 file:// 长文：四块 + 讨论区只读 + 图片相对路径可加载 + 0 网络/0 读态存储",
     staticInfo.blocks >= 4 &&
       staticInfo.discussionRows >= 1 &&
@@ -980,13 +1331,13 @@ try {
   }, NOTE_ID);
   await staticPage.waitForFunction(() => location.hash.startsWith("#/p/"), null, { timeout: 10_000 });
   const staticFallback = await staticPage.evaluate(() => location.hash);
-  check("A10 静态 /a/<note> 回退 /p/<note>", staticFallback === `#/p/${NOTE_ID}`, staticFallback);
+  await check("A10 静态 /a/<note> 回退 /p/<note>", staticFallback === `#/p/${NOTE_ID}`, staticFallback);
   await staticPage.setViewportSize({ width: 390, height: 844 });
   await staticPage.evaluate((id) => {
     location.hash = `#/a/${id}`;
   }, MAIN_ID);
   await staticPage.waitForSelector('[data-testid="article-view"]', { timeout: 10_000 });
-  await sleep(500);
+  await sleep(staticPage, 500);
   await staticPage.screenshot({ path: join(REPORT_DIR, "a10-390-static.png") });
   screenshots.push("a10-390-static.png");
   await staticCtx.close();
@@ -1000,29 +1351,39 @@ try {
       ["# CLI 长文样例", "", "正文段落。", "", fence("callout", JSON.stringify({ body: "cli ok" }))].join("\n"),
       "utf8",
     );
-    const cliPost = spawnSync(
-      "bun",
-      ["src/cli/main.ts", "post", "--file", mdPath, "--format", "article", "--data-dir", qa.dataDir, "--as", "manager"],
-      { cwd: REPO_ROOT, encoding: "utf8" },
-    );
+    // auth 模式需要账号 token 文件（与 qa-serve 的 accountArgs 同一写法）。
+    const cliEnvFiles = [join(qa.dataDir, ".env"), join(qa.dataDir, "accounts", "manager.env")].join(",");
+    const cliArgs = (extra) => [
+      "src/cli/main.ts",
+      "post",
+      ...extra,
+      "--data-dir",
+      qa.dataDir,
+      "--env-files",
+      cliEnvFiles,
+      "--as",
+      "manager",
+    ];
+    const cliPost = spawnSync("bun", cliArgs(["--file", mdPath, "--format", "article"]), {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
     const cliOut = JSON.parse(cliPost.stdout || "{}");
-    check(
+    await check(
       "A11 CLI post --file --format article → kind=article",
       cliPost.status === 0 && cliOut.posts?.[0]?.kind === "article" && cliOut.posts[0].body_md.includes("CLI 长文样例"),
-      `status=${cliPost.status} kind=${cliOut.posts?.[0]?.kind}`,
+      `status=${cliPost.status} kind=${cliOut.posts?.[0]?.kind} ${cliPost.stderr?.slice(0, 160) ?? ""}`,
     );
-    const cliBogus = spawnSync(
-      "bun",
-      ["src/cli/main.ts", "post", "-m", "x", "--format", "bogus", "--data-dir", qa.dataDir, "--as", "manager"],
-      { cwd: REPO_ROOT, encoding: "utf8" },
-    );
-    check("A11 CLI --format bogus 报错", cliBogus.status !== 0 && /--format/.test(cliBogus.stderr), `status=${cliBogus.status} ${cliBogus.stderr.slice(0, 120)}`);
-    const cliHuman = spawnSync(
-      "bun",
-      ["src/cli/main.ts", "post", "--file", mdPath, "--format", "article", "--data-dir", qa.dataDir, "--as", "manager", "--human"],
-      { cwd: REPO_ROOT, encoding: "utf8" },
-    );
-    check("A11 CLI 人类输出标注 posted (article)", cliHuman.status === 0 && cliHuman.stdout.includes("posted (article)"), cliHuman.stdout.split("\n")[0]);
+    const cliBogus = spawnSync("bun", cliArgs(["-m", "x", "--format", "bogus"]), {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    await check("A11 CLI --format bogus 报错", cliBogus.status !== 0 && /--format/.test(cliBogus.stderr), `status=${cliBogus.status} ${cliBogus.stderr.slice(0, 120)}`);
+    const cliHuman = spawnSync("bun", cliArgs(["--file", mdPath, "--format", "article", "--human"]), {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    await check("A11 CLI 人类输出标注 posted (article)", cliHuman.status === 0 && cliHuman.stdout.includes("posted (article)"), cliHuman.stdout.split("\n")[0]);
   } finally {
     rmSync(cliDir, { recursive: true, force: true });
   }
@@ -1085,7 +1446,7 @@ try {
   } finally {
     rmSync(pluginTmp, { recursive: true, force: true });
   }
-  check("A12 插件 board_post/board_reply file/kind/format/article + 冲突报错不发请求", pluginOk, pluginDetail);
+  await check("A12 插件 board_post/board_reply file/kind/format/article + 冲突报错不发请求", pluginOk, pluginDetail);
 
   // ── A13 迁移（v5/v6 夹具 → v7）────────────────────────────────────────────
   const migration = await (async () => {
@@ -1136,7 +1497,7 @@ try {
     }
     return results;
   })();
-  check(
+  await check(
     "A13 v5/v6 夹具迁移到 v7：kind 列补齐、旧行 note、post_reads 原样、迁移幂等",
     migration.schemaVersion === 7 &&
       migration.v6.hasKind &&
@@ -1150,12 +1511,174 @@ try {
     JSON.stringify(migration),
   );
 
+  // ── A2-模板（P1-17）：steps.json → article 交付物 ─────────────────────────
+  const templateDir = mkdtempSync(join(tmpdir(), "report-longform-template-"));
+  const templateOutDir = mkdtempSync(join(tmpdir(), "report-longform-template-out-"));
+  const TEMPLATE = join(PLUGIN_DIR, "scripts", "report-to-article.mjs");
+  try {
+    writeFileSync(join(templateDir, "before.png"), makePng(320, 200, 7));
+    writeFileSync(join(templateDir, "after.png"), makePng(320, 200, 9));
+    writeFileSync(join(templateDir, "shot.png"), makePng(360, 240, 5));
+    // fence 注入样本：command 内含 ``` 与 `fde2e:callout` 字样（须被动态 fence 包住）
+    const injection = ["printf '```fde2e:callout'", "```", "```fde2e:callout\n{}"].join("\n");
+    writeFileSync(
+      join(templateDir, "steps.json"),
+      JSON.stringify(
+        {
+          title: "模板长文（P1-17）",
+          brand: "FDE2E™",
+          subtitle: "模板直出四块",
+          meta: "隔离 QA · 模板转换",
+          thesis: "结论：模板直接产出 stats/steps/compare/callout 四块。",
+          summary: { pass: 3, fail: 1 },
+          env: [["板", "隔离后端"], ["视口", "1280×800"]],
+          coverage: [
+            { item: "A1", covered: true, note: "文章视图" },
+            { item: "A2", covered: false, note: "四块" },
+          ],
+          logs: "line-1\nline-2",
+          sections: [
+            {
+              title: "第一节",
+              note: "节说明",
+              steps: [
+                { id: "S1", intent: "构建", ok: true, expect: "**通过**", assertion: "断言 ok", command: "bun run build", reply: "built", image: "shot.png", imageMeta: "1280×800" },
+                { id: "S2", intent: "降级", status: "degraded", assertion: "回退路径" },
+                { id: "S3", intent: "跳过", status: "skipped", assertion: "不适用" },
+                { id: "S4", intent: "注入", ok: false, command: injection, assertion: "fence 注入" },
+              ],
+            },
+            {
+              title: "第二节",
+              note: "前后对比",
+              steps: [],
+              compares: [
+                { title: "并排对比", note: "同视口", before: { media: "before.png", label: "Before", viewport: "1280x800" }, after: { media: "after.png", label: "After", viewport: "1280x800" } },
+              ],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const templateEnv = {
+      ...process.env,
+      REPORT_CHANNEL_BASE_URL: BASE,
+      REPORT_CHANNEL_DATA_DIR: qa.dataDir,
+      REPORT_CHANNEL_ACCOUNT: "manager",
+    };
+    const outPath = join(templateOutDir, "report.md");
+    const runTemplate = (args) =>
+      spawnSync("node", [TEMPLATE, templateDir, "--out", outPath, ...args], { encoding: "utf8", env: templateEnv });
+    const t1 = runTemplate(["--upload"]);
+    const first = existsSync(outPath) ? readFileSync(outPath, "utf8") : "";
+    rmSync(outPath, { force: true });
+    const t2 = runTemplate(["--upload"]);
+    const second = existsSync(outPath) ? readFileSync(outPath, "utf8") : "";
+    const deterministic = t1.status === 0 && t2.status === 0 && first.length > 0 && first === second;
+    const { parseArticle } = await import(join(REPO_ROOT, "src/core/article.ts"));
+    const doc = parseArticle(second);
+    const errs = doc.issues.filter((issue) => issue.severity === "error");
+    const directives = doc.nodes.filter((node) => node.kind === "directive");
+    const stepsNode = directives.find((node) => node.name === "steps");
+    const statuses =
+      stepsNode?.data?.name === "steps" ? stepsNode.data.steps.map((step) => step.status) : [];
+    const hasCompare = directives.some((node) => node.name === "compare");
+    const mediaRefs = (second.match(/\/api\/media\/[a-f0-9]{64}/g) ?? []).length;
+    await check(
+      "A2-模板 P1-17：同一 steps.json 两次输出 diff 为空（确定性）＋ --upload 后 media 为 /api/media/<hash>",
+      deterministic && mediaRefs >= 3,
+      JSON.stringify({ status: [t1.status, t2.status], bytes: second.length, mediaRefs }),
+    );
+    await check(
+      "A2-模板 P1-17：输出块 JSON 通过 parseArticle 0 error（degraded/skipped 保留 + fence 注入不破块）",
+      errs.length === 0 &&
+        statuses.includes("degraded") &&
+        statuses.includes("skipped") &&
+        statuses.length === 4 &&
+        hasCompare &&
+        second.includes("```fde2e:callout"),
+      JSON.stringify({ errors: errs.slice(0, 3), statuses, hasCompare }),
+    );
+    await check(
+      "A2-模板 P1-17：env/coverage 为 Markdown 表格 + logs 回退代码块（P1）",
+      second.includes("| 项 | 值 |") && second.includes("| 项 | 状态 | 证据 |") && second.includes("## 日志"),
+      JSON.stringify({
+        envTable: second.includes("| 项 | 值 |"),
+        coverageTable: second.includes("| 项 | 状态 | 证据 |"),
+        logs: second.includes("## 日志"),
+      }),
+    );
+    // 无 --upload/--media-map：stderr 警告 + 普通链接（不输出 /api/media 引用）
+    const plainPath = join(templateOutDir, "report-plain.md");
+    rmSync(plainPath, { force: true });
+    const noMedia = spawnSync("node", [TEMPLATE, templateDir, "--out", plainPath], { encoding: "utf8", env: templateEnv });
+    const plain = existsSync(plainPath) ? readFileSync(plainPath, "utf8") : "";
+    await check(
+      "A2-模板 P1-17：无 --upload/--media-map 警告并输出普通链接（无 /api/media 引用）",
+      noMedia.status === 0 && /警告/.test(noMedia.stderr ?? "") && !plain.includes("/api/media/") && plain.includes("shot.png"),
+      JSON.stringify({ status: noMedia.status, stderr: (noMedia.stderr ?? "").split("\n")[0] }),
+    );
+
+    // 交付物：模板输出 → article 发帖 → 文章页四块渲染（含 compare 并排与 media 可加载）
+    const tplPost = await apiJson(BASE, "/api/posts", MANAGER_TOKEN, {
+      method: "POST",
+      body: JSON.stringify({ body: second, kind: "article", tags: ["result"] }),
+    });
+    const TPL_ID = tplPost.posts[0].id;
+    const tplCtx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const tplPage = await tplCtx.newPage();
+    activePage = tplPage;
+    tplPage.on("pageerror", (e) => errors.push(`template: ${String(e).slice(0, 160)}`));
+    tplPage.on("console", (m) => {
+      if (m.type() === "error") errors.push(`template console: ${m.text().slice(0, 160)}`);
+    });
+    await tplPage.goto(`${BASE}/#/a/${TPL_ID}`, { waitUntil: "domcontentloaded" });
+    await tplPage.waitForSelector('[data-testid="article-view"]', { timeout: 20_000 });
+    await sleep(tplPage, 800);
+    const tplInfo = await tplPage.evaluate(() => ({
+      blocks: [...document.querySelectorAll("[data-article-block]")].map((el) => el.getAttribute("data-article-block")),
+      steps: document.querySelectorAll('[data-testid="step-row"]').length,
+      degraded: document.querySelectorAll('[data-testid="article-block-degraded"]').length,
+      compareSides: document.querySelectorAll('[data-testid="compare-side"]').length,
+      mediaLoaded: (() => {
+        const img = document.querySelector('[data-testid="step-row"] [data-testid="block-media"] img');
+        return img ? img.naturalWidth > 0 : null;
+      })(),
+    }));
+    await check(
+      "A2-模板 P1-17：模板输出的 article 在文章页四块渲染（含 compare 并排与 media 可加载）",
+      tplInfo.blocks.includes("stats") &&
+        tplInfo.blocks.includes("steps") &&
+        tplInfo.blocks.includes("compare") &&
+        tplInfo.blocks.includes("callout") &&
+        tplInfo.steps === 4 &&
+        tplInfo.degraded === 0 &&
+        tplInfo.compareSides === 2 &&
+        tplInfo.mediaLoaded === true,
+      JSON.stringify(tplInfo),
+    );
+    await tplPage.screenshot({ path: join(REPORT_DIR, "a2-1280-template-article.png") });
+    screenshots.push("a2-1280-template-article.png");
+    attachShot(
+      "A2-模板 P1-17：模板输出的 article 在文章页四块渲染（含 compare 并排与 media 可加载）",
+      "a2-1280-template-article.png",
+      "1280×800 · png",
+    );
+    await tplCtx.close();
+    activePage = null;
+  } finally {
+    rmSync(templateDir, { recursive: true, force: true });
+    rmSync(templateOutDir, { recursive: true, force: true });
+  }
+
   // ── 收尾：运行时错误 ──────────────────────────────────────────────────────
   const realErrors = errors.filter((message) => !/favicon|File not found|net::ERR_FILE_NOT_FOUND/i.test(message));
-  check("全流程无页面运行时错误（console.error/pageerror）", realErrors.length === 0, realErrors.slice(0, 3).join(" | ") || "0");
+  await check("全流程无页面运行时错误（console.error/pageerror）", realErrors.length === 0, realErrors.slice(0, 3).join(" | ") || "0");
 } finally {
   await browser.close();
-  await qa.stop();
   const failed = checks.filter((row) => !row.ok);
   const results = {
     ok: failed.length === 0,
@@ -1168,6 +1691,9 @@ try {
     durationMs: Date.now() - startedAt,
     checks,
     screenshots,
+    // 请求/响应记录留档（P1-20：网络证据；静态归档的 0 网络断言见 A10）
+    requests: apiRequests,
+    responses: apiResponses,
   };
   writeFileSync(join(REPORT_DIR, "results.json"), JSON.stringify(results, null, 2));
 
@@ -1215,6 +1741,40 @@ try {
       2,
     ),
   );
+
+  // 交付物（P1-20 判据）：把本报告 steps.json 交给 P1-17 模板转成 article.md
+  // （隔离后端尚未停止，--upload 可把截图上传为 /api/media/<hash>）
+  let conversion = { ok: false, reason: "not-run" };
+  try {
+    const articleOut = join(REPORT_DIR, "article.md");
+    rmSync(articleOut, { force: true });
+    const conv = spawnSync("node", [TEMPLATE, REPORT_DIR, "--upload", "--out", articleOut], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        REPORT_CHANNEL_BASE_URL: BASE,
+        REPORT_CHANNEL_DATA_DIR: qa.dataDir,
+        REPORT_CHANNEL_ACCOUNT: "manager",
+      },
+    });
+    const article = existsSync(articleOut) ? readFileSync(articleOut, "utf8") : "";
+    conversion = {
+      ok: conv.status === 0 && article.length > 0,
+      status: conv.status,
+      chars: article.length,
+      mediaRefs: (article.match(/\/api\/media\/[a-f0-9]{64}/g) ?? []).length,
+      warnings: (conv.stderr ?? "").split("\n").filter((line) => line.trim()).slice(0, 3),
+    };
+    console.log(
+      `交付物：steps.json → article.md（${conversion.ok ? "OK" : "FAIL"}，${conversion.chars} chars，${conversion.mediaRefs} media 引用）`,
+    );
+  } catch (err) {
+    conversion = { ok: false, reason: err.message };
+    console.error(`交付物转换失败：${err.message}`);
+  }
+  writeFileSync(join(REPORT_DIR, "article-conversion.json"), JSON.stringify(conversion, null, 2));
+
+  await qa.stop();
   try {
     execFileSync(
       "node",
