@@ -6,8 +6,6 @@ type PostLike = PostView & { i?: number; n?: number };
 import {
   BookmarkCheckIcon,
   BookmarkIcon,
-  CheckIcon,
-  LinkIcon,
   MessageCircleIcon,
   QuoteIcon,
 } from "lucide-react";
@@ -18,7 +16,6 @@ import { LinkPreviews } from "@/components/LinkPreviews";
 import { TagChips } from "@/components/TagChips";
 import { AuthorAvatar, AuthorLine } from "@/components/AuthorAvatar";
 import { Button } from "@/components/ui/button";
-import { copyText, postLink } from "@/lib/copy";
 import { timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
 import { useBookmarks } from "@/state/bookmarks";
@@ -27,6 +24,7 @@ import { useReadDwell } from "@/components/ReadDwellProvider";
 import { prefetchThread } from "@/state/cache";
 import { markSharedSubject } from "@/lib/shared-element";
 import { toastReadOnly } from "@/lib/readonly";
+import { ShareMenu } from "@/components/ShareMenu";
 
 export type PostVariant = "feed" | "focal" | "reply" | "ancestor";
 
@@ -36,7 +34,6 @@ interface PostCardProps {
   onOpen?: (post: PostLike) => void;
   onReply?: (post: PostLike) => void;
   onQuote?: (post: PostLike) => void;
-  onCopy?: (post: PostLike) => void;
   selected?: boolean;
   /** 「回复给 @x」：仅当父帖不是上一 post 行时由 planner 传入（design §2.3）。 */
   replyingTo?: string | null;
@@ -63,7 +60,7 @@ const THREAD_BODY = "text-[17px] leading-[25px]";
  * - feed：正文约 6 行截断 + 展开；focal/ancestor：全文永不截断（design §12.3）
  * - 线程行共用同一条 46px 头像列（正文列 x=68）与 `px-4` 水平度量：不做任何缩进
  *   （design report-thread-timeline §3）；自接链续接条的 24px 头像**同轴居中**（中心 39）
- * - 操作栏固定三键：回复 / 引用 / 复制链接（无点赞转发）
+ * - 操作栏固定四键（纯图标）：回复 / 引用 / 收藏 / 分享（无点赞转发）
  */
 export function PostCard({
   post,
@@ -71,7 +68,6 @@ export function PostCard({
   onOpen,
   onReply,
   onQuote,
-  onCopy,
   selected = false,
   replyingTo = null,
   selfContinuation = false,
@@ -85,9 +81,6 @@ export function PostCard({
   const { staticMode, client, account } = useConnection();
   const { isBookmarked, toggle: toggleBookmark } = useBookmarks();
   const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const copyTimer = useRef<number | null>(null);
-  const longPressed = useRef(false);
   const deleted = post.deleted_at !== null;
   const author = post.author_account;
   // 停留已读（report-read-dwell）：两个分支的根 article 共用一个 ref。
@@ -143,31 +136,6 @@ export function PostCard({
     // 共享元素主体＝被点的这条帖子（不是“列表里第一张同名卡片”）。
     markSharedSubject(host, post.id);
     onOpen?.(post);
-  };
-
-  const handleCopy = async () => {
-    const ok = await copyText(postLink(post.id));
-    if (ok) {
-      setCopied(true);
-      onCopy?.(post);
-      window.setTimeout(() => setCopied(false), 1500);
-    }
-  };
-
-  const startLongPress = () => {
-    longPressed.current = false;
-    if (copyTimer.current !== null) return;
-    copyTimer.current = window.setTimeout(() => {
-      copyTimer.current = null;
-      longPressed.current = true;
-      void handleCopy();
-    }, 550);
-  };
-  const cancelLongPress = () => {
-    if (copyTimer.current !== null) {
-      window.clearTimeout(copyTimer.current);
-      copyTimer.current = null;
-    }
   };
 
   if (selfContinuation) {
@@ -323,7 +291,7 @@ export function PostCard({
               className={cn(
                 "text-muted-foreground",
                 variant === "feed"
-                  ? "-ml-2 mt-1.5 flex flex-wrap items-center gap-0.5"
+                  ? "-ml-3.5 mt-1.5 flex flex-wrap items-center gap-0.5"
                   : "-mt-1.5 flex w-full max-w-[464px] flex-wrap items-center justify-between",
               )}
             >
@@ -331,10 +299,12 @@ export function PostCard({
                 variant="ghost"
                 size="sm"
                 data-testid="action-reply"
+                aria-label={post.reply_count > 0 ? `回复 ${post.reply_count}` : "回复"}
+                title={post.reply_count > 0 ? `回复 ${post.reply_count}` : "回复"}
                 aria-disabled={staticMode || undefined}
                 className={cn(
-                  "h-11 min-w-11 gap-1.5 px-2",
-                  variant !== "feed" && "-ml-2",
+                  "h-11 min-w-11 px-2",
+                  variant !== "feed" && "-ml-3.5",
                   staticMode && "opacity-60",
                 )}
                 onClick={(event) => {
@@ -346,15 +316,16 @@ export function PostCard({
                   onReply?.(post);
                 }}
               >
-                <MessageCircleIcon className="size-4" data-icon="inline-start" />
-                回复{post.reply_count > 0 ? ` ${post.reply_count}` : ""}
+                <MessageCircleIcon className="size-4" />
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
                 data-testid="action-quote"
+                aria-label="引用"
+                title="引用"
                 aria-disabled={staticMode || undefined}
-                className={cn("h-11 min-w-11 gap-1.5 px-2", staticMode && "opacity-60")}
+                className={cn("h-11 min-w-11 px-2", staticMode && "opacity-60")}
                 onClick={(event) => {
                   event.stopPropagation();
                   if (staticMode) {
@@ -364,18 +335,18 @@ export function PostCard({
                   onQuote?.(post);
                 }}
               >
-                <QuoteIcon className="size-4" data-icon="inline-start" />
-                引用
+                <QuoteIcon className="size-4" />
               </Button>
               <Button
                 variant="ghost"
                 size="sm"
                 data-testid="action-bookmark"
+                aria-label={isBookmarked(post.id) ? "取消收藏" : "收藏"}
                 aria-pressed={isBookmarked(post.id)}
                 aria-disabled={staticMode || undefined}
                 title={isBookmarked(post.id) ? "取消收藏" : "收藏（账号菜单 → 收藏）"}
                 className={cn(
-                  "h-11 min-w-11 gap-1.5 px-2",
+                  "h-11 min-w-11 px-2",
                   staticMode && "opacity-60",
                   isBookmarked(post.id) && "text-foreground",
                 )}
@@ -385,42 +356,12 @@ export function PostCard({
                 }}
               >
                 {isBookmarked(post.id) ? (
-                  <BookmarkCheckIcon className="size-4" data-icon="inline-start" />
+                  <BookmarkCheckIcon className="size-4" />
                 ) : (
-                  <BookmarkIcon className="size-4" data-icon="inline-start" />
+                  <BookmarkIcon className="size-4" />
                 )}
-                收藏
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                data-testid="action-copy"
-                title="点击复制；长按/右键也可复制链接"
-                className={cn("h-11 min-w-11 gap-1.5 px-2", variant !== "feed" && "-mr-2")}
-                onPointerDown={(event) => {
-                  event.stopPropagation();
-                  startLongPress();
-                }}
-                onPointerUp={cancelLongPress}
-                onPointerLeave={cancelLongPress}
-                onPointerCancel={cancelLongPress}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  cancelLongPress();
-                  void handleCopy();
-                }}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  if (longPressed.current) {
-                    longPressed.current = false;
-                    return;
-                  }
-                  void handleCopy();
-                }}
-              >
-                {copied ? <CheckIcon className="size-4" data-icon="inline-start" /> : <LinkIcon className="size-4" data-icon="inline-start" />}
-                {copied ? "已复制" : "复制链接"}
-              </Button>
+              <ShareMenu post={post} />
             </div>
           ) : null}
         </div>

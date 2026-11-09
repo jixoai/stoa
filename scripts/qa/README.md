@@ -105,6 +105,8 @@ bun scripts/qa/route-back.mjs             # 路由/返回 A1-A14：#/instances/#
                                           # #/info 绑定与 pop、深链合成栈、抽屉内 replace 无死条目、
                                           # 设置盖详情不卸载、实例层暂停停留已读、Esc 关闭、
                                           # landing 深链连接不改 URL（静态壳 13724 + 隔离板）
+bun scripts/qa/share-actions.mjs          # 操作条纯图标 + 分享面板：复制/原生分享/社交直达、
+                                          # 无 navigator.share 降级、390/1280 无溢出
 ```
 
 Behaviour:

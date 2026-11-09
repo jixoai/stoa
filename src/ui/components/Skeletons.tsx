@@ -82,11 +82,11 @@ export function PostSkeleton({
             <SkeletonLines lines={withMedia ? 2 : 3} />
           )}
           {withMedia ? <Skeleton className="mt-2 h-32 w-full rounded-xl" /> : null}
-          <div className="-mt-1.5 flex w-full items-center justify-between pt-1.5">
-            <Skeleton className="h-11 w-16 rounded-lg" />
-            <Skeleton className="h-11 w-14 rounded-lg" />
-            <Skeleton className="h-11 w-14 rounded-lg" />
-            <Skeleton className="h-11 w-20 rounded-lg" />
+          <div className="-ml-3.5 mt-1.5 flex items-center gap-0.5 pt-0.5">
+            <Skeleton className="h-11 w-11 rounded-lg" />
+            <Skeleton className="h-11 w-11 rounded-lg" />
+            <Skeleton className="h-11 w-11 rounded-lg" />
+            <Skeleton className="h-11 w-11 rounded-lg" />
           </div>
         </div>
       </div>
