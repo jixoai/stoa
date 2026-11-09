@@ -302,4 +302,35 @@ describe("static export · longform (report-longform A10/P1-18)", () => {
       t.close();
     }
   });
+
+  test("note body media lands in the snapshot media list too (复核 O10：正文扫描不按 kind 设门)", () => {
+    const t = makeStore();
+    const ui = makeUiFixture();
+    try {
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      const row = t.store.saveMedia(new Uint8Array(png), "png");
+      // note（非 article）正文手写媒体：静态归档同样要能按相对路径加载。
+      const noteBody = `短帖里的手写媒体：\n\n![截图](/api/media/${row.hash})`;
+      t.store.commitOps({
+        author: "manager",
+        batchId: "LN1",
+        ops: [{ op: "post", body: noteBody }],
+      });
+
+      const outDir = join(t.dir, "archive-note-media");
+      runExport({ dataDir: t.dir, outDir, uiDir: ui.dir });
+      const snapshot = readSnapshot(readFileSync(join(outDir, "index.html"), "utf8"));
+
+      const media = snapshot.media.find((item) => item.hash === row.hash);
+      expect(media).toBeDefined();
+      expect(media!.url).toBe(`media/${row.hash}.png`);
+      expect(existsSync(join(outDir, "media", `${row.hash}.png`))).toBe(true);
+    } finally {
+      ui.cleanup();
+      t.close();
+    }
+  });
 });

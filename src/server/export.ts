@@ -199,9 +199,10 @@ export function buildSnapshot(store: Store, viewerId = "owner"): Snapshot {
   const snapshotPosts: SnapshotPost[] = posts.map((post) => {
     const media = collectMedia(post.media);
     const quoted = post.quoted ? { ...post.quoted, media: collectMedia(post.quoted.media) } : null;
-    // report-longform：长文指令块内引用的媒体（`steps.media`/`compare` 两侧）不在
+    // report-longform：正文手写/指令块内引用的媒体（`steps.media`/`compare` 两侧）不在
     // `post.media` 里，但静态归档必须能按相对路径加载 → 扫描正文哈希补进快照 media 表。
-    if (post.kind === "article" && post.body_md) collectBodyMedia(store, post.body_md, collectMedia);
+    // 复核 O10：不按 kind 设门——note 正文里的手写媒体同样要入快照（同一信源扫描）。
+    if (post.body_md) collectBodyMedia(store, post.body_md, collectMedia);
     return { ...post, media, quoted };
   });
 

@@ -423,7 +423,8 @@ function ArticleCopyLink({ post }: { post: PostView }) {
       className="h-11 min-w-11 px-2"
       onClick={async (event) => {
         event.stopPropagation();
-        const ok = await copyText(postLink(post.id, "article"));
+        // 复核 O11：载体从 focal 本身取（不再写字面量）——链接形态与数据同源。
+        const ok = await copyText(postLink(post.id, post.kind));
         toast.add(
           ok
             ? { type: "success", title: "链接已复制", timeout: 1600 }
