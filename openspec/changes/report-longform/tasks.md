@@ -1,8 +1,10 @@
 # Tasks: report-longform（Markdown 长文章 + 白名单指令块）
 
 > 依赖顺序（硬）：`report-link-preview`、`report-thread-scope`、
-> `report-thread-timeline`、`report-event-hub` 已合入；本 change 排在
-> `report-read-dwell` 与 `report-notification-stacks` 之后 rebase。
+> `report-thread-timeline`、`report-event-hub`、`report-read-dwell`、
+> `report-server-read-state` 已合入（worker `334e080`；schema 基线 **v6**）。
+> 本 change 目标 schema **v7**（只加 `posts.kind`）。`report-notification-stacks`
+> **仍在途（另一工作树）**：本 change 在它合入后再实现/最后 rebase。
 > 在依赖合入前只交付本设计/规格，`src/` 不改。每项判据不满足不得勾选。
 
 ## P1. 数据模型与解析
@@ -17,12 +19,14 @@
   - 判据：note 200,000 过/200,001 拒；article 512,000 过/512,001 拒；
     article UTF-8 >2MiB 拒；未知 kind `BAD_REQUEST`；错误文案含上限；
     既有 note 调用（不传 kind）行为逐字不变。
-- [ ] P1-3. `src/server/db.ts`：`SCHEMA_VERSION = 6`；`posts` 建表含
-  `kind TEXT NOT NULL DEFAULT 'note'`；旧库 `hasColumn` 守卫
-  `ALTER TABLE posts ADD COLUMN kind ...`；重复 migrate 幂等。
-  - 判据：v5 夹具启动后 `PRAGMA table_info(posts)` 含 `kind`、旧行 `note`、
-    `meta.schema_version=6`；连续两次 `migrate()` 无错；`test/social.test.ts`
-    的版本断言同步 5→6。
+- [ ] P1-3. `src/server/db.ts`：`SCHEMA_VERSION = 7`（v6 已被 `post_reads`
+  占用）；`posts` 建表含 `kind TEXT NOT NULL DEFAULT 'note'`；旧库（v5/v6）
+  `hasColumn` 守卫 `ALTER TABLE posts ADD COLUMN kind ...`；重复 migrate 幂等。
+  - 判据：v5 夹具（无 `post_reads`/无 `kind`）与 v6 夹具（有 `post_reads`/无
+    `kind`）启动后 `PRAGMA table_info(posts)` 含 `kind`、旧行 `note`、
+    `meta.schema_version=7`；v6 夹具的 `post_reads` 行数/内容不变；连续两次
+    `migrate()` 无错；`test/social.test.ts` 与 `test/post-reads-schema.test.ts`
+    的版本断言同步 6→7（后者新增 v6 夹具用例）。
 - [ ] P1-4. `src/server/store.ts`：`commitOps` 根帖/回复 INSERT 写 `kind`；
   `PostRow`/`toPost` 自动带出；`hydratePosts` 引用视图补 `kind`；草稿/批处理
   序列化保留 `kind`。
@@ -31,9 +35,11 @@
     `test/social.test.ts`/`test/store.test.ts` 既有断言全绿。
 - [ ] P1-5. `src/server/http.ts` + `src/core/protocol.ts`：`POST /api/posts`、
   `POST /api/posts/:id/replies` 透传 `kind`；`capabilities.features.article=true`、
-  `article_blocks = ["stats","steps","compare","callout"]`（P1 四块；P2 追加
-  `gallery`）。
+  `features.article_blocks = ["stats","steps","compare","callout"]`（P1 四块；
+  P2 追加 `gallery`/`log`）；`limits.article_chars=512_000`、
+  `limits.article_bytes=2*1024*1024`（`limits.body_chars` 保持 200,000）。
   - 判据：HTTP 创建 article 返回 `kind=article`；缺省 `note`；未知 kind 400；
+    `/api/capabilities` 返回 `features.article=true`、P1 四块与两项 limits；
     `scripts/check.mjs` 路由/命令 lint 通过（无新端点）。
 - [ ] P1-6. `src/core/article.ts`（新）：`parseArticle`/`articleSummary`；
   fenced `fde2e:<name>` 识别；JSON 解析；**P1 四块 schema**
@@ -67,7 +73,9 @@
   正文根容器带 `data-post-id`（供 read-dwell）。
   - 判据：A1；`/a/<note>` `replace` 到 `/p/<note>`；软删显示占位；
     静态模式写操作 `toastReadOnly`；DOM 中 `<h1>` 恰好 1 个；顶部/底部
-    独立线程页链接都到 `#/p/<id>`。
+    独立线程页链接都到 `#/p/<id>`；已读复用既有 `isRead`/`serverReadIds` 与
+    `markPostRead` 写路径（不新建 read-set、不另建 observer、不直接发
+    `/api/reads`）。
 - [ ] P1-9. `src/ui/components/Markdown.tsx`：`variant?: "default" | "article"`、
   `headingIds?: string[]`；article prose 排版（17/28、H2/H3、表格/代码横向滚动、
   图片圆角、主题令牌）；默认 variant 逐字不变。
@@ -77,10 +85,10 @@
   `src/ui/components/PostCard.tsx` + `src/ui/components/QuoteCard.tsx`：article
   分支渲染摘要卡（Badge「长文」、标题 2 行、摘要 2 行、约 N 分钟）；不再走
   `longBody`/clamp；自接分支同样；引用卡的正文/整卡链接按 `QuotedView.kind`
-  切摘要与 `postHref(quoted)`；`TimelineFeed.tsx:417`、`ThreadPage.tsx:847,854`、
-  `SearchPage.tsx:114`、`NotificationsPage.tsx:192,201` 改用 `postHref(post)`；
-  通知行的正文摘要对 article 用 `articleSummary` 的 title/excerpt，不渲染全文
-  Markdown。
+  切摘要与 `postHref(quoted)`；`TimelineFeed.tsx` `openPost`、`ThreadPage.tsx`
+  `openPost`、`SearchPage.tsx:114-115`、`NotificationsPage.tsx` 通知行点击
+  （notification-stacks 合入后的目标）改用 `postHref(post)`；通知行的正文摘要
+  对 article 用 `articleSummary` 的 title/excerpt，不渲染全文 Markdown。
   - 判据：A8；feed/线程/搜索/收藏/成员页/通知六处摘要卡一致；引用 article 卡
     显示摘要并跳 `#/a/<id>`；DOM 不含 article 全文；note 卡片行为不变；
     `data-testid="article-summary"` 存在。
@@ -120,11 +128,13 @@
     `--format bogus` 报错；note 默认路径逐字不变；`bun test test/cli.test.ts`
     全绿并新增 article 用例。
 - [ ] P1-16. 插件（主仓）：`tools.mjs` `board_post`/`board_reply` 加
-  `file`/`format`（body 可选、恰好一个）；`callTool` 读文件、限 2MiB、传 kind；
-  `config.mjs` `postUrl` 按 kind、`summarizePost` 带 kind；
+  `file`/`kind`/`format`/`article`（body 可选、body 与 file 恰好一个；
+  `kind`/`format`/`article` 同义，缺省 note，冲突报错）；`callTool` 读文件、限 2MiB、
+  传归一化后的 kind；`config.mjs` `postUrl` 按 kind、`summarizePost` 带 kind；
   `commands/board-report.md`/`skills/report-channel/SKILL.md` 增补。
-  - 判据：A12；file+body 报错、两者都缺报错；article URL 为 `#/a/<id>`；
-    note 旧调用（只 body）行为不变；插件 README 工具表更新。
+  - 判据：A12；file+body 报错、两者都缺报错；`article:true` 与 `kind:"article"`
+    都创建 article；`{kind:"note",article:true}` 报错且不发请求；article URL 为
+    `#/a/<id>`；note 旧调用（只 body）行为不变；插件 README 工具表更新。
 - [ ] P1-17. 报告模板：`plugins/report-channel/scripts/report-to-article.mjs`
   （新）：按 design §6.3 映射表把 steps.json 转 article Markdown，**P1 直接
   输出四块**——`fde2e:callout`（thesis）、`fde2e:stats`
@@ -143,10 +153,11 @@
     输出可被 `post --file --format article` 接受。
 - [ ] P1-18. 静态：`src/ui/lib/static-api.ts` 加可选 `kind` 与 hydrate 默认
   note（含 quoted 回退分支补 `kind`）；`src/server/export.ts` 快照自然携带
-  kind；`ArticlePage`/摘要卡/四块/嵌入讨论区静态可用；`/a/<note>` 回退；
-  0 网络。
+  kind（既有 `read/read_at` 透传不改）；`ArticlePage`/摘要卡/四块/嵌入讨论区
+  静态可用；`/a/<note>` 回退；0 网络 / 0 写。
   - 判据：A10；旧归档（无 kind）按 note；`file://` 打开 article 四块与讨论区
-    正常、图片相对路径可用、请求数 0；静态写操作只读；
+    正常、图片相对路径可用、请求数 0（含 `/api/reads*`）、localStorage 无
+    `report.read*` 键、卡片无 `data-read`；静态写操作只读；
     `test/export-static.test.ts` 新增 kind/四块断言，旧断言不变。
 - [ ] P1-19. 单测/绿门：`bun test`、`bun run check`、`bun run typecheck:ui`、
   `npx openspec validate report-longform --strict`；新增
@@ -175,11 +186,13 @@
   `ThreadPage` 抽出共享 `ThreadTimelineRows`（`TimelineRow` + PostCard
   reply/compact 变体、导轨、`回复给 @x`、删除占位、子线程入口）；
   顶部/底部「在独立线程页打开」；`ReplyComposer` 当前页回复；EventHub
-  `post.created` 精确合并；article 根容器与回复卡共用 read-dwell 观察器；
-  静态模式只读展示既有回复、0 网络。
+  `post.created` 精确合并；article 根容器与回复卡共用既有 read-dwell 观察器与
+  `markPostRead` 写路径（本地即时 + `report.readq` 异步批量写服务端
+  `post_reads`），不新建 read-set、不直接发 `/api/reads`；静态模式只读展示
+  既有回复、0 网络 / 0 写。
   - 判据：A1/A9/A10；讨论区与线程页的行度量/导轨/顺序一致（同一 planner）；
-    大线程只出子线程入口；read-dwell 只注册一个 observer；静态回复只读；
-    回复提交后新行并入、不整页刷新。
+    大线程只出子线程入口；read-dwell 只注册一个 observer、已读只走既有队列；
+    静态回复只读、无已读请求/存储；回复提交后新行并入、不整页刷新。
 
 ## P2. gallery/log、TOC/进度与导入
 

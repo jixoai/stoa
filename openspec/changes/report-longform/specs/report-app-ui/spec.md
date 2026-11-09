@@ -49,9 +49,8 @@
 SHALL 与独立线程页一致。讨论区 SHALL 提供 `ReplyComposer` 当前页回复，并在
 顶部/底部提供「在独立线程页打开」；article 是回复时 SHALL 提供「查看上文」。
 实时更新 SHALL 复用 EventHub `post.created` 合并，不新开连接、不整页刷新。
-article 根容器与回复卡 SHALL 共用 read-dwell 的 `[data-post-id]` 观察目标/
-注册入口，SHALL NOT 另建 observer。静态模式 SHALL 只读展示快照中的既有回复，
-SHALL NOT 发网络请求；大线程/深链 SHALL 走独立线程页。
+静态模式 SHALL 只读展示快照中的既有回复，SHALL NOT 发网络请求、SHALL NOT 写已读
+状态；大线程/深链 SHALL 走独立线程页。
 
 #### Scenario: 回复列表嵌入
 
@@ -71,16 +70,30 @@ SHALL NOT 发网络请求；大线程/深链 SHALL 走独立线程页。
 - **THEN** `ReplyComposer` 在当前页打开，提交后新回复并入讨论区，不跳页、
   不整页刷新
 
-#### Scenario: read-dwell 共存
-
-- **WHEN** 打开 article 并停留达标
-- **THEN** article 根容器与可见回复由同一个 read-dwell observer 处理；
-  不出现第二个 observer、不推进服务端游标
-
 #### Scenario: 静态只读
 
 - **WHEN** 在静态归档打开 article
 - **THEN** 讨论区显示快照中的既有回复；回复/引用只给只读提示；请求数 0
+
+### Requirement: 文章页已读复用
+
+文章页（正文根容器与嵌入讨论区回复卡）SHALL 复用既有 read-dwell 与按帖已读体系：
+共用 `[data-post-id]` 观察入口与 `markPostRead` 写路径，已读判定复用 Provider 的
+`isRead`（`serverReadIds ∪ 本地乐观缓存 ∪ 游标`），SHALL NOT 新建 read-set 或第二个
+observer、SHALL NOT 直接请求 `/api/reads`。静态归档 SHALL NOT 启用观察器/写已读。
+
+#### Scenario: 阅读长文标已读
+
+- **WHEN** 打开 article 并停留达标
+- **THEN** article 根容器与可见回复由同一个 read-dwell observer 处理；该帖按既有
+  `markPostRead` 路径标为已读（本地即时 + `report.readq` 异步批量写服务端
+  `post_reads`）；不推进游标、不新建 read-set、不发独立 `/api/reads`
+
+#### Scenario: 静态归档不标已读
+
+- **WHEN** 在静态归档打开 article 并停留任意时长
+- **THEN** 不创建观察器、不渲染 `data-read`、不写 `report.read*` 键；网络面板无
+  `/api/reads*` 请求
 
 ### Requirement: 长文摘要卡
 

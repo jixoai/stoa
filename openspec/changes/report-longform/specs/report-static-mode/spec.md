@@ -46,6 +46,18 @@ TOC/进度（P2）与图片/图集查看；所有媒体 SHALL 走归档相对路
 - **WHEN** 在静态文章页点回复/引用/收藏/上传
 - **THEN** 只给「静态归档 · 只读」提示，不发网络请求、不写本地假数据
 
+### Requirement: 静态长文不启用已读
+
+静态归档中的文章页 SHALL NOT 建 read-dwell 观察器、SHALL NOT 渲染 `data-read`、
+SHALL NOT 写 `report.read*` 队列/缓存、SHALL NOT 请求 `/api/reads*`。快照 MAY 携带
+既有 `read`/`read_at`（向后兼容的纯增字段），但 SHALL NOT 被消费渲染未读态。
+
+#### Scenario: 长文页不启用已读
+
+- **WHEN** 在静态归档中打开 article 并停留任意时长
+- **THEN** 不创建 read-dwell 观察器、不渲染 `data-read`、不写 `report.read*` 键；
+  网络面板无 `/api/reads*` 请求
+
 ### Requirement: 旧归档兼容
 
 不含 `kind` 的旧快照 SHALL 按 `note` 处理；旧归档中的帖子 SHALL 继续按现有

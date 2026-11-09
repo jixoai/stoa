@@ -11,7 +11,7 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
    **fenced 指令块**（不是自定义 HTML 元素）：渲染器白名单 + JSON schema 校验，
    raw HTML 一律转义为文本。块集**硬封顶 6 块**：P1 `stats`/`steps`/`compare`/
    `callout`，P2 `gallery`/`log`；不做 toc/timeline/verdict/coverage/tabs/
-   mermaid/chart/math/checklist 等（202 份本地报告 + 12 个来源调研结论）。
+   mermaid/chart/math/checklist/tests/diff/forms 等（202 份本地报告 + 12 个来源调研结论）。
 2. **三种载体分工**：
    - `note`（短帖，默认）：现有 200,000 字符上限与 feed 6 行截断不变；
    - `article`（长文，新）：512,000 字符上限、独立文章视图、prose 排版；
@@ -34,47 +34,66 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
 
 ## 现状（只读实测与代码证据）
 
+> 行号取自当前 main（worker `334e080`，`report-server-read-state` 已归档合入）；
+> 依赖 change 合入后以**函数/常量/路由字面量**为锚点，不以行号为准。
+
 - 帖子只有一种载体：`Post` 无 `kind` 字段（`src/core/types.ts:21-37`），正文上限
   `MAX_BODY_CHARS = 200_000`（`src/core/validation.ts:6`，`assertBody` `:70-78`）。
+- 读态已服务端化：`PostView` 已带 `read?: boolean` / `read_at?: number | null`
+  （`src/core/types.ts:169-184`，`report-server-read-state` 归档）；UI 通过
+  `isReadFromSources`（`serverReadIds ∪ 本地 read-set ∪ 游标`）判定已读。本 change
+  只读复用，不新增/改造 read-set。
 - Markdown 子集已含 fenced code（info string 保留为 `lang`，`src/core/markdown.ts:163-175`）、
   标题/列表/表格/引用/链接/图片（`:143-242`）；UI 逐 token 渲染，不拼 innerHTML
   （`src/ui/components/Markdown.tsx:205-294`，代码块 `:255-263`，表格 `:264-290`）。
 - 写入事务 `commitOps` 单事务插 post/reply、分配 seq、写事件
-  （`src/server/store.ts:706-912`；根帖 INSERT `:788-802`，回复 INSERT `:838-853`）；
-  读投影统一 `hydratePosts`（`:1058-1222`）。HTTP 入口 `POST /api/posts`
-  （`src/server/http.ts:644-661`）与 `POST /api/posts/:id/replies`（`:662-679`）
+  （`src/server/store.ts` `commitOps`，当前 `:848-1184`；根帖 INSERT `:932-944`，
+  回复 INSERT `:982-995`）；读投影统一 `hydratePosts`（`private hydratePosts`，
+  当前 `:1200-1416`；`kind` 只加引用视图组装处）。HTTP 入口 `POST /api/posts`
+  （`src/server/http.ts:655-671`）与 `POST /api/posts/:id/replies`（`:673-689`）
   只透传 body/quote/media/tags。
-- SQLite schema v5（`src/server/db.ts:49`），`posts` 表见 `:84-99`；历史列用
-  `hasColumn` 守卫补列（tags `:242-244`），`meta.schema_version` 写入 `:322-325`。
-- feed 截断只对短帖：`PostCard` 的 6 行 clamp（`src/ui/components/PostCard.tsx:95-97`、
-  正文 `:241-249`）；详情页 focal 永不截断（`src/ui/pages/ThreadPage.tsx:979-1030`）。
+- SQLite schema **v6**（`src/server/db.ts:49`，`post_reads` 已占用 v6），`posts` 表见
+  `:84-99`；历史列用 `hasColumn` 守卫补列（tags `:252-254`），`meta.schema_version`
+  写入 `:333-335`。本 change 目标 **v7**（只加 `posts.kind`）。
+- feed 截断只对短帖：`PostCard` 的 6 行 clamp（`src/ui/components/PostCard.tsx:138-139`、
+  正文 `:289-297`）；详情页 focal 永不截断（`src/ui/pages/ThreadPage.tsx` 的 focal
+  `<PostCard variant="focal">`，当前 `:999-1017`）。`PostCard` 根 `article` 已带
+  `data-post-id`/`data-read`（`:180-186`、`:231-238`），本 change 的摘要分支保留它们。
 - 编辑器：`PostComposer` 的撰写/预览 tab 与 200,000 计数条
-  （`src/ui/components/PostComposer.tsx:495-508`）、草稿 localStorage（`:102-123`）、
-  提交（`:416-468`）；发帖页 `ComposePage`（`src/ui/pages/ComposePage.tsx:11-99`）；
-  回复编辑器复用同一 composer（`src/ui/components/ReplyComposer.tsx:82-95`）。
-- 路由：`Route` 联合与 hash 解析（`src/ui/lib/router.tsx:20-51`）、路径/深度
-  （`:53-72`、`:118-125`）；详情覆盖层 `DetailView`（`src/ui/components/AppShell.tsx:39-50`、
-  `:110-122`）。所有「打开帖子」入口都硬编码 `/p/<id>`：
-  `TimelineFeed.tsx:417`、`ThreadPage.tsx:847,854`、`SearchPage.tsx:114`、
-  `NotificationsPage.tsx:192,201`。平铺 timeline planner 已是共享纯函数
-  （`src/ui/lib/thread-plan.ts:222-260`），文章讨论区直接复用。
+  （`src/ui/components/PostComposer.tsx:497-511`）、草稿 localStorage（`:106-121`、
+  防抖 `:179-193`）、提交（`submit`，当前 `:420-471`）；发帖页 `ComposePage`
+  （`src/ui/pages/ComposePage.tsx:11-100`）；回复编辑器复用同一 composer
+  （`src/ui/components/ReplyComposer.tsx:26-101`，composer 挂载 `:80-95`）。
+- 路由：`Route` 联合与 hash 解析（`src/ui/lib/router.tsx:20-51`）、路径/键/标签/深度
+  （`routePath` `:53-72`、`routeKey` `:75-94`、`routeLabel` `:96-115`、
+  `routeDepth` `:118-125`）、深链合成栈 `initHistory`（`:177-206`）；详情覆盖层
+  `DetailView`（`src/ui/components/AppShell.tsx:41-56`、渲染 `:112-126`）。
+  所有「打开帖子」入口都硬编码 `/p/<id>`：`TimelineFeed.tsx` `openPost`（`:416-417`）、
+  `ThreadPage.tsx` `openPost`/`replyPost`（`:849-850`）、`SearchPage.tsx:114-115`、
+  `NotificationsPage.tsx:199,208`、`QuoteCard.tsx:61`。平铺 timeline planner 已是共享
+  纯函数（`src/ui/lib/thread-plan.ts` `planForThreadView` `:256-301`、
+  `buildTimelinePlan` `:135-255`），文章讨论区直接复用。
 - 静态导出：快照 `SnapshotPost extends Omit<PostView, "media"|"quoted">`
-  （`src/server/export.ts:65-68`），`buildSnapshot` 原样展开帖子（`:142-200`），
-  `safeJson` 转义 `<`（`:96-101`）；静态客户端 `SnapshotPost`/`hydrate`
-  （`src/ui/lib/static-api.ts:53-75`、`:287-336`）。
+  （`src/server/export.ts:65-72`，已显式声明 `read`/`read_at`），`buildSnapshot`
+  原样展开帖子（`:145-203`），`safeJson` 转义 `<`（`:99-104`）；静态客户端
+  `SnapshotPost`/`hydrate`（`src/ui/lib/static-api.ts:54-79`、`:291-344`），
+  已显式透传 `read`/`read_at`（`:340-341`）。
 - CLI：`cmdPost`（`src/cli/commands.ts:566-584`）、`cmdReply`（`:585-604`）、
-  JSONL 批处理（`:605-716`）；flag 白名单 `src/cli/args.ts:24-56`；
-  `API_ROUTES`/`CLI_COMMANDS` 契约 `src/core/protocol.ts:11-77`。
+  JSONL 批处理（`:605-716`）；flag 白名单 `src/cli/args.ts:25-54`；
+  `CLI_COMMANDS`/`API_ROUTES` 契约（`src/core/protocol.ts:15-90`）、
+  `Capabilities`（`:92-132`）。
 - 插件（主仓 `plugins/report-channel`）：`board_post` schema
-  `scripts/lib/tools.mjs:8-22`、实现 `:112-119`；`postUrl` 固定 `#/p/<id>`
-  `scripts/lib/config.mjs:104-106`。报告生成器 steps.json 契约见主仓
+  `scripts/lib/tools.mjs:9-21`、`board_reply` `:24-35`、`callTool` 实现 `:120-138`；
+  `postUrl` 固定 `#/p/<id>`（`scripts/lib/config.mjs:104-106`）、`summarizePost`
+  （`:108-118`）。报告生成器 steps.json 契约见主仓
   `fde2e-center-v0/scripts/e2e-report-gen.mjs:13-40`（同 schema 多仓复制）。
 
 ## 目标
 
-1. **数据模型**：`PostView.kind: "note" | "article"`（默认 `note`），schema v6
-   加列迁移，旧数据全部按 `note` 兼容；article 正文上限 512,000 字符，note 保持
-   200,000；静态快照携带 `kind` 与 `body_md`。
+1. **数据模型**：`PostView.kind: "note" | "article"`（默认 `note`），**schema v7**
+   加列迁移（v6 已被 `post_reads` 占用；v6→v7 只加 `posts.kind`），旧数据全部按
+   `note` 兼容；article 正文上限 512,000 字符，note 保持 200,000；静态快照携带
+   `kind` 与 `body_md`。已读/通知语义零改动，文章页复用既有服务端读态。
 2. **指令块**：` ```fde2e:<name> ` fenced 块（JSON body）作为结构化展示的唯一扩展点；
    解析放 `src/core/article.ts`（服务端/客户端/静态共用）；未知块与坏 JSON 安全降级；
    raw HTML 永不执行；URL scheme 与 media 引用白名单。块 schema 支持 stats 前后
@@ -86,9 +105,10 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
    feed/线程/搜索/通知一律用「长文摘要卡」，永不把全文塞进列表 DOM。
 4. **写作**：`#/compose?format=article` 全屏长文编辑器（桌面分栏 / 移动 tab、草稿、
    实时预览、四块插入、坏块定位、提交 kind=article）。
-5. **工具链**：CLI `--file`/`--format`、批量 JSONL `kind`、插件 MCP `file`/`format`、
-   报告模板 `steps.json → article markdown`（P1 输出 stats/steps/compare/callout）。
-6. **静态**：同一渲染器离线可读、0 网络请求；旧归档无 `kind` 按 `note`。
+5. **工具链**：CLI `--file`/`--format`、批量 JSONL `kind`、插件 MCP
+   `file`/`format`/`kind`/`article`、报告模板 `steps.json → article markdown`
+   （P1 输出 stats/steps/compare/callout）。
+6. **静态**：同一渲染器离线可读、0 网络请求 / 0 写；旧归档无 `kind` 按 `note`。
 7. **不变**：通知/未读/已读/可见性/线程/引用/收藏语义零改动；article 只是同一种
    帖子实体的一个新载体。
 
@@ -105,32 +125,37 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
 - 不引入新的运行时依赖（JSON schema 校验用本仓纯函数，不引 ajv/zod）。
 - 不把长文拆成多帖/多段自接链（article 是单帖正文）。
 - 静态归档不启动任何服务端解析/抓取；块在客户端解析。
+- 不新增第六块之外的块：`tabs`/`chart`/`mermaid`/`timeline`/`verdict`/`coverage`/
+  `tests`/`diff`/`forms` 等一律不做（未知块按降级占位）。
 - P1 做 stats/steps/compare/callout 四块；gallery/log、TOC/阅读进度、导入留
   P2；P3 才做打印与独立 HTML 导出样式。
 
 ## 与在途 change 的关系（合并顺序）
 
-已合入（本工作树）：`report-link-preview`、`report-thread-scope`、
-`report-thread-timeline`、`report-event-hub`。
+已合入（当前 main）：`report-link-preview`、`report-thread-scope`、
+`report-thread-timeline`、`report-event-hub`、`report-read-dwell`、
+`report-server-read-state`（worker `334e080`；schema 基线 v6，`PostView.read/read_at`
+已服务端化）。
 
 在途硬顺序（从先到后）：
 
-1. `report-read-dwell`（在途）：改 `PostCard` 根节点 ref / `data-read` /
-   `ThreadPage` 的「进入即已读」。本 change 的摘要卡分支必须与它**加性共存**。
-2. `report-notification-stacks`（在途）：改 `NotificationsPage` 行分组与点击锚点。
-   本 change 只把「打开目标」换成 `postHref(post)`，不动分组。
-3. **本 change**：最后 rebase。冲突面 `PostCard.tsx`、`Markdown.tsx`、`router.tsx`、
+1. `report-notification-stacks`（**在途，另一工作树**）：改 `NotificationsPage`
+   行分组与点击锚点。**本 change 在它合入后再实现**；实现时只把「打开目标」换成
+   `postHref(post)`，不动分组/已读。
+2. **本 change**：最后 rebase。冲突面 `PostCard.tsx`、`Markdown.tsx`、`router.tsx`、
    `AppShell.tsx`、`ComposePage.tsx`、`types.ts`、`store.ts`、`db.ts`、`http.ts`、
    `export.ts`、`static-api.ts`、`api.ts`、CLI `args/commands`、插件 `tools.mjs`/
-   `config.mjs`；全部加性编辑，不重写既有分支。
+   `config.mjs`；全部加性编辑，不重写既有分支。已读只复用既有 `isRead`/`serverReadIds`
+   与 `markPostRead` 写队列，不新建 read-set、不另发 `/api/reads` 请求。
 
 ## 影响面
 
 - 契约：`Post.kind`；`PostOp/ReplyOp.kind`；`PostView.kind`；article 512,000 上限；
-  `capabilities.features.article/article_blocks`；静态快照 `kind`；CLI `--file/--format`；
-  MCP `file/format`；`postUrl` 按 kind 生成 `#/a/<id>`。
+  `capabilities.features.article=true`、`features.article_blocks`；
+  `limits.article_chars`/`limits.article_bytes`；静态快照 `kind`；CLI `--file/--format`；
+  MCP `file`/`format`/`kind`/`article`；`postUrl` 按 kind 生成 `#/a/<id>`。
 - 服务端：`src/core/types.ts`、`src/core/validation.ts`、`src/core/article.ts`（新）、
-  `src/server/db.ts`（v6）、`src/server/store.ts`（INSERT/hydrate）、
+  `src/server/db.ts`（v7）、`src/server/store.ts`（INSERT/hydrate）、
   `src/server/http.ts`（kind 透传）、`src/server/export.ts`（快照自然携带）。
 - 前端：`src/ui/pages/ArticlePage.tsx`（新）、`src/ui/components/ArticleBody.tsx`（新）、
   `ArticleDiscussion.tsx`（新，复用 `thread-plan`/平铺行）、`ArticleSummaryCard.tsx`（新）、
@@ -141,4 +166,6 @@ Owner 要求公示板支持**内置长文章**：报告很多，不想每次手�
   主仓 `plugins/report-channel/scripts/lib/{tools,config}.mjs`、
   `scripts/report-to-article.mjs`（新）、`commands/board-report.md`、`skills/report-channel/SKILL.md`。
 - 测试/QA：`test/article-*.test.ts`、`test/export-static.test.ts`（扩展）、
-  `scripts/qa/report-longform.mjs`、`src/ui/.qa/longform/**` 截图与 `steps.json`。
+  `test/social.test.ts` 与 `test/post-reads-schema.test.ts` 的 schema 版本断言 6→7
+  （并补 v6 夹具）、`scripts/qa/report-longform.mjs`、`src/ui/.qa/longform/**`
+  截图与 `steps.json`。

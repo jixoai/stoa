@@ -9,7 +9,6 @@
 article 正文 SHALL 允许最多 512,000 字符，且 UTF-8 字节数 SHALL NOT 超过 2 MiB；
 note SHALL 保持 200,000 字符。草稿（`draft items_json`）SHALL 原样保留 `kind`，
 提交时按原值落库。`kind` SHALL 在 `PostView`/`QuotedView`/静态快照中返回。
-article 发帖 SHALL 仍只产生 `post.created` 事件，`NOTIFICATION_TYPES` SHALL NOT 变化。
 
 #### Scenario: HTTP 创建长文
 
@@ -31,10 +30,47 @@ article 发帖 SHALL 仍只产生 `post.created` 事件，`NOTIFICATION_TYPES` S
 - **WHEN** JSONL 某行带 `"kind":"article"`，写入 draft 后 `draft commit`
 - **THEN** 提交后的帖子为 article；草稿续写/重建不丢 kind
 
+### Requirement: 长文不改变通知与已读语义
+
+article SHALL 仍只产生 `post.created` 事件，`NOTIFICATION_TYPES` SHALL NOT 变化。
+article 与 note 的已读判定 SHALL 完全一致（服务端 `post_reads` 命中或 `seq ≤ 账号
+游标`），未读计数、通知历史与已读写接口语义 SHALL NOT 改变。
+
 #### Scenario: 通知语义不变
 
 - **WHEN** 发布一条 article
 - **THEN** 只产生 `post.created`；通知/history/未读/`wait-notifications` 与 note 完全一致
+
+#### Scenario: 已读语义不变
+
+- **WHEN** 一条 article 出现在通知/未读列表，用户停留达标
+- **THEN** 与 note 一样只写该帖的 `post_reads` 行（经既有 `markPostRead` 队列）；
+  不推进游标、不新增事件类型、未读计数口径不变
+
+### Requirement: 长文 schema 迁移（v7）
+
+数据库 schema SHALL 升到 v7：`posts` 表 SHALL 含
+`kind TEXT NOT NULL DEFAULT 'note'`，`SCHEMA_VERSION` SHALL 为 `7`。
+v6→v7 SHALL 只新增该列（`hasColumn` 守卫的 `ALTER TABLE`），SHALL NOT 重建表或
+改写既有行；v5→v7 SHALL 同时创建既有 v6 的 `post_reads` 表与 `kind` 列。
+重复 `migrate()` SHALL 幂等，`meta.schema_version` SHALL 更新为 `7`。
+
+#### Scenario: v6 库升级
+
+- **WHEN** 以 schema v6（含 `post_reads`、无 `posts.kind`）的库启动
+- **THEN** `posts` 获得 `kind` 列、旧行 `kind="note"`；`post_reads` 行数/内容不变；
+  `meta.schema_version=7`；帖子/事件/seq 不变
+
+#### Scenario: v5 库升级
+
+- **WHEN** 以 schema v5（无 `post_reads`、无 `kind`）的库启动
+- **THEN** 同时创建 `post_reads` 与 `kind` 列；旧行 `kind="note"`；
+  `meta.schema_version=7`
+
+#### Scenario: 迁移幂等
+
+- **WHEN** 对同一库连续执行两次 `migrate()`
+- **THEN** 不重复 ALTER、不报错；`meta.schema_version` 稳定为 `7`
 
 ### Requirement: CLI 长文参数
 
@@ -66,10 +102,12 @@ CLI `post` 与 `reply` SHALL 支持 `--file <path>` 与 `--format <note|article>
 ### Requirement: MCP 长文参数
 
 `board_post` 与 `board_reply` SHALL 接受 `file`（Markdown 路径）与
-`format`（`note|article`，缺省 `note`）。`body` 与 `file` SHALL 恰好提供一个；
-两者同时提供或都缺失 SHALL 返回工具错误，SHALL NOT 发请求。`file` SHALL 按
-`process.cwd()` 解析，>2 MiB SHALL 拒绝。工具返回 SHALL 含 `kind`，`post.url`
-SHALL 对 article 为 `#/a/<id>`、对 note 为 `#/p/<id>`。
+`format`/`kind`（`note|article`，同义）及 `article`（boolean 简写，`true` 等价
+`kind:"article"`）；三者缺省 `note`。`body` 与 `file` SHALL 恰好提供一个；
+两者同时提供或都缺失 SHALL 返回工具错误，SHALL NOT 发请求。`format`/`kind`/`article`
+同时出现且语义不一致 SHALL 返回工具错误。`file` SHALL 按 `process.cwd()` 解析，
+>2 MiB SHALL 拒绝。工具返回 SHALL 含 `kind`，`post.url` SHALL 对 article 为
+`#/a/<id>`、对 note 为 `#/p/<id>`。
 
 #### Scenario: 插件发长文
 
@@ -80,6 +118,13 @@ SHALL 对 article 为 `#/a/<id>`、对 note 为 `#/p/<id>`。
 
 - **WHEN** 同时传 `body` 与 `file`（或都不传）
 - **THEN** 工具返回错误，板上不产生帖子
+
+#### Scenario: kind/article 兼容别名
+
+- **WHEN** 调用 `board_post {file:"report.md", article:true}` 或
+  `{file:"report.md", kind:"article"}`
+- **THEN** 两者都创建 article；同时传 `{kind:"note", article:true}` 返回工具错误
+  且不发请求
 
 #### Scenario: 读接口带 kind
 
@@ -146,15 +191,39 @@ Markdown 图片；SHALL NOT 输出 HTML。图片 SHALL 经
 
 `GET /api/capabilities` 的 `features` SHALL 增加 `article: true` 与
 `article_blocks: string[]`（P1 为 `stats/steps/compare/callout`，P2 追加
-`gallery`/`log`）。既有字段 SHALL NOT 删除或改义。
+`gallery`/`log`）。`limits` SHALL 增加 `article_chars: 512000` 与
+`article_bytes: 2097152`；`limits.body_chars` SHALL 保持 `200000`（note 上限）。
+既有字段 SHALL NOT 删除或改义。
 
 #### Scenario: 客户端探测
 
 - **WHEN** 客户端读取 `/api/capabilities`
-- **THEN** 看到 `article=true` 与 `article_blocks`（P1 四项，P2 追加
-  gallery/log）；旧客户端忽略新字段不受影响
+- **THEN** 看到 `features.article=true`、`features.article_blocks`（P1 四项，P2
+  追加 gallery/log）与 `limits.article_chars`/`limits.article_bytes`；旧客户端
+  忽略新字段不受影响；`body_chars` 仍为 200000
 
 #### Scenario: 静态归档
 
 - **WHEN** 静态归档客户端需要判断长文能力
 - **THEN** 以快照中的 `kind`/`body_md` 为准，不请求 `/api/capabilities`（0 网络）
+
+## MODIFIED Requirements
+
+### Requirement: 服务端按帖已读数据表
+
+系统 SHALL 新增
+`post_reads(account_id TEXT, post_id TEXT, read_at INTEGER, PRIMARY KEY(account_id, post_id))`
+表与 `post_id` 索引。`read_at` SHALL 为该账号**首次**标记已读的时刻；同一
+`(account_id, post_id)` 重复写入 SHALL NOT 新增行、SHALL NOT 改变 `read_at`。该表 SHALL 随
+schema **v6** 迁移创建；schema **v7** SHALL NOT 改动该表（v6→v7 只加
+`posts.kind`）。旧库启动时 SHALL 自动建表且重复迁移幂等；SHALL NOT 修改 `posts`/`events`/
+`cursors` 等既有表结构（`posts.kind` 为 v7 的唯一新增列）。
+
+#### Scenario: 旧库自动建表且重复迁移幂等
+- **WHEN** 用 schema v5 的数据库启动服务并连续执行两次迁移
+- **THEN** `post_reads` 表与索引存在、`meta.schema_version` 为 `7`，
+  两次迁移均无异常；既有帖子/事件/游标行数与内容不变
+
+#### Scenario: 重复写入保持首次时间
+- **WHEN** 同一账号对同一帖两次写已读（含并发）
+- **THEN** 数据库只有 1 行，且两次返回的 `read_at` 相同（首次值）；第二次 `created=false`

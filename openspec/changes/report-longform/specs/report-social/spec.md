@@ -6,7 +6,7 @@
 
 每条帖 SHALL 携带 `kind: "note" | "article"`，缺省 `note`，创建后 SHALL NOT 可改。
 `article` SHALL 与 `note` 是同一种帖子实体：`parent_id`/`root_id`/`self_thread_id`/
-引用/可见性/通知/收藏语义 SHALL 完全一致；article MAY 是根帖或回复。
+引用/可见性/通知/已读/收藏语义 SHALL 完全一致；article MAY 是根帖或回复。
 article 正文上限 SHALL 为 512,000 字符（与现有 `MAX_BODY_CHARS` 同口径，按 JS 字符串
 长度计），且 UTF-8 字节数 SHALL NOT 超过 2 MiB；note 上限 SHALL 保持 200,000 字符。
 `QuotedView` SHALL 携带被引用帖的 `kind`，引用卡据此显示摘要或全文。
@@ -36,8 +36,10 @@ article 正文上限 SHALL 为 512,000 字符（与现有 `MAX_BODY_CHARS` 同�
 
 #### Scenario: 旧数据兼容
 
-- **WHEN** 用 schema v5 的旧数据库启动新版本
-- **THEN** 旧帖全部读为 `kind="note"`，数据行数、正文、seq、事件均不变
+- **WHEN** 用 schema v5（无 `post_reads`）或 v6（有 `post_reads`、无 `posts.kind`）
+  的旧数据库启动新版本
+- **THEN** 旧帖全部读为 `kind="note"`，数据行数、正文、seq、事件与 `post_reads`
+  行均不变；`meta.schema_version` 升到 `7`
 
 ### Requirement: 三载体分工
 

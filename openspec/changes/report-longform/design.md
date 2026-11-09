@@ -13,7 +13,7 @@
 |---|------|------|----------|
 | D1 | `Post.kind: "note" \| "article"`，默认 `note`，创建后不可改 | article 只是同一种帖子实体的载体；线程/引用/可见性/通知零改动 | 新建 articles 表/独立内容类型 |
 | D2 | note 上限 200,000 字符；article 上限 512,000 字符 | 与现有 `MAX_BODY_CHARS` 同口径（JS 字符串长度）；只放宽 article | 全帖统一放宽（短帖也失去保护） |
-| D3 | schema v6：`posts.kind TEXT NOT NULL DEFAULT 'note'`，`hasColumn` 守卫补列 | 旧库零拷贝升级；旧数据自动 note | 重建表/数据迁移脚本 |
+| D3 | schema v7（v6 已被 `post_reads` 占用）：`posts.kind TEXT NOT NULL DEFAULT 'note'`，`hasColumn` 守卫补列 | 旧库（v5/v6）零拷贝升级；旧数据自动 note；迁移幂等 | 重建表/数据迁移脚本 |
 | D4 | 三载体：note / article / 外链 HTML 审计报告 | HTML 报告继续独立托管，article 内用链接卡指过去；不把 HTML 塞进正文 | 内嵌任意 HTML / iframe |
 | D5 | 结构化展示＝fenced 指令块，info string 保留命名空间 `fde2e:<name>`，body 必须是 JSON 对象；**硬封顶 6 块**（P1 stats/steps/compare/callout；P2 gallery/log） | 普通代码块不受影响；可 schema 校验；跨端同一份解析；不做通用 DSL | 自定义 HTML 元素 / MDX / 富文本 JSON 文档 |
 | D6 | raw HTML 一律当文本（React 文本节点 / SSG `escapeHtml`），全仓禁用 `dangerouslySetInnerHTML` | 安全底线；现有渲染器本来就是逐 token | 白名单 HTML 清洗器（仍需维护解析器） |
@@ -25,8 +25,8 @@
 | D12 | 编辑器是独立全屏页 `#/compose?format=article`，桌面分栏/移动 tab | 复用现有 composer 纪律（草稿/计数/提交/只读） | 弹窗里塞长文编辑器 |
 | D13 | CLI `--file`/`--format`；批量 JSONL `kind`；MCP `file`/`format` | 代理交付报告的主路径；与现有 CLI 风格一致 | 只支持 stdin / 只支持网页 |
 | D14 | 报告模板 `steps.json → article markdown`，**P1 直接输出 stats/steps/compare/callout 四块**；gallery/log 与 TOC/进度 P2 | Owner 原话要求模板直接产出结构化报告；纯 Markdown 表格达不到目的 | P1 纯 Markdown、P2 再升级 |
-| D15 | 静态快照只带 `kind` + `body_md`，块由客户端解析 | 快照不存 HTML/重复块数据；单一信源 | 导出预渲染 HTML / 另存 blocks 数组 |
-| D16 | 通知/未读/已读/事件类型零改动 | article 发帖仍是 `post.created`；不新增通知语义 | 新增 `article.created` 事件 |
+| D15 | 静态快照只加 `kind`；正文仍是 `body_md`，块由客户端解析；既有 `read`/`read_at` 仅透传、不消费 | 快照不存 HTML/重复块数据；单一信源；静态归档没有读态消费者 | 导出预渲染 HTML / 另存 blocks 数组 |
+| D16 | 通知/未读/已读/事件类型零改动 | article 发帖仍是 `post.created`；已读仍由服务端 `post_reads` + 既有本地乐观缓存/重试队列判定；文章页不新建 read-set、不另发 `/api/reads` | 新增 `article.created` 事件 / 文章页独立 read-set |
 | D17 | 图片/图集复用 `media` + `useMediaUrl` + `ImageViewer` | 现有内容寻址、静态相对路径、查看器手势全部复用 | 新图片管线 |
 | D18 | 性能预算：列表 20 帖含长文 <300ms；文章首屏 <300ms；长任务 <50ms | 长文不能拖垮列表；摘要卡隔离全文 | 无预算 |
 | D19 | 无障碍：语义 `<article>/<nav>`、唯一 H1、TOC 键盘可达、reduced-motion 瞬切 | 交付级要求 | 只做视觉 |
@@ -34,78 +34,89 @@
 
 ---
 
-## 1. 现状与接入点（path:line）
+## 1. 现状与接入点（符号锚点 + 当前行号）
+
+> 行号取自当前 main（worker `334e080`，`report-server-read-state` 已归档合入）。
+> 依赖 change 合入后以**函数/常量/路由字面量**为锚点，不以行号为准。
 
 ### 1.1 帖子实体与写入
 
-- `Post`：`src/core/types.ts:21-37`（无 `kind`）；`PostView`：`:169-177`；
-  `ThreadNode extends PostView`：`:179-187`；`QuotedView`：`:139-148`（无 `kind`）。
+- `Post`：`src/core/types.ts:21-37`（无 `kind`）；`PostView`：`:169-184`
+  （`read?`/`read_at?` 已存在，来自 `report-server-read-state`）；`ThreadNode extends
+  PostView`：`:186-194`；`QuotedView`：`:139-148`（无 `kind`）。
 - `PostOp`/`ReplyOp`/`WriteOp`：`src/core/types.ts:116-137`。
 - 正文校验：`MAX_BODY_CHARS = 200_000`（`src/core/validation.ts:6`）、
-  `assertBody`（`:70-78`）、`validateWriteOp`（`:136-169`）。
-- 写入事务：`commitOps`（`src/server/store.ts:706-912`）；根帖 INSERT
-  `:788-802`，回复 INSERT `:838-853`；`PostRow extends Omit<Post,"tags">`
-  `:89-91`；`toPost` 原样展开行 `:180-183`。
-- 读投影：`hydratePosts`（`src/server/store.ts:1058-1222`）；引用视图在
-  `:1194-1210` 组装 `QuotedView`；软删 `:1791`；导出用
-  `visiblePostsForExport` `:2279`。
+  `assertBody`（`:70-78`）、`validateWriteOp`（`:136-168`）。
+- 写入事务：`commitOps`（`src/server/store.ts`，当前 `:848-1184`）；根帖 INSERT
+  `:932-944`，回复 INSERT `:982-995`；`PostRow` `:89-91`；`toPost` `:180-183`。
+- 读投影：`hydratePosts`（`private hydratePosts`，当前 `:1200-1416`）；引用视图在
+  `:1345-1353` 组装 `QuotedView`；已读字段由 `hydrateReadStates` 注入（`:1329`、
+  `:1356`）；软删 `softDelete` `:1984`；导出用 `visiblePostsForExport`
+  `:2504-2512`。
 - HTTP：`readJson`（`src/server/http.ts:94-105`）、`POST /api/posts`
-  `:644-661`、`POST /api/posts/:id/replies` `:662-679`。
+  `:655-671`、`POST /api/posts/:id/replies` `:673-689`。
 
 ### 1.2 Markdown 与渲染
 
 - `Block` 联合：`src/core/markdown.ts:15-22`；`escapeHtml` `:24-31`；
   `isSafeHref` `:33-35`；`parseInline` `:37-134`；`parseMarkdown`
   `:143-242`；fenced code 解析保留 info string 为 `lang` `:163-175`；
-  `renderMarkdownHtml` `:267-300`（SSG/测试用）。
+  `renderMarkdownHtml` `:267-300`（SSG/测试用）。当前 fence 只认行首 3 反引号、
+  闭合只认 `^```\s*$`；4+ 反引号与「闭合 run ≥ 开启 run」是本 change 的加性扩展（§3.1）。
 - UI 渲染：`Markdown` 组件 `src/ui/components/Markdown.tsx:297-314`；
   `renderBlock` `:205-294`；代码块 `:255-263`；表格（横向滚动）
   `:264-290`；图片 `MarkdownImage` `:11-35`（`/api/media/<id>` 走 blob）。
-- feed 截断：`PostCard` 的 `longBody`/`clamped` `src/ui/components/PostCard.tsx:95-97`、
-  正文 `:241-249`；自接分支 `:131-183`；操作栏 `:272-377`。
-- 详情页 focal：`src/ui/pages/ThreadPage.tsx:979-1030`（`PostCard variant="focal"`，
-  全文不截断）；打开帖子入口 `:854`。
+- feed 截断：`PostCard` 的 `longBody`/`clamped` `src/ui/components/PostCard.tsx:138-139`、
+  正文 `:289-297`；自接分支 `:173-228`；操作栏 `:330-423`；根 `article` 的
+  `data-post-id`/`data-read` `:180-186`、`:231-238`。
+- 详情页 focal：`src/ui/pages/ThreadPage.tsx` 的 focal `<PostCard variant="focal">`
+  `:999-1017`（全文不截断）；打开帖子入口 `openPost`/`replyPost` `:849-850`。
 
 ### 1.3 编辑器
 
-- `PostComposer`：草稿 localStorage `src/ui/components/PostComposer.tsx:102-123`；
-  撰写/预览 tab 与 200,000 计数 `:495-508`；提交 `:416-468`；静态只读
-  `:470-481`。
-- 发帖页：`ComposePage` `src/ui/pages/ComposePage.tsx:11-99`；回复编辑器
-  `ReplyComposer` `src/ui/components/ReplyComposer.tsx:38-46`、复用 composer
-  `:82-95`。
+- `PostComposer`：草稿 localStorage `src/ui/components/PostComposer.tsx:106-121`；
+  防抖持久化 `:179-193`；撰写/预览 tab 与 200,000 计数 `:497-511`；提交
+  `submit` `:420-471`；静态只读 `:474-488`。
+- 发帖页：`ComposePage` `src/ui/pages/ComposePage.tsx:11-100`；回复编辑器
+  `ReplyComposer` `src/ui/components/ReplyComposer.tsx:26-101`、复用 composer
+  `:80-95`。
 - 输入区规范：官方 `InputGroup`（`report-app-ui` 既有 Requirement）。
 
 ### 1.4 路由与壳
 
-- `Route` 联合/解析/路径/深度：`src/ui/lib/router.tsx:20-51`、`:53-72`、
-  `:118-125`；详情覆盖层 `DetailView` `src/ui/components/AppShell.tsx:39-50`、
-  渲染 `:110-122`。
-- 所有「打开帖子」硬编码 `/p/<id>`：`TimelineFeed.tsx:417`、
-  `ThreadPage.tsx:847,854`、`SearchPage.tsx:114`、`NotificationsPage.tsx:192,201`。
+- `Route` 联合/解析/路径/键/标签/深度：`src/ui/lib/router.tsx:20-51`、
+  `routePath` `:53-72`、`routeKey` `:75-94`、`routeLabel` `:96-115`、
+  `routeDepth` `:118-125`；深链合成栈 `initHistory` `:177-206`。
+- 详情覆盖层 `DetailView` `src/ui/components/AppShell.tsx:41-56`、渲染 `:112-126`。
+- 所有「打开帖子」硬编码 `/p/<id>`：`TimelineFeed.tsx` `openPost`（`:416-417`）、
+  `ThreadPage.tsx` `openPost`/`replyPost`（`:849-850`）、`SearchPage.tsx:114-115`、
+  `NotificationsPage.tsx:199,208`、`QuoteCard.tsx:61`（整卡链接）。
 - 平铺 timeline planner 已是共享纯函数：`planForThreadView`
-  `src/ui/lib/thread-plan.ts:222-260`（`buildTimelinePlan` `:100-215`）；
-  ThreadPage 行渲染 `ThreadPage.tsx:904-1030`（`TimelineRow` `:82-152`）。
+  `src/ui/lib/thread-plan.ts:256-301`（`buildTimelinePlan` `:135-255`）；
+  ThreadPage 行渲染 `TimelineRow` `ThreadPage.tsx:83-150`、focal 行 `:975-1030`。
   文章内嵌讨论区复用同一 planner 与行渲染。
 
 ### 1.5 静态导出
 
 - `SnapshotPost extends Omit<PostView,"media"|"quoted">`
-  `src/server/export.ts:65-68`；`Snapshot` `:81-94`；`safeJson` 转义 `<`
-  `:96-101`；`buildSnapshot` `:142-200`；`injectSnapshot` `:206-212`；
-  `runExport` `:248-316`。
-- 静态客户端：`SnapshotPost` `src/ui/lib/static-api.ts:53-75`；
-  `ReportSnapshot` `:77-90`；`hydrate` `:287-336`；`installStaticApi`
-  `:827-829`；`staticMediaUrl` `:765-771`。
+  `src/server/export.ts:65-72`（已显式声明 `read`/`read_at`）；`Snapshot` `:81-95`；
+  `safeJson` 转义 `<` `:99-104`；`buildSnapshot` `:145-203`；`injectSnapshot`
+  `:209-217`；`runExport` `:251-319`。
+- 静态客户端：`SnapshotPost` `src/ui/lib/static-api.ts:54-79`（已含 `read`/`read_at`）；
+  `ReportSnapshot` `:81-95`；`hydrate` `:291-344`（read/read_at 显式透传 `:340-341`）；
+  `staticMediaUrl` `:772-776`；`installStaticApi` `:848-850`。
+- 已有静态规格：`openspec/specs/report-static-mode/spec.md` 的「静态归档不启用视窗停留
+  已读」「静态归档不发起已读同步」——文章页必须遵守（不建 observer、不写已读队列、
+  不渲染 `data-read`）。
 
 ### 1.6 CLI / 插件 / 报告模板
 
-- CLI 入口 `src/cli/main.ts:1-53`；flag 白名单 `src/cli/args.ts:24-56`；
+- CLI 入口 `src/cli/main.ts:1-53`；flag 白名单 `src/cli/args.ts:25-54`；
   `cmdPost` `src/cli/commands.ts:566-584`；`cmdReply` `:585-604`；
-  JSONL 批处理 `:605-716`；`API_ROUTES`/`CLI_COMMANDS`
-  `src/core/protocol.ts:11-77`；`Capabilities` `:79-100`。
-- 插件（主仓）：`board_post` schema `plugins/report-channel/scripts/lib/tools.mjs:8-22`、
-  实现 `:112-119`；`board_reply` `:24-36`；`api` `config.mjs:70-102`；
+  JSONL 批处理 `:605-716`；`CLI_COMMANDS`/`API_ROUTES`
+  `src/core/protocol.ts:15-90`；`Capabilities` `:92-132`、`capabilities()` `:134-...`。
+- 插件（主仓）：`board_post` schema `plugins/report-channel/scripts/lib/tools.mjs:9-21`、
+  `board_reply` `:24-35`、`callTool` 实现 `:120-138`；`api` `config.mjs:70-102`；
   `postUrl`/`summarizePost` `config.mjs:104-118`。
 - steps.json 契约（既有 e2e-report-gen）：`fde2e-center-v0/scripts/e2e-report-gen.mjs:13-40`
   （`title/brand/subtitle/meta/thesis/env/sections[].{title,note,steps[]}`，
@@ -156,6 +167,9 @@ export interface ReplyOp {
   显示标题 + 摘要 + 「长文」，不渲染全文（`QuoteCard` 现在用 line-clamp-3 渲染
   `body_md`，article 分支改为摘要）；整卡链接用 `postHref(quoted)`（article →
   `#/a/<id>`，note → `#/p/<id>`）。
+- `read`/`read_at` 不进入本 change 的写入契约：article 与 note 共用既有服务端按帖
+  已读（`post_reads` 命中或 `seq ≤ 游标`）与客户端乐观缓存/重试队列；`kind` 不改变
+  已读判定、通知类型或未读计数。
 
 ### 2.2 上限
 
@@ -172,50 +186,74 @@ export interface ReplyOp {
   `body too large (max 2 MiB utf-8 for article)`。
 - 编辑器计数条按当前 kind 显示上限；note 仍显示 200,000。
 
-### 2.3 schema v6 迁移
+### 2.3 schema v7 迁移
+
+当前基线：schema **v6**（`report-server-read-state` 已归档，`post_reads` 表占用 v6，
+`SCHEMA_VERSION = 6`）。本 change 升到 **v7**，v6→v7 **只加 `posts.kind` 列**；
+v5→v7 则同时补 `post_reads`（既有 v6 DDL，`CREATE TABLE IF NOT EXISTS`）与 `kind`。
 
 ```sql
 -- 新库：posts 建表语句直接包含
 kind TEXT NOT NULL DEFAULT 'note'
 
--- 旧库（hasColumn 守卫，幂等）
+-- 旧库（v5/v6；hasColumn 守卫，幂等）
 ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'note';
 ```
 
-- `SCHEMA_VERSION = 6`（`src/server/db.ts:49`）；`hasColumn` 已有
-  （`:51-54`）；补列放在 tags 补列同一段（`:242-244` 之后）。
+- `SCHEMA_VERSION = 7`（`src/server/db.ts:49`）；`hasColumn` 已有
+  （`:51`）；补列放在 tags 补列同一段（`:252-254` 之后）。
 - 不建索引：所有读路径按 `id/parent_id/root_id/created_at` 取，`kind` 只参与
   渲染分支；不新增 `WHERE kind` 查询。
 - 不写 CHECK 约束：SQLite `ALTER TABLE ADD COLUMN` 的约束能力有限，且 `kind`
   由 core 校验；DB 层只保证默认值。
 - 迁移幂等：重复 `migrate()` 不重复 ALTER；`meta.schema_version` 更新
-  （`:322-325`）。
+  （`:333-335`）。
 - 旧数据：全部自动 `note`；`SELECT *` 行带 `kind='note'`，`toPost` 原样展开。
+- 夹具覆盖：**v5 夹具**（无 `post_reads`、无 `kind`）→ 迁移后表/列齐全、
+  `schema_version=7`；**v6 夹具**（有 `post_reads`、无 `kind`）→ 只补 `kind`，
+  `post_reads` 行数与内容不变；两者均连续 `migrate()` 两次无错。
+- 既有版本断言同步：`test/social.test.ts`（`"6"`）与
+  `test/post-reads-schema.test.ts`（`SCHEMA_VERSION`/`metaVersion` 的 `6` 断言）
+  全部改 `7`；后者保留 v5 模拟用例并新增 v6 夹具用例。
 
 ### 2.4 写入与读投影
 
-- `commitOps` 根帖 INSERT（`store.ts:788-802`）与回复 INSERT（`:838-853`）
+- `commitOps` 根帖 INSERT（`store.ts:932-944`）与回复 INSERT（`:982-995`）
   增加 `kind` 列；值来自 `op.kind ?? "note"`（`validateWriteOp` 已归一化）。
 - `PostRow`（`:89-91`）随 `Post` 自动获得 `kind`；`toPost`（`:180-183`）无需改。
-- `hydratePosts`（`:1058-1222`）无需改：`PostView` 由 `...post` 带出 `kind`；
-  引用视图组装处（`:1194-1210`）补 `kind: visibleQuoted.kind`。
+- `hydratePosts`（`:1200-1416`）无需改 `kind`：`PostView` 由 `...post` 带出；
+  引用视图组装处（`:1345-1353`）补 `kind: visibleQuoted.kind`。已读字段
+  `read/read_at` 仍由既有 `hydrateReadStates` 注入，本 change 零改动。
 - 草稿：`items_json` 直接序列化 `WriteOp`，`kind` 随 op 保存/恢复
-  （`src/core/drafts.ts:16-23` 只是 JSON parse/serialize）。
+  （`src/core/drafts.ts:17-30` 只是 JSON parse/serialize）。
 - 批量 JSONL：每行 `"kind":"article"` 生效；`validateWriteOp` 归一化；无 kind
   默认 note。
-- 软删（`store.ts:1791`）：无改动（正文置空逻辑已在 hydrate 里按 `deleted_at`）。
+- 软删（`softDelete` `:1984`）：无改动（正文置空逻辑已在 hydrate 里按 `deleted_at`）。
 - 事件：article 发帖仍写 `post.created`；不新增事件类型，`NOTIFICATION_TYPES`
   不变（`src/core/types.ts:81`）。
 
 ### 2.5 静态快照
 
-- `SnapshotPost` 是 `Omit<PostView,...>`，`kind` 自动进入快照；`buildSnapshot`
-  的 `...post` 展开（`export.ts:161-165`）无需改。
+- `SnapshotPost` 是 `Omit<PostView,...>` 并已显式声明 `read`/`read_at`
+  （`export.ts:65-72`）；`kind` 自动进入快照；`buildSnapshot` 的 `...post` 展开
+  （`export.ts:164-168`）无需改。
 - `static-api.ts` 的 `SnapshotPost` 加可选 `kind?: PostKind`；`hydrate` 默认
   `kind: post.kind === "article" ? "article" : "note"`（旧归档缺字段 → note）；
-  手写快照的 quoted 回退分支同样补 `kind`。
+  手写快照的 quoted 回退分支同样补 `kind`。既有 `read/read_at` 映射
+  （`static-api.ts:340-341`）逐字保留——静态 UI 不消费读态（见 §7）。
 - 快照**不存**预渲染 HTML、不存 blocks 数组：块就在 `body_md` 的 fenced 内容里，
   客户端用同一 `parseArticle` 解析（单一信源，见 D15）。
+
+### 2.6 能力声明（protocol）
+
+- `Capabilities.features` 追加 `article: boolean` 与 `article_blocks: string[]`
+  （与现有 `post_reads`/`event_hub` 等布尔、`auth`/`pagination` 字符串同风格，
+  命名 snake_case）。P1 值：`article: true`、
+  `article_blocks: ["stats","steps","compare","callout"]`；P2 追加 `"gallery"`/`"log"`。
+- `Capabilities.limits` 追加 `article_chars: 512_000` 与
+  `article_bytes: 2 * 1024 * 1024`；`body_chars` 保持 200,000（note 上限语义不变）。
+- `API_ROUTES`/`CLI_COMMANDS` 不变（无新端点/新命令）；`scripts/check.mjs` 契约
+  lint 照常通过。
 
 ---
 
@@ -263,8 +301,9 @@ schema 错一律降级 + warning，不整篇报错。
 生成）、`timeline`（Markdown 表格）、`verdict`/`decision`（callout+stats+list
 已够）、`coverage`/`matrix`（Markdown 表格）、`tabs`（破坏静态/无障碍）、
 `mermaid`/`chart`/`math`（本地 0 使用、成本高）、`checklist`（Markdown task
-list）、通用 code/table/image/quote（Markdown 已够）、iframe/embed/html
-（安全底线）。
+list）、`tests`（测试矩阵用 Markdown 表格）、`diff`（代码差异用代码块）、
+`forms`（表单不做）、通用 code/table/image/quote（Markdown 已够）、
+iframe/embed/html（安全底线）。
 
 **与 Markdown 分工**：表格/代码/图片/列表/引用继续用 Markdown；块只负责
 「有状态、成对关系、折叠/网格语义」的展示。
@@ -385,7 +424,7 @@ export function articleSummary(markdown: string): ArticleStats;
   整篇渲染；`error` 只降级该块并供编辑器定位。
 - **禁用**：`dangerouslySetInnerHTML`、`innerHTML`、`eval`、`new Function`、
   远程脚本/iframe、`<style>` 注入。渲染器只输出 React 元素。
-- **快照注入**：`safeJson` 已转义 `<`/U+2028/U+2029（`export.ts:96-101`），
+- **快照注入**：`safeJson` 已转义 `<`/U+2028/U+2029（`export.ts:99-104`），
   `</script>` 不会截断内联 JSON；article 正文同样受益。
 - **服务端不解析块**：`assertBody` 只校验长度/类型；块 schema 是渲染契约。
   服务端不执行、不存储 HTML，写路径保持 <200ms。
@@ -430,16 +469,16 @@ export function articleSummary(markdown: string): ArticleStats;
 
 ### 4.1 路由
 
-- `Route` 增加 `{ name: "article"; id: string }`（`router.tsx:20-28`）。
+- `Route` 增加 `{ name: "article"; id: string }`（`router.tsx:20-30`）。
 - `parseHash`：`segments[0] === "a" && segments[1]` → article（在 `p` 分支旁）。
 - `routePath`：`/a/<encodeURIComponent(id)>`；`routeKey`：`article:<id>`；
   `routeLabel`：`长文`；`routeDepth`：1（详情层）。
 - 深链：既有 `initHistory` 的「根 → 子页」合成栈自动适用（`router.tsx:177-206`）。
 - `AppShell.DetailView` 增加 `case "article": return <ArticlePage />`。
 - `postHref(post)`：`post.kind === "article" ? /a/<id> : /p/<id>`；所有「打开帖子」
-  入口改用它（`TimelineFeed.tsx:417`、`ThreadPage.tsx:847,854`、
-  `SearchPage.tsx:114`、`NotificationsPage.tsx:192,201`、`QuoteCard.tsx` 的整卡
-  链接）。卡片上的回复入口仍用 `/p/<id>?reply=1`（讨论页）；文章页自身的回复
+  入口改用它（`TimelineFeed.tsx` `openPost`、`ThreadPage.tsx` `openPost`、
+  `SearchPage.tsx:114-115`、`NotificationsPage.tsx:199,208`、`QuoteCard.tsx:61`
+  的整卡链接）。卡片上的回复入口仍用 `/p/<id>?reply=1`（讨论页）；文章页自身的回复
   用当前页 `ReplyComposer`（§4.2）。
 
 ### 4.2 页面结构
@@ -491,9 +530,15 @@ ArticlePage
     链接到 `#/p/<id>`。
   - 实时：沿用线程页的 EventHub `post.created` 精确失效/合并逻辑（不新开连接、
     不整页刷新）；新回复按既有线程页规则并入。
-  - **read-dwell 共存**：article 根容器带 `data-post-id`（及 read-dwell 的
-    `data-read`），回复行是普通 `PostCard`；共用 read-dwell 的全局观察器/注册
-    入口，禁止另建第二个 observer。静态归档不启用观察器。
+  - **read-dwell / 读态共存（服务端已读基线）**：在线文章页的正文根容器带
+    `data-post-id`（及 read-dwell 的 `data-read`），由 `ArticlePage` 用
+    `useReadDwell().observe(el, target)` 注册（与 `PostCard` 同一入口），回复行是
+    普通 `PostCard`（自动注册）；共用既有 `ReadDwellProvider` 的全局观察器/注册入口与
+    `markPostRead` 写路径——本地即时 + `report.readq` 队列异步批量写服务端
+    `post_reads`，**禁止**另建 observer/read-set、禁止文章页直接发 `/api/reads`。
+    已读判定复用 Provider 的 `isRead`（`serverReadIds ∪ 本地乐观缓存 ∪ 游标`），
+    文章页不自算。静态归档按 `report-static-mode` 规格：不建 observer、不渲染
+    `data-read`、不写已读队列/存储。
   - 静态：`StaticReportClient.thread` 从快照返回既有回复；讨论区只读展示，
     `ReplyComposer` 显示只读提示，0 网络请求。
 - **删除/不可见**：软删显示「此帖已删除」占位；404/不可见显示错误 Alert +
@@ -511,7 +556,7 @@ ArticlePage
 - `PostCard` 分支：`post.kind === "article"` 时，正文槽位渲染
   `<ArticleSummaryCard post={post}/>`，**不再**执行 `longBody`/`clamp` 逻辑；
   媒体/引用/预览/标签/操作栏保持原顺序。
-- 自接分支（`PostCard.tsx:131-183`）同样用摘要卡（article 回复可能出现在自接链）。
+- 自接分支（`PostCard.tsx:173-228`）同样用摘要卡（article 回复可能出现在自接链）。
 - 摘要卡只解析一次：`useMemo(() => articleSummary(post.body_md), [post.body_md])`；
   同帖多卡共享 `articleSummary` 的纯函数结果（可按 body 哈希做小 LRU，P2 可选）。
 - 通知行：`NotificationsPage` 的标题/摘要若取 `body_md`，对 article 用
@@ -609,7 +654,7 @@ ArticlePage
 ### 5.2 草稿与提交
 
 - 草稿键：`report.draft.v1:article:root`（复用 `PostComposer` 的 v1 命名空间与
-  300ms 防抖；见 `PostComposer.tsx:102-123`）；引用场景用
+  300ms 防抖；见 `PostComposer.tsx:106-121`、`:179-193`）；引用场景用
   `article:quote:<id>`。
 - 恢复：挂载时读取；`body` 为空才清键；附件不持久化（与现有 composer 一致）。
 - 体积：>400,000 字符时提示「草稿过大，本地可能无法保存」；提交仍可进行。
@@ -669,13 +714,18 @@ ArticlePage
 
 ### 6.2 插件 MCP（主仓 `plugins/report-channel`）
 
-- `board_post` schema（`tools.mjs:8-22`）新增：
-  - `file: { type: "string", description: "读取 Markdown 文件的绝对/相对路径" }`
-  - `format: { enum: ["note", "article"], default: "note" }`
+- `board_post` schema（`tools.mjs:9-21`）新增：
+  - `file?: string`：读取 Markdown 文件的绝对/相对路径；
+  - `kind?: { enum: ["note", "article"] }`：规范载体字段，缺省 `note`；
+  - `format?: { enum: ["note", "article"] }`：与 CLI `--format` 对齐的别名，与 `kind` 同义；
+  - `article?: boolean`：兼容简写，`true` 等价 `kind: "article"`（缺省/`false` ⇒ note）；
   - `body` 改为可选；运行时要求 `body` 与 `file` **恰好一个**。
-- `board_reply`（`:24-36`）同样加 `file`/`format`。
-- `callTool`（`:112-119`）：`file` 用 `node:fs/promises.readFile` 读取，按
-  `process.cwd()` 解析相对路径；>2 MiB 报错；请求体带 `kind`。
+- `board_reply`（`:24-35`）同样加 `file`/`kind`/`format`/`article`。
+- 归一化：`kind = args.kind ?? (args.article === true ? "article" : undefined) ??
+  args.format ?? "note"`；若 `kind`/`format`/`article` 同时出现且语义不一致，SHALL 返回
+  工具错误、SHALL NOT 发请求。
+- `callTool`（`:120-138`）：`file` 用 `node:fs/promises.readFile` 读取，按
+  `process.cwd()` 解析相对路径；>2 MiB 报错；请求体带归一化后的 `kind`。
 - `postUrl`（`config.mjs:104-106`）按 `post.kind` 生成 `#/a/<id>` 或 `#/p/<id>`；
   `summarizePost`（`:108-118`）带 `kind`，`board_read` 返回时 agent 可区分载体。
 - `board-report` 命令与 `SKILL.md` 增补：长报告先 `report-to-article` 再
@@ -742,17 +792,21 @@ ArticlePage
 
 ## 7. 静态导出
 
-- **快照**：`buildSnapshot`（`export.ts:142-200`）不变；`SnapshotPost` 自动带
-  `kind`；`body_md` 原样；不预渲染 HTML、不存 blocks 数组（D15）。
+- **快照**：`buildSnapshot`（`export.ts:145-203`）不变；`SnapshotPost` 自动带
+  `kind`，并已显式携带 `read/read_at`（read-state 基线）；`body_md` 原样；
+  不预渲染 HTML、不存 blocks 数组（D15）。
 - **旧归档**：`static-api.ts` 的 `hydrate` 缺 `kind` 默认 `note`；旧快照
   `version:1` 不需要升级。
-- **离线**：`ArticlePage`/`ArticleBody`/摘要卡全部走客户端解析；
-  `staticMediaUrl` 把 `/api/media/<hash>` 映射到相对 `media/<hash>.<ext>`
-  （`static-api.ts:765-771`）；`ImageViewer` 复用。
-- **0 网络**：不请求 `/api/plugins`、不请求 TOC、不请求字体/CDN；Playwright
-  断言 `file://` 打开 article 时请求数 0（除本地文件）。
+- **离线**：`ArticlePage`/`ArticleBody`/摘要卡/四块全部走客户端解析
+  （`parseArticle`），正文与块渲染在 `file://` 下完全可用；`staticMediaUrl`
+  把 `/api/media/<hash>` 映射到相对 `media/<hash>.<ext>`
+  （`static-api.ts:772-776`）；`ImageViewer` 复用。
+- **0 网络 / 0 写**：不请求 `/api/*`（含 `/api/reads*`、`/api/plugins`）、不请求
+  TOC/字体/CDN；不建 read-dwell observer、不渲染 `data-read`、不写
+  `report.read*` 队列/缓存（`report-static-mode` 既有规格）。Playwright 断言
+  `file://` 打开 article 时请求数 0（除本地文件）、localStorage 无已读键。
 - **只读**：回复/引用/收藏/上传全部 `toastReadOnly`；复制链接可用；
-  静态横幅（`AppShell.tsx:61-79`）不变。
+  静态横幅（`AppShell.tsx`）不变。
 - **搜索/列表**：静态 `StaticReportClient.search` 仍按 `body_md.includes`；
   article 正文可被搜到（无需改索引）。
 - **体积**：一篇 512k 字符 article 约 0.5–1.5MB JSON；导出仍单文件，可接受；
@@ -774,11 +828,11 @@ ArticlePage
 | A6 | 性能 | 512KB article：feed 20 帖（含 5 篇 article）首屏 <300ms；thread 页不渲染全文 DOM（`[data-testid=article-summary]` 存在、正文段落节点 <20）；article view（正文 + 四块 + 嵌入讨论）首屏 <300ms；滚动 long task <50ms；内存无持续增长（PerformanceObserver） |
 | A7 | TOC/锚点（P2） | H2/H3 生成 TOC；重复标题 `x`/`x`/`x` → `x`/`x-2`/`x-3`；点击滚动后标题顶边在吸顶头下沿 ±4px；`?s=<slug>` 深链定位；进度条 0→1 单调；active 项随滚动切换；reduced-motion 瞬切 |
 | A8 | feed 摘要 | 长文卡含「长文」Badge、标题 2 行、摘要 2 行、「约 N 分钟」；点击进 `/a/<id>`；DOM 不含正文全文；搜索/收藏/成员页/通知同款；note 卡行为不变 |
-| A9 | 通知/已读不变 | article 发帖产生且仅产生 `post.created`；通知/未读/history/CLI `wait-notifications` 与 note 完全一致；`NOTIFICATION_TYPES` 未变；打开 article 不额外推进游标；read-dwell 合入后 article 根容器与回复卡共用同一观察器（不新建第二个），停留达标只写 per-post read-set |
-| A10 | 静态 | export 快照含 `kind`/`body_md`；`file://` 打开 article 正常、四块（P2 含 gallery/log）/图片相对路径可用、嵌入讨论区只读展示既有回复、0 网络请求；log 默认收起可展开；旧归档无 `kind` 按 note；静态写操作只读提示；`/a/<note>` 回退 `/p/<note>` |
+| A9 | 通知/已读不变 | article 发帖产生且仅产生 `post.created`；通知/未读/history/CLI `wait-notifications` 与 note 完全一致；`NOTIFICATION_TYPES` 未变；打开 article 不额外推进游标；文章页与回复卡共用既有 read-dwell 观察器（不新建第二个），停留达标走既有 `markPostRead` 写路径（本地即时 + `report.readq` 异步批量写服务端 `post_reads`），不新建 read-set、不发独立 `/api/reads` 请求 |
+| A10 | 静态 | export 快照含 `kind`/`body_md`（既有 `read/read_at` 仅透传）；`file://` 打开 article 正常、四块（P2 含 gallery/log）/图片相对路径可用、嵌入讨论区只读展示既有回复、0 网络 / 0 写（无 `/api/reads*`、无 `report.read*`、无 `data-read`）；log 默认收起可展开；旧归档无 `kind` 按 note；静态写操作只读提示；`/a/<note>` 回退 `/p/<note>` |
 | A11 | CLI | `post --file report.md --format article` 成功且返回 `kind=article`；`--file`+位置参数/`--stdin` 互斥报错；>2MiB 文件拒绝；batch JSONL `kind` 生效；`reply --format article` 生效；`--format bogus` 报错 |
-| A12 | 插件 | `board_post {file, format:"article"}` 成功；`file`+`body` 同时给报错；两者都缺报错；返回 `kind` 与 `#/a/<id>` URL；`board_read` 摘要含 `kind`；`board_reply` 同样支持 |
-| A13 | 迁移 | v5 库（含旧帖）启动后 `PRAGMA table_info(posts)` 含 `kind`、旧行 `kind=note`、`schema_version=6`；重复 `migrate()` 幂等；旧帖导出 `kind=note`；数据行数/正文不变 |
+| A12 | 插件 | `board_post {file, format:"article"}` 成功；`{file, kind:"article"}` 与 `{file, article:true}` 同效；`{kind:"note", article:true}` 报错且不发请求；`file`+`body` 同时给报错、两者都缺报错；返回 `kind` 与 `#/a/<id>` URL；`board_read` 摘要含 `kind`；`board_reply` 同样支持 |
+| A13 | 迁移 | v5 夹具（无 `post_reads`/无 `kind`）与 v6 夹具（有 `post_reads`/无 `kind`）启动后 `PRAGMA table_info(posts)` 含 `kind`、旧行 `kind=note`、`schema_version=7`；v6 夹具的 `post_reads` 行数/内容不变；重复 `migrate()` 幂等；旧帖导出 `kind=note`；数据行数/正文不变 |
 | A14 | 编辑器/无障碍/响应式 | 390×844：全屏 + 撰写/预览 Tabs + 提交在 InputGroup；1280×900：左右分栏；草稿恢复/清除；P1 四块插入模板可用（P2 加 gallery/log）；坏块禁止提交并定位行，错误面板含 line+block+fix；双击提交只发一次；Tab/Enter 可达；compare/gallery/log 键盘与 ARIA 正确；嵌入讨论区回复行可键盘操作；200% 字号无横向溢出；标题层级唯一；TOC `aria-label`（P2）；reduced-motion 无平滑滚动 |
 
 证据：每步截图（390/1280）+ 网络记录（0 请求/请求体 kind）+ `bun test`/typecheck
@@ -790,13 +844,13 @@ ArticlePage
 
 | 阶段 | 范围 | 验收 | 可延后 |
 |------|------|------|--------|
-| **P1** | `kind` + 512,000 上限 + schema v6；`core/article.ts` 解析框架（指令块识别/未知降级/raw HTML 安全/标题/摘要/阅读时长/slug）；`#/a/<id>` 文章视图（prose + **正文下方嵌入讨论区** + 独立线程页链接）；**P1 四块 stats/steps/compare/callout** + 渲染件；摘要卡（feed/线程/搜索/通知）；全屏编辑器（草稿/预览/提交 + 四块插入）；静态导出携带 kind + 四块 + 讨论区只读；CLI `--file/--format`；插件 `file/format`；报告模板**直接输出四块** | A1、A2（P1 四块）、A3、A4、A5、A6、A8、A9、A10、A11、A12、A13、A14（TOC 项除外） | gallery、TOC/进度、导入、`?s=` |
+| **P1** | `kind` + 512,000 上限 + schema v7；`core/article.ts` 解析框架（指令块识别/未知降级/raw HTML 安全/标题/摘要/阅读时长/slug）；`#/a/<id>` 文章视图（prose + **正文下方嵌入讨论区** + 独立线程页链接）；**P1 四块 stats/steps/compare/callout** + 渲染件；摘要卡（feed/线程/搜索/通知）；全屏编辑器（草稿/预览/提交 + 四块插入）；静态导出携带 kind + 四块 + 讨论区只读；CLI `--file/--format`；插件 `file/format/kind/article`；报告模板**直接输出四块** | A1、A2（P1 四块）、A3、A4、A5、A6、A8、A9、A10、A11、A12、A13、A14（TOC 项除外） | gallery、TOC/进度、导入、`?s=` |
 | **P2** | `gallery` 块 + 多图查看器；`log` 块（原生 details，默认收起）；TOC/锚点/阅读进度/active/`?s=`；**Markdown 扩展**（task list/footnote/figure caption，不做新块）；编辑器 gallery/log 插入/图片/导入 `.md`；报告模板 `logs→log`、多图步骤可选 gallery | A2（gallery/log）、A7；A1/A14 的 Markdown 扩展/TOC 断言 | 打印、独立 HTML 导出 |
 | **P3** | 打印样式（`@media print`：去导航/进度/操作栏、分页、图不截断）；单篇独立 HTML 导出（同一渲染器 + 内联 CSS，供外链审计报告）；文档/归档 | 打印预览无溢出/无交互件；导出 HTML 离线可读；`npx openspec validate report-longform --strict` | 文章级 SEO/OG、系列/专栏 |
 
-**依赖**：P1 自带四块与嵌入讨论区，不依赖 P2；P2 的 gallery/TOC/导入在 P1 之上
-加性扩展；P3 依赖 P1 渲染器。P1 报告模板直接产出四块，满足 Owner「模板即结构化
-报告」的要求。
+**依赖**：实现前必须等 `report-notification-stacks` 合入（§11）；P1 自带四块与嵌入
+讨论区，不依赖 P2；P2 的 gallery/TOC/导入在 P1 之上加性扩展；P3 依赖 P1 渲染器。
+P1 报告模板直接产出四块，满足 Owner「模板即结构化报告」的要求。
 
 ---
 
@@ -806,12 +860,12 @@ ArticlePage
 |------|------|
 | 512KB 正文拖垮列表/线程 | 摘要卡隔离（D10）；feed/线程不渲染全文；A6 性能预算 |
 | 嵌入讨论区拖慢长文 | 只渲染 focal 后代 + 子线程入口（与线程页同深度上限）；大线程/深链走 `#/p/<id>`；A6 |
-| read-dwell 与文章页各建观察器 | article 根容器与回复卡共用 `[data-post-id]` 目标/注册入口；禁止第二个 observer；A9 |
+| read-dwell/读态与文章页各建一套 | article 根容器与回复卡共用 `[data-post-id]` 目标/注册入口与 `markPostRead` 队列；禁止第二个 observer、禁止文章页 read-set/直接 `/api/reads`；A9 |
 | XSS / HTML 注入 | 全链路文本渲染；`escapeHtml`；无 `dangerouslySetInnerHTML`；A4 攻击串测试；快照 `safeJson` |
 | 坏块导致整篇白屏 | 未知/坏 JSON/schema 错误一律降级；解析不抛异常；A3 |
 | steps command/output/log 体积过大 | command≤4KiB、output≤8KiB、log.text≤16000；超出截断 + warning；pre 横向滚动；单块 16KiB 硬上限 |
-| 块集膨胀成 DSL | 硬封顶 6 块；toc/timeline/verdict/coverage/tabs/mermaid/chart/math/checklist 一律不做；未知块降级 |
-| 旧库迁移失败 | `hasColumn` 守卫 + 默认值；A13 用 v5 夹具验证；迁移幂等 |
+| 块集膨胀成 DSL | 硬封顶 6 块；toc/timeline/verdict/coverage/tabs/mermaid/chart/math/checklist/tests/diff/forms 一律不做；未知块降级 |
+| 旧库迁移失败 | `hasColumn` 守卫 + 默认值；A13 用 v5 与 v6 夹具验证；迁移幂等 |
 | 旧客户端不识别 kind | 旧客户端把 article 当普通帖显示全文（可接受）；新客户端摘要卡；API 字段加性 |
 | 静态归档体积/离线失败 | 只存 MD；图片走 media 相对路径；外链图片离线占位；A10 0 网络 |
 | 草稿 localStorage 超限 | >400k 警告；提交不依赖草稿；失败不阻断 |
@@ -828,18 +882,18 @@ ArticlePage
 
 ## 11. 与并行 change 的合并顺序与冲突点
 
-已合入：`report-link-preview`、`report-thread-scope`、`report-thread-timeline`、
-`report-event-hub`。
+已合入（当前 main）：`report-link-preview`、`report-thread-scope`、
+`report-thread-timeline`、`report-event-hub`、`report-read-dwell`、
+`report-server-read-state`（worker `334e080`，schema v6）。
 
 硬顺序：
 
-1. `report-read-dwell`（在途）：`PostCard` 根节点 ref/`data-read`、
-   `ThreadPage` 删除「进入即已读」。本 change 的摘要分支只替换正文槽位，
-   不动根节点/已读属性；ArticlePage 的正文根容器与回复卡复用其
-   `[data-post-id]` 目标/注册入口，不另建 observer。
-2. `report-notification-stacks`（在途）：通知分组/点击锚点。本 change 只把
-   点击目标换成 `postHref(post)`，不改分组与已读。
-3. **本 change**：最后 rebase。
+1. `report-notification-stacks`（**在途，另一工作树**）：通知分组/点击锚点。
+   **本 change 在它合入后再实现**；实现时只把点击目标换成 `postHref(post)`，
+   不改分组与已读。
+2. **本 change**：最后 rebase。已合入的 read-dwell/read-state 是**只读基线**：
+   `PostCard` 根节点 `data-post-id`/`data-read`、`PostView.read/read_at`、
+   `isReadFromSources`、`markPostRead` 队列全部复用，不重写。
 
 冲突面与策略：
 

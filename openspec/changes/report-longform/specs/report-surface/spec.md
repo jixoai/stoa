@@ -51,7 +51,8 @@ P2 追加 `gallery`/`log`；未知块名 SHALL 按降级块处理，SHALL NOT �
 `gallery`/`log`；SHALL NOT 新增其它块名。表格/代码/图片/列表/引用 SHALL 继续
 用 Markdown，块只负责「有状态、成对关系、折叠/网格语义」。`toc`/`timeline`/
 `verdict`/`decision`/`coverage`/`matrix`/`tabs`/`mermaid`/`chart`/`math`/
-`checklist`/iframe/embed/html SHALL NOT 作为块实现；出现时 SHALL 按未知块降级。
+`checklist`/`tests`/`diff`/`forms`/iframe/embed/html SHALL NOT 作为块实现；
+出现时 SHALL 按未知块降级。
 
 #### Scenario: 硬封顶 6 块
 
