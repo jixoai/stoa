@@ -23,7 +23,7 @@
 - [x] R2-3. 打 tag `v0.1.0` 并推送（触发 release.yml）；跟进 Actions 结果直到 `npm-publish` 成功。
   - 判据：`npm view @jixoai/stoa version` = 0.1.0；provenance 可在 npm 页面核对；无 token 使用。
 - [x] R2-4. 发布物验证：`bunx @jixoai/stoa --version`；stdio 握手（8 工具）；兼容别名可用。
-- [ ] R2-5. **dsh 运行态 smoke**（Owner 指令）：安装/检出 deepseek-harness，创造模式挂
+- [x] R2-5. **dsh 运行态 smoke**（Owner 指令）：安装/检出 deepseek-harness，创造模式挂
   `@jixoai/stoa mcp`（stdio），工具目录 `mcp__stoa__board_*`＋`board_status` 真调用 ok（隔离后端）；
   结果回填 `adapters/deepseekharness/README.md`（登记项转「已实测」，含版本/命令/输出摘录）。
 - [ ] R2-6. 报告（HTML）＋索引行；归档 change；推送；回板。
