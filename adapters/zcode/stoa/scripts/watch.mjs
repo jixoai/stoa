@@ -19,12 +19,21 @@
  * 退出语义（两种模式一致）：0 = 有回话（stdout 是事件 JSON）或已到 --max-seconds（stdout 是续臂提示）；
  * 2 = 连续 3 次连不上板 / 后端实例身份不符（stderr 说明）。每次退出后重新挂一次即可续臂。
  * 脚本不抛栈：所有后端错误都收敛成 stderr 一行 + 退出码。
+ *
+ * 实例身份守卫：配置了 dataDir 时校验 `/healthz.dataDir` 一致（防吃错后端）；dataDir 为空
+ * （远程板/中性板）时**跳过**守卫、信任 baseUrl。`STOA_EXPECT_DATA_DIR`（旧前缀
+ * `REPORT_CHANNEL_EXPECT_DATA_DIR` 兼容）可显式指定期望 dataDir（优先于配置）。
+ *
+ * 并发：本地游标模式把「读 last → poll → 写 last」整段放在 `<state>.lock` 互斥锁里
+ * （见 lib/state-lock.mjs）——常驻 watcher 与 Stop 钩子共用同一游标时不会重复投递；
+ * 等锁超时则降级为无锁（stderr 一行说明）保活性。
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { api, loadConfig, resolveStatePath } from "./lib/config.mjs";
+import { api, firstNonEmpty, loadConfig, resolveStatePath } from "./lib/config.mjs";
+import { acquireStateLock } from "./lib/state-lock.mjs";
 import { callTool } from "./lib/tools.mjs";
 
 const argv = process.argv.slice(2);
@@ -66,19 +75,28 @@ const statePath = consume
   : resolve(expandHome(argValue("state-file") || defaultStatePath));
 
 if (consume && argValue("state-file")) {
-  process.stderr.write("[report-channel] watch: --consume 模式下忽略 --state-file（消费式只用账号游标）\n");
+  process.stderr.write("[stoa] watch: --consume 模式下忽略 --state-file（消费式只用账号游标）\n");
 }
 
 /**
  * 实例身份守卫：确认配置的 baseUrl 背后就是配置的数据目录。
  * 实证（2026-11-08 06:08）：13689 上曾短暂出现另一个（QA）后端，watcher 消费到
  * 一条 seq=1/actor=tagged 的陌生事件；吃错后端会静默丢/吞消息，宁可直接失败。
+ *
+ * dataDir 为空（远程板/中性板，配置里根本没有本地数据目录）时跳过守卫——此时没有
+ * 「期望的 dataDir」可比，信任 baseUrl；需要强校验时用 `STOA_EXPECT_DATA_DIR` 显式给出。
  */
+const expectedDataDir = firstNonEmpty(
+  process.env.STOA_EXPECT_DATA_DIR,
+  process.env.REPORT_CHANNEL_EXPECT_DATA_DIR,
+  cfg.dataDir,
+);
+
 async function assertInstance() {
   const health = await api(cfg, "/healthz", { timeoutMs: 5000 });
-  if (health.dataDir !== cfg.dataDir) {
+  if (expectedDataDir && health.dataDir !== expectedDataDir) {
     process.stderr.write(
-      `[report-channel] watch: backend identity mismatch — /healthz.dataDir=${health.dataDir} expected=${cfg.dataDir}; refusing to continue\n`,
+      `[stoa] watch: backend identity mismatch — /healthz.dataDir=${health.dataDir} expected=${expectedDataDir}; refusing to continue\n`,
     );
     process.exit(2);
   }
@@ -92,23 +110,23 @@ function readLocalState() {
   try {
     state = JSON.parse(readFileSync(statePath, "utf8"));
   } catch {
-    process.stderr.write(`[report-channel] watch: state file ${statePath} 不是合法 JSON，按首次运行重建\n`);
+    process.stderr.write(`[stoa] watch: state file ${statePath} 不是合法 JSON，按首次运行重建\n`);
     return null;
   }
   if (typeof state.baseUrl === "string" && state.baseUrl !== cfg.baseUrl) {
     process.stderr.write(
-      `[report-channel] watch: state file ${statePath} 属于 baseUrl=${state.baseUrl}，与当前 ${cfg.baseUrl} 不符；拒绝复用\n`,
+      `[stoa] watch: state file ${statePath} 属于 baseUrl=${state.baseUrl}，与当前 ${cfg.baseUrl} 不符；拒绝复用\n`,
     );
     process.exit(2);
   }
   if (typeof state.account === "string" && state.account !== cfg.account) {
     process.stderr.write(
-      `[report-channel] watch: state file ${statePath} 属于账号 @${state.account}，与当前 @${cfg.account} 不符；拒绝复用\n`,
+      `[stoa] watch: state file ${statePath} 属于账号 @${state.account}，与当前 @${cfg.account} 不符；拒绝复用\n`,
     );
     process.exit(2);
   }
   if (!Number.isInteger(state.last) || state.last < 0) {
-    process.stderr.write(`[report-channel] watch: state file ${statePath} 缺少合法 last，按首次运行重建\n`);
+    process.stderr.write(`[stoa] watch: state file ${statePath} 缺少合法 last，按首次运行重建\n`);
     return null;
   }
   return state;
@@ -199,7 +217,7 @@ if (consume) {
       }
     } catch (error) {
       failures += 1;
-      process.stderr.write(`[report-channel] watch: ${String(error?.message ?? error)}\n`);
+      process.stderr.write(`[stoa] watch: ${String(error?.message ?? error)}\n`);
       if (failures >= 3) process.exit(2);
     }
     if (Date.now() >= deadline) {
@@ -210,31 +228,52 @@ if (consume) {
 }
 
 // ── 本地游标（默认）：peek=1&cursor=last，不消费、不 ack ─────────────────────
+// 「读 last → poll → 写 last」整段持 state 锁：常驻 watcher 与 Stop 钩子共用同一游标时，
+// 后到者会读到已推进的 last，不会把同一批事件再投递一次。
 let last = null;
 let instanceId = null;
+let lockDegraded = false;
 for (;;) {
+  let events = [];
+  let cursorBefore = null;
   try {
     instanceId = await assertInstance();
-    if (last === null) last = readLocalState()?.last ?? (await initLocalState(instanceId));
-    const result = await callTool("board_peek", { cursor: last, limit: 200 });
-    failures = 0;
-    const events = result.events ?? [];
-    if (events.length > 0) {
-      const cursorBefore = last;
-      const maxSeq = events.reduce(
-        (max, event) => (Number.isInteger(event?.seq) && event.seq > max ? event.seq : max),
-        last,
-      );
-      const target = Number.isInteger(result.target) ? result.target : 0;
-      last = Math.max(last, maxSeq, target);
-      writeLocalState(last, instanceId);
-      printEvents("local-cursor", instanceId, events, cursorBefore, last);
-      process.exit(0);
+    const release = await acquireStateLock(statePath, {
+      timeoutMs: Math.min(20_000, Math.max(1000, deadline - Date.now())),
+      onDegrade: (info) => {
+        if (lockDegraded) return;
+        lockDegraded = true;
+        process.stderr.write(
+          `[stoa] watch: state lock ${info.path} busy (holder pid=${info.holder?.pid ?? "?"}, age=${Math.round(info.ageMs)}ms)；降级为无锁轮询（并发窗口内可能重复投递）\n`,
+        );
+      },
+    });
+    try {
+      if (last === null) last = readLocalState()?.last ?? (await initLocalState(instanceId));
+      const result = await callTool("board_peek", { cursor: last, limit: 200 });
+      failures = 0;
+      events = result.events ?? [];
+      if (events.length > 0) {
+        cursorBefore = last;
+        const maxSeq = events.reduce(
+          (max, event) => (Number.isInteger(event?.seq) && event.seq > max ? event.seq : max),
+          last,
+        );
+        const target = Number.isInteger(result.target) ? result.target : 0;
+        last = Math.max(last, maxSeq, target);
+        writeLocalState(last, instanceId);
+      }
+    } finally {
+      release();
     }
   } catch (error) {
     failures += 1;
-    process.stderr.write(`[report-channel] watch: ${String(error?.message ?? error)}\n`);
+    process.stderr.write(`[stoa] watch: ${String(error?.message ?? error)}\n`);
     if (failures >= 3) process.exit(2);
+  }
+  if (events.length > 0) {
+    printEvents("local-cursor", instanceId, events, cursorBefore, last);
+    process.exit(0);
   }
   if (Date.now() >= deadline) {
     printIdle("local-cursor", last);
