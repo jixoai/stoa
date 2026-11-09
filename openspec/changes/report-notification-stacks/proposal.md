@@ -49,11 +49,12 @@
 ## 非目标
 
 - 不重做通知生成规则、不新增通知类型、不改事件 payload、不改 `wait-notifications`/CLI。
-- 不新增服务端已读表、不把 read-set 上收；不改「全部已读」与游标语义。
+- 不新增服务端已读表（真值表已由 `report-server-read-state` 交付 `post_reads`）；
+  不重复实现读态写路径；不改「全部已读」与游标语义。
 - 不做通知的虚拟滚动、全文搜索、按会话永久订阅/免打扰。
 - 不新增浮层通知面板：复用现有 `#/notifications` 页作为「通知面板」。
 - 不在静态归档里制造任何本地通知/叠状态（归档无事件流）。
-- 不为「叠」单独实现已读逻辑（完全复用 read-dwell 与既有 read-set）。
+- 不为「叠」单独实现已读逻辑（完全复用 read-dwell 与 server-read-state 的服务端读态投影 / 三源合并）。
 
 ## 与在途 change 的关系（合并顺序）
 
@@ -61,13 +62,16 @@
 
 1. `report-link-preview`（在途）：`PostCard` 插入点；只影响通知行摘要引用的卡片，不影响
    本 change 的分组逻辑。先合，避免 `PostCard`/`notifications.tsx` 同一区域的重复 rebase。
-2. `report-read-dwell`（在途，设计已就绪）：删除 `ThreadPage`「进入即已读」
+2. `report-read-dwell`（已归档合入）：删除 `ThreadPage`「进入即已读」
    （`src/ui/pages/ThreadPage.tsx:589-596`）、提供视窗停留已读。本 change 的点击语义与
    「叠自然收缩」依赖它；本 change **不实现**任何已读写入。
-3. `report-thread-scope`（在途/待落）：抽出 `src/ui/lib/thread-plan.ts`（祖先/子树/`scopeOf`）
+3. `report-server-read-state`（已合入/归档中）：读态真值改由服务端 `post_reads` 持有
+   （`PostView.read` 首帧、离线队列补写、三源合并）。本 change 只消费 read-dwell 的
+   `isRead`/`serverReadIds` 投影，不新增读写路径，也不回退到浏览器本地 read-set 作为真值。
+4. `report-thread-scope`（在途/待落）：抽出 `src/ui/lib/thread-plan.ts`（祖先/子树/`scopeOf`）
    并把线程详情收敛为 focal 作用域。本 change 只**扩展**该模块（`highestUnreadAncestor` /
    锚点解析）并共享；它未合入前本 change 的 P1-3/P1-4 不能开工。
-4. **本 change**：最后 rebase。冲突面：`NotificationsPage.tsx`、`notifications.tsx`、
+5. **本 change**：最后 rebase。冲突面：`NotificationsPage.tsx`、`notifications.tsx`、
    `app.css`、`api.ts`、`store.ts`/`http.ts`（lineage 端点）、`src/core/types.ts`（只加类型）。
 
 若 `report-thread-scope` 最终已提供等价的祖先读取接口（例如线程响应携带完整祖先链），本

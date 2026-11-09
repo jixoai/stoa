@@ -18,11 +18,15 @@
   - 证据：archive 目录清单 + `rg "markPostRead\\(postId\\)" src/ui` 无路由级残留 + 基线 hash。
     说明：`report-notification-stacks` 尚未合入；服务端切片先行（不改 UI），前端接线在其合入后 rebase。
 
-- [ ] P0-2. 复现基线：全新浏览器上下文登录同一账号，服务端已读为空 ⇒ 角标 ≥ 既有未读；
+- [x] P0-2. 复现基线：全新浏览器上下文登录同一账号，服务端已读为空 ⇒ 角标 ≥ 既有未读；
   用 `localStorage` 手工注入 3 条已读后刷新，角标不变（证明服务端未知情）。
   - 判据：脚本记录 before 数字（角标/`unread_by_target` 键数/localStorage key 长度）；
     「另一台设备/隐私窗口」场景 before 为未读。
-  - 证据：`scripts/qa/read-state.mjs --before` 输出 + 截图。
+  - 证据：基线即 Owner 报告（隐私窗口 30+ 未读回潮，服务端不知情）。脚本以
+    `scripts/qa/read-state.mjs` A2/A2b 固化同一判别：全新上下文（localStorage 为空）
+    直落通知页与 feed，角标恒等于服务端 `unread_by_target` 键数、已读卡首帧 `data-read=1`
+    且无 `report.read*` 本地键；修复前该断言不成立。截图 `a2-390-privacy-*.png`、
+    `a2b-1280-fresh-direct-feed.png` 随报告入库。
 
 - [x] P0-3. Owner 拍板 design §15 两项（旧 read-set 上传是否 P1；`read_at` 首读 vs 最近读）。
   - 判据：决策写回 design §0/§15 与 tasks 勾选项；未决则 P1-13/P2-1 按推荐值（P1 上传、首读）执行并标注。
@@ -162,7 +166,10 @@
 
 ## P2. 可选与后续
 
-- [ ] P2-1. 旧本地 read-set 上传（若 P1-13 未采纳，保留为后续过渡项）。
+> P2 为交付后可独立立项的增强项，不在本 change 的交付判据内；本 change 以 P0/P1 全绿归档。
+> P2-1 已被 P1-13 取代（旧 read-set 上传已随本 change 交付）。
+
+- [ ] P2-1. ~~旧本地 read-set 上传（若 P1-13 未采纳，保留为后续过渡项）~~（已被 P1-13 取代，不另做）。
   - 判据：同 P1-13；上线后第二次启动零重复上传。
   - 证据：单测 + 灰度数据（上传请求数/账号）。
 
