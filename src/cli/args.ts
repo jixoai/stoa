@@ -53,6 +53,12 @@ const VALUE_FLAGS = new Set([
   // report-longform（D13/§6.1）：正文文件与载体格式（note|article）。
   "file",
   "format",
+  // stoa mcp（核心 MCP 面，stoa-adapters design §2）：进程级配置来源。
+  "base-url",
+  "token",
+  "account",
+  "public-url",
+  "config",
 ]);
 
 /** Flags that may be repeated (`--attach a --attach b`). */
@@ -195,6 +201,8 @@ Usage:
   stoa status [--data-dir D] [--all]
   stoa gc [--data-dir D]
   stoa auth status
+  stoa mcp [--base-url URL] [--token TOKEN] [--account A] [--data-dir D]
+                            [--public-url URL] [--config FILE]
 
 Global flags: --data-dir D, --env-files a,b, --as ACCOUNT, --human
 Env fallbacks: STOA_DATA_DIR, STOA_ENV_FILES, STOA_ACCOUNT (legacy FDE2E_REPORT_* names are also read)
@@ -210,4 +218,9 @@ Default output is machine-readable single-line JSON (JSONL for wait-notification
   serve stays alive while requests/CLI calls arrive; --idle-timeout (default 1800s,
   0 = never) releases the instance after that much silence. status --all shows the
   lease remaining; gc reclaims server.json/serve.lock left by dead instances.
+  mcp speaks newline-delimited JSON-RPC 2.0 on stdio (initialize/tools/list/
+  tools/call/ping) for harness integration; config order is flags > STOA_* >
+  REPORT_CHANNEL_*/FDE2E_REPORT_* > ~/.config/stoa/report-channel.json (legacy
+  ~/.config/fde2e/report-channel.json) > http://127.0.0.1:13689. It never prints
+  credentials (token presence only shows as present/absent in board_status).
 `;

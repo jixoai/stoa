@@ -28,6 +28,8 @@ import {
 } from "./args.ts";
 import { ApiClient, CliError, fetchAuthMode } from "./client.ts";
 import { emit, emitError, emitHuman, formatTime, postLine, summarizePost, writeLineSync } from "./output.ts";
+import { resolveMcpConfig } from "../mcp/config.ts";
+import { runMcpServer } from "../mcp/server.ts";
 
 export interface CliContext {
   args: ParsedArgs;
@@ -1248,6 +1250,26 @@ async function cmdGc(ctx: CliContext): Promise<number> {
   return 0;
 }
 
+/**
+ * `stoa mcp`（stoa-adapters design §2）：stdio MCP server。
+ * 配置自含（flags > STOA_* > 兼容旧前缀 > 配置文件 > 默认），
+ * 不依赖 data-dir 指针发现；stdout 只跑 JSON-RPC，凭据绝不打印。
+ */
+async function cmdMcp(args: ParsedArgs): Promise<number> {
+  const cfg = resolveMcpConfig({
+    flags: {
+      baseUrl: flagValue(args, "base-url"),
+      token: flagValue(args, "token"),
+      account: flagValue(args, "account"),
+      dataDir: flagValue(args, "data-dir"),
+      publicUrl: flagValue(args, "public-url"),
+      config: flagValue(args, "config"),
+    },
+    env: process.env,
+  });
+  return runMcpServer(cfg, { env: process.env });
+}
+
 export async function dispatch(args: ParsedArgs): Promise<number> {
   const cwd = process.cwd();
   const command = args.command!;
@@ -1255,6 +1277,9 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
     process.stdout.write(`${VERSION}\n`);
     return 0;
   }
+  // `stoa mcp` 是长驻 stdio 服务：配置自含（flags/env/配置文件），不经过
+  // 通用的 --data-dir 指针发现（否则无指针目录里根本起不来）。
+  if (command === "mcp") return cmdMcp(args);
   const dataDir = resolveDataDir({
     flag: flagValue(args, "data-dir"),
     env: process.env,

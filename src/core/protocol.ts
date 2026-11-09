@@ -40,6 +40,7 @@ export const CLI_COMMANDS = [
   "status",
   "gc",
   "auth",
+  "mcp",
 ] as const;
 
 /** API surface (method + Hono path). Kept in one place for contract linting. */
