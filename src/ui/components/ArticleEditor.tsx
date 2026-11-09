@@ -28,7 +28,7 @@ import {
   parseArticle,
   type BlockIssue,
 } from "@core/article";
-import { MAX_ARTICLE_CHARS } from "@core/validation";
+import { MAX_ARTICLE_BYTES, MAX_ARTICLE_CHARS } from "@core/validation";
 import { cn } from "cn";
 import {
   ChevronDownIcon,
@@ -68,7 +68,9 @@ import {
 } from "@/components/ui/input-group";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
 import { PageHeader } from "@/components/PageHeader";
+import { ComposeFormatTabs } from "@/components/ComposeFormatTabs";
 import { AuthorLine } from "@/components/AuthorAvatar";
 import { ArticleBody } from "@/components/ArticleBody";
 import { ArticleMediaProvider } from "@/lib/article-media";
@@ -82,6 +84,11 @@ import { extractTags } from "@/lib/tags";
 const DRAFT_NAMESPACE = "report.draft.v1:";
 /** 草稿过大提示阈值（design §5.2；提交不依赖草稿）。 */
 const DRAFT_WARN_CHARS = 400_000;
+
+/** 正文 UTF-8 字节数（与服务端 assertBody 的护栏同口径）。 */
+function byteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
 
 const BLOCK_LABELS: Record<(typeof ARTICLE_BLOCK_NAMES)[number], string> = {
   stats: "指标卡（stats）",
@@ -156,8 +163,11 @@ export function ArticleEditor() {
   const source = routeSource(route);
   const [quoted, setQuoted] = useState<PostView | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [loadingQuote, setLoadingQuote] = useState(false);
-  const draftKey = quoted ? `article:quote:${quoted.id}` : "article:root";
+  // 草稿键（复核 O4）：直接由路由 `quoteId` 定型——不依赖 `quoted` 异步到达。
+  // 旧实现按 `quoted` 推导：异步到达前首帧用 `article:root` 恢复并开始持久化，
+  // 根草稿与引用草稿互串（且 `initial` ref 一旦定型不再更新）。现在键在挂载
+  // 首帧即 `article:quote:<id>` 且此后恒定（quoteId 只随路由变化，路由变化即重挂载）。
+  const draftKey = quoteId ? `article:quote:${quoteId}` : "article:root";
   const initial = useRef(loadDraft(draftKey));
   const [body, setBody] = useState(initial.current);
   const [tab, setTab] = useState<"write" | "preview">("write");
@@ -180,7 +190,6 @@ export function ArticleEditor() {
       return;
     }
     let alive = true;
-    setLoadingQuote(true);
     client
       .post(quoteId)
       .then((post) => {
@@ -190,9 +199,6 @@ export function ArticleEditor() {
       })
       .catch((err: Error) => {
         if (alive) setQuoteError(err.message);
-      })
-      .finally(() => {
-        if (alive) setLoadingQuote(false);
       });
     return () => {
       alive = false;
@@ -232,6 +238,12 @@ export function ArticleEditor() {
   const warnings = useMemo(() => issues.filter((issue) => issue.severity === "warning"), [issues]);
   const htmlHint = useMemo(() => /<[a-zA-Z][^>]*>/.test(validated), [validated]);
   const draftTooLarge = body.length > DRAFT_WARN_CHARS;
+  // 上限护栏（复核 O6）：字符上限 + UTF-8 字节护栏（与服务端 `assertBody` 同口径，
+  // 字节先判）；超限时禁用提交并给出可见提示。
+  const overChars = body.length > MAX_ARTICLE_CHARS;
+  const bodyBytes = useMemo(() => byteLength(body), [body]);
+  const overBytes = bodyBytes > MAX_ARTICLE_BYTES;
+  const overLimit = overChars || overBytes;
 
   const dirty = body.trim().length > 0 && !submitted.current;
 
@@ -345,12 +357,25 @@ export function ArticleEditor() {
   const submit = async () => {
     if (!client || busy) return;
     if (staticMode) return;
-    if (errors.length > 0) {
+    // 提交门（复核 O5）：以当前 `body` **同步现算**一次 parseArticle，不得只信
+    // 300ms 防抖窗口里的旧结果——在该窗口内快速点击/⌘↵ 原本会绕过未刷新的 errors。
+    const currentErrors = parseArticle(body).issues.filter((issue) => issue.severity === "error");
+    if (currentErrors.length > 0) {
       setError("有校验错误未修复，不能发布");
       return;
     }
     if (!body.trim()) {
       setError("正文不能为空");
+      return;
+    }
+    // 上限护栏（复核 O6）：与服务端 assertBody 同口径（字节先判、再字符）。
+    const bytes = byteLength(body);
+    if (bytes > MAX_ARTICLE_BYTES) {
+      setError(`正文 UTF-8 ${(bytes / (1024 * 1024)).toFixed(2)} MiB，超过 2 MiB 护栏，不能发布`);
+      return;
+    }
+    if (body.length > MAX_ARTICLE_CHARS) {
+      setError(`正文 ${body.length.toLocaleString()} 字符，超过 ${MAX_ARTICLE_CHARS.toLocaleString()} 上限，不能发布`);
       return;
     }
     if (uploading) {
@@ -388,7 +413,7 @@ export function ArticleEditor() {
 
   const counter = (
     <InputGroupText
-      className={cn("text-xs", body.length > MAX_ARTICLE_CHARS && "text-destructive")}
+      className={cn("text-xs", overLimit && "text-destructive")}
       data-testid="article-counter"
     >
       {body.length.toLocaleString()} / {MAX_ARTICLE_CHARS.toLocaleString()}
@@ -472,7 +497,7 @@ export function ArticleEditor() {
             type="button"
             size="sm"
             data-testid="article-submit"
-            disabled={busy || errors.length > 0 || !body.trim()}
+            disabled={busy || errors.length > 0 || !body.trim() || overLimit}
             onClick={() => void submit()}
           >
             {busy ? (
@@ -502,6 +527,13 @@ export function ArticleEditor() {
     </div>
   );
 
+  // 引用就绪前不挂载编辑器（复核 O4）：骨架保证草稿键/引用卡在两段渲染间不跳变
+  // （draftKey 已由 quoteId 定型，本门主要消除「先空编辑再弹引用卡」的抖动）；
+  // 引用加载失败时不阻塞——照常挂载，可写，发布时不带引用。
+  if (quoteId && !quoted && !quoteError) {
+    return <ArticleEditorSkeleton />;
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
@@ -518,7 +550,10 @@ export function ArticleEditor() {
             `来自${source}`
           )
         }
-      />
+      >
+        {/* 载体切换入口（复核 B2）：长文 ⇄ 帖子；切回即 `/compose`（草稿各自保留）。 */}
+        <ComposeFormatTabs />
+      </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {staticMode ? (
@@ -540,6 +575,14 @@ export function ArticleEditor() {
                 if (file) void insertImage(file);
               }}
             />
+
+      {quoteError && !quoted ? (
+        <Alert variant="destructive" data-testid="article-editor-quote-error">
+          <AlertDescription>
+            引用加载失败：{quoteError}（仍可继续撰写，发布时不带引用）
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       {quoted ? (
         <Card className="relative gap-1 p-3" data-testid="article-editor-quote">
@@ -616,6 +659,20 @@ export function ArticleEditor() {
         </Alert>
       ) : null}
 
+      {overLimit ? (
+        <Alert variant="destructive" data-testid="article-over-limit">
+          <AlertDescription>
+            {overChars
+              ? `正文 ${body.length.toLocaleString()} 字符，超过 ${MAX_ARTICLE_CHARS.toLocaleString()} 上限。`
+              : ""}
+            {overBytes
+              ? `正文 UTF-8 体积 ${(bodyBytes / (1024 * 1024)).toFixed(2)} MiB，超过 2 MiB 护栏。`
+              : ""}
+            发布已禁用，请精简内容。
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       {draftTooLarge ? (
         <Alert data-testid="article-draft-large">
           <AlertDescription>草稿过大（{body.length.toLocaleString()} 字符），本地可能无法保存；提交仍可进行。</AlertDescription>
@@ -688,6 +745,24 @@ export function ArticleEditor() {
 
       <div className="mt-1 px-1 text-xs leading-relaxed text-muted-foreground">
         长文上限 512,000 字符；「插入区块」用 fde2e 指令块（stats / steps / compare / callout）。
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 引用加载中的编辑器骨架（复核 O4）：保持页头与载体入口形态，编辑器本体
+ * 在引用就绪后才挂载（挂载即定型草稿键，不经过 `article:root`）。
+ */
+function ArticleEditorSkeleton() {
+  return (
+    <div className="flex h-full min-h-0 flex-col" data-testid="article-editor-loading">
+      <PageHeader title="写长文" back onBack={() => goBack("/")} backTestId="compose-back">
+        <ComposeFormatTabs />
+      </PageHeader>
+      <div className="min-h-0 flex-1 space-y-3 p-3">
+        <Skeleton className="h-20 w-full rounded-xl" />
+        <Skeleton className="h-[46dvh] w-full rounded-xl lg:h-[60dvh]" />
       </div>
     </div>
   );

@@ -3,6 +3,7 @@ import type { PostView } from "@core/types";
 import { QuoteIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { ComposeFormatTabs } from "@/components/ComposeFormatTabs";
 import { PostComposer } from "@/components/PostComposer";
 import { ArticleEditor } from "@/components/ArticleEditor";
 import { PageHeader } from "@/components/PageHeader";
@@ -65,7 +66,10 @@ export function ComposePage() {
             `来自${source}`
           )
         }
-      />
+      >
+        {/* 载体切换入口（复核 B2）：帖子 ⇄ 长文；切到长文即 `/compose?format=article`。 */}
+        <ComposeFormatTabs />
+      </PageHeader>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {staticMode ? (
