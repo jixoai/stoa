@@ -257,4 +257,49 @@ describe("static export · longform (report-longform A10/P1-18)", () => {
       t.close();
     }
   });
+
+  test("article block media lands in the snapshot media list (static relative paths load)", () => {
+    const t = makeStore();
+    const ui = makeUiFixture();
+    try {
+      // 1x1 PNG：导出只读文件头算尺寸/必填非空字节
+      const png = Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+        "base64",
+      );
+      const row = t.store.saveMedia(new Uint8Array(png), "png");
+      const mediaRef = `/api/media/${row.hash}`;
+      const articleBody = [
+        "# 静态块媒体",
+        "",
+        "````fde2e:steps",
+        JSON.stringify({
+          steps: [{ title: "构建", status: "done", media: mediaRef, mediaAlt: "构建截图" }],
+        }),
+        "````",
+        "",
+        "````fde2e:compare",
+        JSON.stringify({ before: { media: mediaRef, label: "Before" }, after: { media: mediaRef, label: "After" } }),
+        "````",
+      ].join("\n");
+      t.store.commitOps({
+        author: "manager",
+        batchId: "LM1",
+        ops: [{ op: "post", body: articleBody, kind: "article" }],
+      });
+
+      const outDir = join(t.dir, "archive-block-media");
+      runExport({ dataDir: t.dir, outDir, uiDir: ui.dir });
+      const snapshot = readSnapshot(readFileSync(join(outDir, "index.html"), "utf8"));
+
+      const media = snapshot.media.find((item) => item.hash === row.hash);
+      expect(media).toBeDefined();
+      expect(media!.url).toBe(`media/${row.hash}.png`);
+      // 归档目录内真实存在该媒体文件（<img> 相对路径可加载的前提）
+      expect(existsSync(join(outDir, "media", `${row.hash}.png`))).toBe(true);
+    } finally {
+      ui.cleanup();
+      t.close();
+    }
+  });
 });

@@ -142,6 +142,41 @@ function mediaSizeFor(store: Store, ref: MediaRef): MediaSize | null {
   return size;
 }
 
+/**
+ * 正文内嵌的本地媒体引用（report-longform：`steps.media`/`compare` 的
+ * `/api/media/<64hex>`）。指令块正文里没有 `post.media` 记录，但静态归档的
+ * `staticMediaUrl` 需要快照 media 表命中 → 导出时按哈希补登（不存在的哈希跳过）。
+ */
+const BODY_MEDIA_RE = /\/api\/media\/([a-f0-9]{64})/g;
+
+function collectBodyMedia(
+  store: Store,
+  body: string,
+  collect: (refs: MediaRef[]) => void,
+): void {
+  const refs: MediaRef[] = [];
+  const seen = new Set<string>();
+  for (const match of body.matchAll(BODY_MEDIA_RE)) {
+    const hash = match[1]!;
+    if (seen.has(hash)) continue;
+    seen.add(hash);
+    const row = store.getMedia(hash);
+    if (!row) continue;
+    const ref: MediaRef = {
+      hash: row.hash,
+      ext: row.ext,
+      bytes: row.bytes,
+      url: `/api/media/${row.hash}`,
+    };
+    if (row.w && row.h) {
+      ref.w = row.w;
+      ref.h = row.h;
+    }
+    refs.push(ref);
+  }
+  if (refs.length > 0) collect(refs);
+}
+
 export function buildSnapshot(store: Store, viewerId = "owner"): Snapshot {
   const account = store.getAccount(viewerId);
   if (!account || account.disabled !== 0) {
@@ -161,11 +196,14 @@ export function buildSnapshot(store: Store, viewerId = "owner"): Snapshot {
       return media;
     });
 
-  const snapshotPosts: SnapshotPost[] = posts.map((post) => ({
-    ...post,
-    media: collectMedia(post.media),
-    quoted: post.quoted ? { ...post.quoted, media: collectMedia(post.quoted.media) } : null,
-  }));
+  const snapshotPosts: SnapshotPost[] = posts.map((post) => {
+    const media = collectMedia(post.media);
+    const quoted = post.quoted ? { ...post.quoted, media: collectMedia(post.quoted.media) } : null;
+    // report-longform：长文指令块内引用的媒体（`steps.media`/`compare` 两侧）不在
+    // `post.media` 里，但静态归档必须能按相对路径加载 → 扫描正文哈希补进快照 media 表。
+    if (post.kind === "article" && post.body_md) collectBodyMedia(store, post.body_md, collectMedia);
+    return { ...post, media, quoted };
+  });
 
   const accounts = store.listAccounts(false).map((row) => ({
     id: row.id,
