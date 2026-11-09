@@ -20,7 +20,7 @@ import {
   type ResolvedTarget,
 } from "./ssrf.ts";
 
-export const PREVIEW_USER_AGENT = "fde2e-report-link-preview/1.0";
+export const PREVIEW_USER_AGENT = "stoa-link-preview/1.0";
 export const MAX_REDIRECTS = 5;
 export const HEAD_TIMEOUT_MS = 3000;
 export const TOTAL_TIMEOUT_MS = 8000;

@@ -3,8 +3,8 @@ import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
 import { basename, join, resolve } from "node:path";
 import { ReportError, fail } from "../core/errors.ts";
-import { accountTokenEnvKey, maskSecret } from "../core/auth.ts";
-import { loadEnvFiles, resolveEnvFiles, type LoadedEnv } from "../core/env.ts";
+import { accountTokenEnvKey, legacyAccountTokenEnvKey, maskSecret } from "../core/auth.ts";
+import { envKeys, envValue, loadEnvFiles, resolveEnvFiles, type LoadedEnv } from "../core/env.ts";
 import { capabilities, VERSION } from "../core/protocol.ts";
 import { validateWriteOp } from "../core/validation.ts";
 import {
@@ -40,7 +40,7 @@ export interface CliContext {
 
 function context(args: ParsedArgs, dataDir: string, cwd: string): CliContext {
   const explicit =
-    flagValue(args, "env-files") ?? process.env.FDE2E_REPORT_ENV_FILES ?? null;
+    flagValue(args, "env-files") ?? envValue(process.env, envKeys("ENV_FILES")) ?? null;
   const envFiles =
     explicit !== null
       ? explicit
@@ -61,8 +61,11 @@ function context(args: ParsedArgs, dataDir: string, cwd: string): CliContext {
 
 function resolveToken(env: LoadedEnv, account: string): string | null {
   return (
-    env.values[accountTokenEnvKey(account)] ??
-    env.values.FDE2E_REPORT_ACCOUNT_TOKEN ??
+    envValue(env.values, {
+      primary: accountTokenEnvKey(account),
+      legacy: legacyAccountTokenEnvKey(account),
+    }) ??
+    envValue(env.values, envKeys("ACCOUNT_TOKEN")) ??
     null
   );
 }
@@ -72,7 +75,7 @@ function resolveAccount(
   opts: { required?: boolean; defaultOwner?: boolean } = {},
 ): string {
   const explicit =
-    flagValue(ctx.args, "as") ?? process.env.FDE2E_REPORT_ACCOUNT ?? null;
+    flagValue(ctx.args, "as") ?? envValue(process.env, envKeys("ACCOUNT")) ?? null;
   if (explicit && explicit.trim()) return explicit.trim();
   if (opts.defaultOwner) return "owner";
   fail(
@@ -159,7 +162,7 @@ async function cmdInit(ctx: CliContext): Promise<number> {
     }
     emitHuman(describeAuthProvision(result).trimEnd());
     if (result.auth.provisioned_value) {
-      emitHuman(`FDE2E_REPORT_AUTH=${result.auth.provisioned_value}`);
+      emitHuman(`STOA_AUTH=${result.auth.provisioned_value}`);
       emitHuman("(this value is shown once; store it in your secrets manager)");
     }
   } else {
@@ -344,7 +347,7 @@ async function statusCommand(ctx: CliContext): Promise<number> {
   const status = await serverStatus(ctx.dataDir);
   let live: unknown = null;
   if (status.running && status.url) {
-    const account = flagValue(ctx.args, "as") ?? ctx.env.values.FDE2E_REPORT_ACCOUNT ?? "owner";
+    const account = flagValue(ctx.args, "as") ?? envValue(ctx.env.values, envKeys("ACCOUNT")) ?? "owner";
     const token = resolveToken(ctx.env, account);
     try {
       const client = new ApiClient({ baseUrl: status.url, account, token });
@@ -401,7 +404,8 @@ async function statusCommand(ctx: CliContext): Promise<number> {
 }
 
 async function cmdAuthStatus(ctx: CliContext): Promise<number> {
-  const localMode = (ctx.env.values.FDE2E_REPORT_AUTH ?? "") ? "auth" : "open";
+  const authValue = envValue(ctx.env.values, envKeys("AUTH")) ?? "";
+  const localMode = authValue ? "auth" : "open";
   let serverView: unknown = null;
   const status = await serverStatus(ctx.dataDir).catch(() => null);
   if (status?.running && status.url) {
@@ -411,7 +415,7 @@ async function cmdAuthStatus(ctx: CliContext): Promise<number> {
       serverView = null;
     }
   }
-  const value = ctx.env.values.FDE2E_REPORT_AUTH ?? "";
+  const value = authValue;
   const payload = {
     ok: true,
     mode: localMode,
@@ -421,11 +425,11 @@ async function cmdAuthStatus(ctx: CliContext): Promise<number> {
     env_files_missing: ctx.env.missing,
     access_token_ttl_ms: 7 * 24 * 60 * 60 * 1000,
     account_token_note:
-      "changing FDE2E_REPORT_AUTH revokes access tokens only; account tokens rotate via `accounts rotate <id>|--all`",
+      "changing STOA_AUTH (legacy FDE2E_REPORT_AUTH) revokes access tokens only; account tokens rotate via `accounts rotate <id>|--all`",
     server: serverView,
   };
   if (ctx.human) {
-    emitHuman(`mode    : ${localMode === "auth" ? "ON (FDE2E_REPORT_AUTH set)" : "OFF (open mode)"}`);
+    emitHuman(`mode    : ${localMode === "auth" ? "ON (STOA_AUTH set)" : "OFF (open mode)"}`);
     emitHuman(`value   : ${maskSecret(value)}`);
     emitHuman(`env     : ${ctx.env.loaded.join(", ") || "(none)"}`);
     if (serverView) emitHuman(`server  : ${(serverView as { mode: string }).mode}`);
@@ -442,7 +446,7 @@ async function cmdOpen(ctx: CliContext): Promise<number> {
   void client;
   if (ctx.human) {
     emitHuman(url);
-    emitHuman(authMode === "auth" ? "authentication is ON: log in with FDE2E_REPORT_AUTH" : "open mode");
+    emitHuman(authMode === "auth" ? "authentication is ON: log in with the auth password (STOA_AUTH)" : "open mode");
     return 0;
   }
   emit({ ok: true, url, as: account, auth_mode: authMode });
@@ -1132,7 +1136,7 @@ async function cmdDraft(ctx: CliContext): Promise<number> {
 async function cmdExport(ctx: CliContext): Promise<number> {
   const out = flagValue(ctx.args, "out");
   const keep = flagInt(ctx.args, "keep");
-  const viewer = flagValue(ctx.args, "as") ?? ctx.env.values.FDE2E_REPORT_ACCOUNT ?? undefined;
+  const viewer = flagValue(ctx.args, "as") ?? envValue(ctx.env.values, envKeys("ACCOUNT")) ?? undefined;
   try {
     const result = runExport({
       dataDir: ctx.dataDir,

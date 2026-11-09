@@ -12,7 +12,7 @@ function buildApp(opts: { mode: "open" | "auth" }) {
   const t = makeStore({ clock: () => T0 });
   const envDir = tempDir();
   const envPath = join(envDir, "env");
-  writeFileSync(envPath, opts.mode === "auth" ? "FDE2E_REPORT_AUTH=topsecret\n" : "# open mode\n");
+  writeFileSync(envPath, opts.mode === "auth" ? "STOA_AUTH=topsecret\n" : "# open mode\n");
   const auth = new AuthManager({
     store: t.store,
     envFiles: [envPath],

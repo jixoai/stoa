@@ -37,8 +37,8 @@ describe("N4: SIGTERM with an in-flight preview job", () => {
     const server = await startTestServer({
       workspace: ws,
       env: {
-        FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS: fixtureOrigin,
-        FDE2E_REPORT_PREVIEW_WORKER: "1",
+        STOA_PREVIEW_TEST_ALLOW_ORIGINS: fixtureOrigin,
+        STOA_PREVIEW_WORKER: "1",
       },
     });
     try {

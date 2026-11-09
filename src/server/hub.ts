@@ -1,4 +1,5 @@
 import type { SSEStreamingApi } from "hono/streaming";
+import { envKeys, envValue, type EnvKeyPair } from "../core/env.ts";
 import type { Account, EventLine, Role } from "../core/types.ts";
 import type { IdleLease } from "./lease.ts";
 import type { Presence } from "./presence.ts";
@@ -77,8 +78,8 @@ interface Connection {
 
 const UNREAD_CACHE_TTL_MS = 5_000;
 
-function envInt(name: string, fallback: number): number {
-  const raw = process.env[name];
+function envInt(keys: EnvKeyPair, fallback: number): number {
+  const raw = envValue(process.env, keys);
   if (!raw) return fallback;
   const value = Number(raw);
   return Number.isInteger(value) && value > 0 ? value : fallback;
@@ -117,11 +118,11 @@ export class Hub {
     this.presence = opts.presence;
     this.instanceId = opts.instanceId;
     this.lease = opts.lease ?? null;
-    this.heartbeatMs = opts.heartbeatMs ?? envInt("FDE2E_REPORT_HUB_HEARTBEAT_MS", 15_000);
-    this.maxPerAccount = opts.maxPerAccount ?? envInt("FDE2E_REPORT_HUB_MAX_PER_ACCOUNT", 8);
-    this.maxStreams = opts.maxStreams ?? envInt("FDE2E_REPORT_HUB_MAX_STREAMS", 64);
-    this.maxStreamMs = opts.maxStreamMs ?? envInt("FDE2E_REPORT_HUB_MAX_STREAM_MS", 30 * 60_000);
-    this.replayLimit = opts.replayLimit ?? envInt("FDE2E_REPORT_HUB_REPLAY_LIMIT", 500);
+    this.heartbeatMs = opts.heartbeatMs ?? envInt(envKeys("HUB_HEARTBEAT_MS"), 15_000);
+    this.maxPerAccount = opts.maxPerAccount ?? envInt(envKeys("HUB_MAX_PER_ACCOUNT"), 8);
+    this.maxStreams = opts.maxStreams ?? envInt(envKeys("HUB_MAX_STREAMS"), 64);
+    this.maxStreamMs = opts.maxStreamMs ?? envInt(envKeys("HUB_MAX_STREAM_MS"), 30 * 60_000);
+    this.replayLimit = opts.replayLimit ?? envInt(envKeys("HUB_REPLAY_LIMIT"), 500);
     this.wakeDebounceMs = opts.wakeDebounceMs ?? 50;
     this.now = opts.now ?? Date.now;
     // Capture the watermark synchronously in the listener (the store is

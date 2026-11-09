@@ -10,8 +10,8 @@
  *   const qa = await ensureQa(process.argv.slice(2));
  *   qa.base      // http://127.0.0.1:<port>
  *   qa.dataDir   // /tmp/report-qa-xxxxxx
- *   authSecret(qa.dataDir)                 // FDE2E_REPORT_AUTH (login password)
- *   accountToken(qa.dataDir, "manager")    // FDE2E_REPORT_TOKEN_MANAGER
+ *   authSecret(qa.dataDir)                 // STOA_AUTH (login password; legacy FDE2E_REPORT_AUTH read)
+ *   accountToken(qa.dataDir, "manager")    // STOA_TOKEN_MANAGER (legacy FDE2E_REPORT_TOKEN_MANAGER read)
  *   await qa.stop()                        // stops an auto-started backend
  */
 import { spawn } from "node:child_process";
@@ -59,13 +59,14 @@ export function parseEnvFile(path) {
   return out;
 }
 
-/** The browser login password of the isolated backend. */
+/** The browser login password of the isolated backend (double read: STOA_AUTH preferred). */
 export function authSecret(dataDir) {
   assertIsolatedDataDir(dataDir);
-  const value = parseEnvFile(join(dataDir, ".env")).FDE2E_REPORT_AUTH;
+  const values = parseEnvFile(join(dataDir, ".env"));
+  const value = values.STOA_AUTH ?? values.FDE2E_REPORT_AUTH;
   if (!value) {
     throw new Error(
-      `no FDE2E_REPORT_AUTH in ${dataDir}/.env — this is not a qa-serve data dir ` +
+      `no STOA_AUTH (legacy FDE2E_REPORT_AUTH) in ${dataDir}/.env — this is not a qa-serve data dir ` +
         `(start one with: bun scripts/qa/qa-serve.mjs)`,
     );
   }
@@ -75,10 +76,14 @@ export function authSecret(dataDir) {
 /** Account API token from the isolated data dir (never logs it). */
 export function accountToken(dataDir, accountId) {
   assertIsolatedDataDir(dataDir);
-  const key = `FDE2E_REPORT_TOKEN_${accountId.toUpperCase().replace(/-/g, "_")}`;
-  const value = parseEnvFile(join(dataDir, "accounts", `${accountId}.env`))[key];
+  const suffix = accountId.toUpperCase().replace(/-/g, "_");
+  const values = parseEnvFile(join(dataDir, "accounts", `${accountId}.env`));
+  const value = values[`STOA_TOKEN_${suffix}`] ?? values[`FDE2E_REPORT_TOKEN_${suffix}`];
   if (!value) {
-    throw new Error(`no ${key} in ${dataDir}/accounts/${accountId}.env`);
+    throw new Error(
+      `no STOA_TOKEN_${suffix} (legacy FDE2E_REPORT_TOKEN_${suffix}) in ` +
+        `${dataDir}/accounts/${accountId}.env`,
+    );
   }
   return value;
 }

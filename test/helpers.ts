@@ -99,7 +99,7 @@ export function initWorkspace(opts: { open?: boolean } = {}): TestWorkspace {
   let authValue: string | null = null;
   if (!opts.open) {
     const env = readFileSync(join(dataDir, ".env"), "utf8");
-    const match = /^FDE2E_REPORT_AUTH=(.+)$/m.exec(env);
+    const match = /^(?:STOA_AUTH|FDE2E_REPORT_AUTH)=(.+)$/m.exec(env);
     authValue = match?.[1]?.trim() ?? null;
   }
   return {
@@ -137,7 +137,7 @@ export async function startTestServer(opts: {
     cwd: workspace.cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, FDE2E_REPORT_AUTH: "", ...(opts.env ?? {}) },
+    env: { ...process.env, STOA_AUTH: "", FDE2E_REPORT_AUTH: "", ...(opts.env ?? {}) },
   });
   const stdoutChunks: string[] = [];
   const stderrChunks: string[] = [];
@@ -233,11 +233,16 @@ export async function runCli(
     stderr: "pipe",
     env: {
       ...process.env,
-      // isolate: a developer shell with report env vars would otherwise redirect
-      // every test CLI invocation to a real data directory
+      // isolate: a developer shell with stoa/report env vars would otherwise
+      // redirect every test CLI invocation to a real data directory
+      STOA_DATA_DIR: undefined,
+      STOA_ENV_FILES: undefined,
+      STOA_ACCOUNT: undefined,
+      STOA_AUTH: undefined,
       FDE2E_REPORT_DATA_DIR: undefined,
       FDE2E_REPORT_ENV_FILES: undefined,
       FDE2E_REPORT_ACCOUNT: undefined,
+      FDE2E_REPORT_AUTH: undefined,
       ...(opts.env ?? {}),
     },
   });

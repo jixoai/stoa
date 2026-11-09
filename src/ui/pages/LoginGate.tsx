@@ -18,7 +18,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useConnection } from "@/state/connection";
 
 /**
- * 认证模式首访登录门：输入 FDE2E_REPORT_AUTH 换 access token。
+ * 认证模式首访登录门：输入实例密码（STOA_AUTH）换 access token。
  * 只把 token 存 localStorage；退出登录清 token 并停在落地页。
  */
 export function LoginGate() {
@@ -59,7 +59,7 @@ export function LoginGate() {
 
           <form onSubmit={submit} className="flex flex-col gap-3">
             <label className="flex flex-col gap-1 text-sm">
-              <span className="text-muted-foreground">FDE2E_REPORT_AUTH</span>
+              <span className="text-muted-foreground">STOA_AUTH</span>
               <InputGroup>
                 <InputGroupInput
                   type="password"
@@ -96,7 +96,7 @@ export function LoginGate() {
           </form>
 
           <p className="text-xs text-muted-foreground">
-            密码不会存盘；服务端只下发 access token（默认 7 天）。改 FDE2E_REPORT_AUTH 会立刻让所有 token 失效。
+            密码不会存盘；服务端只下发 access token（默认 7 天）。改 STOA_AUTH 会立刻让所有 token 失效。
           </p>
         </DialogContent>
       </Dialog>

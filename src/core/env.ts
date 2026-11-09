@@ -45,6 +45,49 @@ export function parseEnvFileList(input: string | null | undefined): string[] {
     .filter(Boolean);
 }
 
+/** Preferred env namespace: `STOA_*`. */
+export const ENV_PREFIX = "STOA_";
+/**
+ * Legacy namespace of the `fde2e-report-worker` era. Still read everywhere for
+ * compatibility (existing deployments, QA tooling, older integrations); new
+ * deployments and generated files always use the preferred prefix.
+ */
+export const LEGACY_ENV_PREFIX = "FDE2E_REPORT_";
+
+export interface EnvKeyPair {
+  /** preferred `STOA_*` key */
+  primary: string;
+  /** legacy `FDE2E_REPORT_*` key, still honoured */
+  legacy: string;
+}
+
+/** Build a preferred/legacy key pair for a suffix (`envKeys("AUTH")`). */
+export function envKeys(suffix: string, legacySuffix = suffix): EnvKeyPair {
+  return { primary: `${ENV_PREFIX}${suffix}`, legacy: `${LEGACY_ENV_PREFIX}${legacySuffix}` };
+}
+
+/** `STOA_FILEVIEWER_BASE` preferred; the legacy key has no `REPORT` segment. */
+export const FILEVIEWER_BASE_KEYS: EnvKeyPair = {
+  primary: `${ENV_PREFIX}FILEVIEWER_BASE`,
+  legacy: "FDE2E_FILEVIEWER_BASE",
+};
+
+/**
+ * Double read: the preferred key wins when it has a non-empty value, the
+ * legacy key is the fallback. Empty values are treated as unset (the same
+ * convention as every other config reader in this repo).
+ */
+export function envValue(
+  values: Record<string, string | undefined>,
+  keys: EnvKeyPair,
+): string | undefined {
+  const primary = values[keys.primary];
+  if (primary !== undefined && primary !== "") return primary;
+  const legacy = values[keys.legacy];
+  if (legacy !== undefined && legacy !== "") return legacy;
+  return undefined;
+}
+
 /** Resolve the effective env-file list (design §4.4). */
 export function resolveEnvFiles(opts: {
   explicit?: string | null;

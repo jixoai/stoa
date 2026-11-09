@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { LiveEnv, type LoadedEnv } from "../core/env.ts";
+import { envKeys, envValue, LiveEnv, type LoadedEnv } from "../core/env.ts";
 import {
   DEFAULT_ACCESS_TTL_MS,
   deriveSigningKey,
@@ -36,8 +36,9 @@ export interface AuthStatus {
 const TICKET_TTL_MS = 60_000;
 
 /**
- * Binary auth switch with live re-read (≤1s cache). `FDE2E_REPORT_AUTH` and the
- * per-account token files are independent credentials:
+ * Binary auth switch with live re-read (≤1s cache). `STOA_AUTH` (legacy
+ * FDE2E_REPORT_AUTH still read) and the per-account token files are independent
+ * credentials:
  *  - changing A invalidates access tokens (signing key derives from A)
  *  - account tokens only rotate via `accounts rotate`
  */
@@ -63,7 +64,7 @@ export class AuthManager {
 
   current(): { mode: AuthMode; authValue: string; env: LoadedEnv } {
     const env = this.env.read();
-    const authValue = env.values.FDE2E_REPORT_AUTH ?? "";
+    const authValue = envValue(env.values, envKeys("AUTH")) ?? "";
     return { mode: authValue ? "auth" : "open", authValue, env };
   }
 
@@ -77,7 +78,7 @@ export class AuthManager {
       env_files_missing: env.missing,
       access_token_ttl_ms: this.ttlMs,
       account_token_note:
-        "account tokens rotate only via `accounts rotate <id>|--all`; changing FDE2E_REPORT_AUTH does not revoke them",
+        "account tokens rotate only via `accounts rotate <id>|--all`; changing STOA_AUTH (legacy FDE2E_REPORT_AUTH) does not revoke them",
       open_mode_warning:
         mode === "open"
           ? openExposed

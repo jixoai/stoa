@@ -5,7 +5,8 @@
  *
  * Two loopback listeners in one process:
  *   main     — the ONLY origin placed in
- *              FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS (pages/resources/redirects)
+ *              STOA_PREVIEW_TEST_ALLOW_ORIGINS (legacy FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS
+ *              is also read); pages/resources/redirects
  *   private  — a second, deliberately NON-allowlisted origin used to prove that
  *              a redirect into loopback is blocked as `blocked_private`
  *              (design §7.5; A8 asserts its counter stays 0)
@@ -194,7 +195,7 @@ function record(side, req, pathname) {
     return created;
   })();
   const ua = String(req.headers["user-agent"] ?? "");
-  const isWorker = /^fde2e-report-link-preview/i.test(ua);
+  const isWorker = /^stoa-link-preview/i.test(ua);
   if (isWorker) side.workerRequests += 1;
   bucket.total += 1;
   if (isWorker) bucket.worker += 1;

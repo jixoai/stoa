@@ -125,8 +125,9 @@ fatal() {
 # Environment isolation / port / service helpers
 # ---------------------------------------------------------------------------
 
-# Never inherit ambient report credentials from the developer shell.
-for _v in $(env | sed -n 's/^\(FDE2E_REPORT_[A-Za-z0-9_]*\)=.*/\1/p'); do
+# Never inherit ambient stoa/report credentials from the developer shell.
+for _v in $(env | sed -n -e 's/^\(STOA_[A-Za-z0-9_]*\)=.*/\1/p' \
+                         -e 's/^\(FDE2E_REPORT_[A-Za-z0-9_]*\)=.*/\1/p'); do
   unset "$_v" 2>/dev/null || true
 done
 unset _v
@@ -150,7 +151,7 @@ pick_port() {
 
 serve_env_list() {
   # Later files override earlier ones (design §4). The dedicated auth file goes
-  # last so it wins even if init provisioned an FDE2E_REPORT_AUTH into DATA/.env.
+  # last so it wins even if init provisioned an STOA_AUTH into DATA/.env.
   if [ "$AUTH_ON" = "1" ] && [ -n "$AUTH_ENV_FILE" ]; then
     printf '%s' "$DATA/.env,$AUTH_ENV_FILE"
   else
@@ -453,7 +454,7 @@ s1_init() {
   section S1 "init 数据目录、固定账号与凭据文件"
 
   # Explicit --env-files points at a file that does not exist, so init does NOT
-  # first-provision a random FDE2E_REPORT_AUTH into DATA/.env (design §4).
+  # first-provision a random STOA_AUTH into DATA/.env (design §4).
   # The early scenarios must run in open mode; S11 tests the open -> auth restart.
   if ! cli_expect_ok "1.1 init --data-dir 成功" init --data-dir "$DATA" \
       --env-files "$RUN_TMP/init-env-absent.env"; then
@@ -1229,6 +1230,7 @@ s11_auth() {
 
   AUTH_ON=1
   AUTH_ENV_FILE="$RUN_TMP/auth.env"
+  # 轮 1 用旧（legacy）键：证明 FDE2E_REPORT_AUTH 仍被接受（双读回退）。
   printf 'FDE2E_REPORT_AUTH=%s\n' "$AUTH_SECRET_1" >"$AUTH_ENV_FILE"
   chmod 600 "$AUTH_ENV_FILE"
 
@@ -1298,7 +1300,8 @@ s11_auth() {
     fail "11.8 登录后带 Bearer 的写请求成功" "最后 status=$AUTHED_CODE"
   fi
 
-  printf 'FDE2E_REPORT_AUTH=%s\n' "$AUTH_SECRET_2" >"$AUTH_ENV_FILE"
+  # 轮 2 用新前缀 STOA_AUTH：证明新键主导（同一 env 文件被覆写）。
+  printf 'STOA_AUTH=%s\n' "$AUTH_SECRET_2" >"$AUTH_ENV_FILE"
   sleep 1.3   # design §4: live-read, at most 1s cache
 
   if [ -n "$ACCESS_TOKEN" ] && [ -n "$AUTHED_FIELD" ]; then
@@ -1307,8 +1310,8 @@ s11_auth() {
       -H 'content-type: application/json' \
       -H "Authorization: Bearer $ACCESS_TOKEN" --data "$payload")
     case "$code" in
-      401|403) pass "11.9 改 FDE2E_REPORT_AUTH 后旧 access token 立即失效（${code}）" ;;
-      *) fail "11.9 改 FDE2E_REPORT_AUTH 后旧 access token 立即失效" "status=$code" ;;
+      401|403) pass "11.9 改 STOA_AUTH（新前缀）后旧 access token 立即失效（${code}）" ;;
+      *) fail "11.9 改 STOA_AUTH 后旧 access token 立即失效" "status=$code" ;;
     esac
   else
     skip "11.9 改值后旧 access token 失效" "未取得可用 access token"

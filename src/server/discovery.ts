@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fail } from "../core/errors.ts";
+import { envKeys, envValue } from "../core/env.ts";
 import { VERSION } from "../core/protocol.ts";
 import type { LeaseSnapshot } from "./lease.ts";
 
@@ -32,7 +33,9 @@ export interface ServerInfo {
 export const SERVER_JSON = "server.json";
 export const LOCK_JSON = "serve.lock";
 export const POINTER_FILE = ".report-pointer";
-export const DATA_DIR_ENV = "FDE2E_REPORT_DATA_DIR";
+export const DATA_DIR_ENV = "STOA_DATA_DIR";
+/** Legacy data-dir env key (`FDE2E_REPORT_DATA_DIR`), still read as fallback. */
+export const LEGACY_DATA_DIR_ENV = "FDE2E_REPORT_DATA_DIR";
 
 export function serverInfoPath(dataDir: string): string {
   return join(dataDir, SERVER_JSON);
@@ -167,7 +170,7 @@ export function resolveDataDir(opts: {
 }): string {
   const cwd = opts.cwd ?? process.cwd();
   if (opts.flag) return resolve(cwd, opts.flag);
-  const fromEnv = (opts.env ?? process.env)[DATA_DIR_ENV];
+  const fromEnv = envValue(opts.env ?? process.env, envKeys("DATA_DIR"));
   if (fromEnv) return resolve(cwd, fromEnv);
   if (opts.allowPointer !== false) {
     const pointerPath = join(cwd, POINTER_FILE);
@@ -178,7 +181,8 @@ export function resolveDataDir(opts: {
   }
   fail(
     "BAD_REQUEST",
-    `cannot resolve data directory: pass --data-dir, set ${DATA_DIR_ENV}, ` +
+    `cannot resolve data directory: pass --data-dir, set ${DATA_DIR_ENV} ` +
+      `(legacy ${LEGACY_DATA_DIR_ENV} is also read), ` +
       `or run init in this working directory (it writes ${POINTER_FILE})`,
   );
 }
@@ -209,7 +213,8 @@ function normalizedSegments(path: string): string[] {
 /**
  * Refuse data dirs inside public static roots. The known offender is
  * `.agents/reports/` (served + tunnel-exposed for HTML reports). Extra roots may
- * be supplied via FDE2E_REPORT_PUBLIC_ROOTS (comma separated).
+ * be supplied via STOA_PUBLIC_ROOTS (comma separated; legacy
+ * FDE2E_REPORT_PUBLIC_ROOTS is also read).
  */
 export function assertSafeDataDir(
   path: string,
@@ -227,7 +232,7 @@ export function assertSafeDataDir(
       );
     }
   }
-  const extraRoots = ((opts.env ?? process.env).FDE2E_REPORT_PUBLIC_ROOTS ?? "")
+  const extraRoots = (envValue(opts.env ?? process.env, envKeys("PUBLIC_ROOTS")) ?? "")
     .split(",")
     .map((root) => root.trim())
     .filter(Boolean);

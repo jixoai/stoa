@@ -79,7 +79,7 @@ describe("CLI surface (design §15, P3)", () => {
     try {
       const missing = await runCli(["capabilities"], {
         cwd: bare,
-        env: { FDE2E_REPORT_DATA_DIR: undefined },
+        env: { STOA_DATA_DIR: undefined, FDE2E_REPORT_DATA_DIR: undefined },
       });
       expect(missing.code).not.toBe(0);
     } finally {

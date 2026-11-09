@@ -14,7 +14,7 @@ function buildApp(opts: { mode: "open" | "auth" }) {
   const envPath = join(envDir, "env");
   writeFileSync(
     envPath,
-    opts.mode === "auth" ? "FDE2E_REPORT_AUTH=topsecret\n" : "# open mode\n",
+    opts.mode === "auth" ? "STOA_AUTH=topsecret\n" : "# open mode\n",
   );
   const auth = new AuthManager({
     store: t.store,
@@ -428,13 +428,13 @@ describe("HTTP API (report-surface: health/CORS/SEED)", () => {
         }),
       );
       const serialized = JSON.stringify(created);
-      expect(serialized).not.toMatch(/FDE2E_REPORT_ACCOUNT_TOKEN/);
+      expect(serialized).not.toMatch(/STOA_ACCOUNT_TOKEN|FDE2E_REPORT_ACCOUNT_TOKEN/);
       expect(serialized).not.toMatch(/[A-Za-z0-9_-]{40,}/);
       expect(String(created.env_file)).toContain("accounts/a.env");
       const list = await json(
         await app.request("/api/accounts", { headers: { "x-report-account": "manager" } }),
       );
-      expect(JSON.stringify(list)).not.toMatch(/FDE2E_REPORT_ACCOUNT_TOKEN/);
+      expect(JSON.stringify(list)).not.toMatch(/STOA_ACCOUNT_TOKEN|FDE2E_REPORT_ACCOUNT_TOKEN/);
       const forbidden = await app.request("/api/accounts", {
         method: "POST",
         headers: { "content-type": "application/json", "x-report-account": "a" },

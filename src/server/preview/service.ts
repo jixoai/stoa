@@ -8,6 +8,7 @@
  * - 组合 worker stats / PluginView（API 与设置页的唯一数据源）。
  */
 import { builtinPlugin } from "../../core/plugins/builtin.ts";
+import { envValue, FILEVIEWER_BASE_KEYS } from "../../core/env.ts";
 import type {
   PluginDependencyView,
   PluginView,
@@ -33,7 +34,7 @@ export interface PreviewServiceOptions {
   transport: PreviewTransport;
   instanceId?: string;
   now?: () => number;
-  /** `FDE2E_REPORT_PREVIEW_WORKER=0` 关闭 worker（测试/只读场景）。 */
+  /** `STOA_PREVIEW_WORKER=0`（兼容旧 `FDE2E_REPORT_PREVIEW_WORKER`）关闭 worker（测试/只读场景）。 */
   workerEnabled?: boolean;
   /** 扫描分批间隔（design §13.2：100 条 + 250ms；测试传 0）。 */
   scanBatchDelayMs?: number;
@@ -329,7 +330,7 @@ export class PreviewService {
         status: builtin ? (this.store.pluginEnabled(dep.id) ? "enabled" : "disabled") : "missing",
       };
     });
-    const viewerBase = this.env.FDE2E_FILEVIEWER_BASE?.trim();
+    const viewerBase = envValue(this.env, FILEVIEWER_BASE_KEYS)?.trim();
     return {
       id: manifest.id,
       name: manifest.name,

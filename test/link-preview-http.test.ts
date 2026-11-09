@@ -31,7 +31,7 @@ function buildApp(
   t.store.createAccount({ id: "agent1", display: "Agent One" });
   const envDir = tempDir();
   const envPath = join(envDir, "env");
-  writeFileSync(envPath, mode === "auth" ? "FDE2E_REPORT_AUTH=topsecret\n" : "# open mode\n");
+  writeFileSync(envPath, mode === "auth" ? "STOA_AUTH=topsecret\n" : "# open mode\n");
   const auth = new AuthManager({
     store: t.store,
     envFiles: [envPath],

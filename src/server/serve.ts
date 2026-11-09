@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { fail } from "../core/errors.ts";
-import { parseEnv } from "../core/env.ts";
+import { envKeys, envValue, parseEnv } from "../core/env.ts";
 import type { Server } from "bun";
 import { AuthManager } from "./auth.ts";
 import { Presence } from "./presence.ts";
@@ -69,8 +69,13 @@ function readSecret(dataDir: string): string {
     fail("BAD_REQUEST", `data dir ${dataDir} is not initialized (missing .env); run init first`);
   }
   const values = parseEnv(readFileSync(envPath, "utf8"));
-  const secret = values.FDE2E_REPORT_SECRET ?? "";
-  if (!secret) fail("BAD_REQUEST", `FDE2E_REPORT_SECRET missing in ${envPath}; re-run init`);
+  const secret = envValue(values, envKeys("SECRET")) ?? "";
+  if (!secret) {
+    fail(
+      "BAD_REQUEST",
+      `STOA_SECRET missing in ${envPath} (legacy FDE2E_REPORT_SECRET is also read); re-run init`,
+    );
+  }
   return secret;
 }
 
@@ -106,7 +111,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     fail(
       "FORBIDDEN",
       `refusing to expose without authentication: bind is ${host}${opts.expose ? " + --expose" : ""} ` +
-        `and FDE2E_REPORT_AUTH is empty. Set FDE2E_REPORT_AUTH in an env file, or pass --allow-open-expose (OPEN MODE).`,
+        `and the auth key (STOA_AUTH) is empty. Set STOA_AUTH in an env file, or pass --allow-open-expose (OPEN MODE).`,
     );
   }
 
@@ -124,7 +129,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   const env = opts.processEnv ?? process.env;
   const previewTestOrigins = exposed
     ? []
-    : parseTestAllowOrigins(env.FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS);
+    : parseTestAllowOrigins(envValue(env, envKeys("PREVIEW_TEST_ALLOW_ORIGINS")));
   const previewTransport = new HttpPreviewTransport({
     testAllowOrigins: previewTestOrigins,
     allowedPorts: [8080, 8443],
@@ -134,7 +139,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     provider: LINK_PREVIEW_PROVIDER,
     transport: previewTransport,
     instanceId,
-    workerEnabled: env.FDE2E_REPORT_PREVIEW_WORKER !== "0",
+    workerEnabled: envValue(env, envKeys("PREVIEW_WORKER")) !== "0",
     policy: { test_allowlist_enabled: previewTestOrigins.length > 0, exposed },
   });
   const deps = {
@@ -194,7 +199,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
       (authStatus.env_files_missing.length
         ? ` (missing: ${authStatus.env_files_missing.join(", ")})`
         : ""),
-    `auth     : ${authStatus.mode === "auth" ? "ON (FDE2E_REPORT_AUTH set)" : "OPEN MODE"}` +
+    `auth     : ${authStatus.mode === "auth" ? "ON (STOA_AUTH set)" : "OPEN MODE"}` +
       (authStatus.open_mode_warning ? ` — ${authStatus.open_mode_warning}` : ""),
     `listen   : ${host}:${listening.port}`,
     `url      : ${url}`,

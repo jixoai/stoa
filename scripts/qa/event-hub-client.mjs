@@ -526,9 +526,9 @@ try {
   for (const extra of extraPages) await extra.context.close();
 
   // ── 7) reset（REPLAY_LIMIT=2）──────────────────────────────────────────────
-  process.env.FDE2E_REPORT_HUB_REPLAY_LIMIT = "2";
+  process.env.STOA_HUB_REPLAY_LIMIT = "2";
   qaReset = await ensureQa([]);
-  delete process.env.FDE2E_REPORT_HUB_REPLAY_LIMIT;
+  delete process.env.STOA_HUB_REPLAY_LIMIT;
   const resetToken = accountToken(qaReset.dataDir, "owner");
   const resetManager = accountToken(qaReset.dataDir, "manager");
   const resetClient = await openAs(browser, qaReset.base, resetToken);

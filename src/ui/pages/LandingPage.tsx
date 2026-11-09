@@ -201,7 +201,7 @@ export function LandingPage({ onBack }: { onBack?: () => void } = {}) {
     () => [
       "在数据目录起一个本地实例：bun src/cli/main.ts serve --data-dir <数据目录>",
       "把 serve 打印的 REPORT_URL（或你经隧道曝光的域名）填进「添加实例」",
-      "认证模式首访输入 FDE2E_REPORT_AUTH；之后 access token 只存本机 localStorage",
+      "认证模式首访输入 STOA_AUTH；之后 access token 只存本机 localStorage",
       "同一份 dist 可托管在任意静态宿主，ep 指向另一台机器上的实例也一样可用",
     ],
     [],

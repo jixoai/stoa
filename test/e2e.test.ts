@@ -19,7 +19,7 @@ describe("E2E smoke (real daemon)", () => {
     let stopped = false;
     try {
       const started = await runCli(["serve", ...["--data-dir", ws.dataDir], "--daemon"], {
-        env: { FDE2E_REPORT_AUTH: "" },
+        env: { STOA_AUTH: "", FDE2E_REPORT_AUTH: "" },
         timeoutMs: 30_000,
       });
       expect(started.code).toBe(0);
@@ -55,7 +55,7 @@ describe("E2E smoke (real daemon)", () => {
 
       const waited = await runCli(
         ["wait-notifications", ...["--data-dir", ws.dataDir], "--as", "b"],
-        { env: { FDE2E_REPORT_AUTH: "" }, timeoutMs: 30_000 },
+        { env: { STOA_AUTH: "", FDE2E_REPORT_AUTH: "" }, timeoutMs: 30_000 },
       );
       expect(waited.code).toBe(0);
       const delivered = parseJsonLines(waited.stdout);
@@ -77,7 +77,7 @@ describe("E2E smoke (real daemon)", () => {
       expect(read.stdout).toContain("收到");
 
       const exported = await runCli(["export", ...["--data-dir", ws.dataDir]], {
-        env: { FDE2E_REPORT_AUTH: "" },
+        env: { STOA_AUTH: "", FDE2E_REPORT_AUTH: "" },
       });
       expect(exported.code).toBe(0);
       const exportResult = JSON.parse(exported.stdout) as { as_of_seq: number };

@@ -7,10 +7,11 @@
  *
  * Isolation: only the disposable backend from `scripts/qa/qa-serve.mjs` is
  * written (temp /tmp/report-qa-* data dir; report-link-preview design §7.5 uses
- * FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS=<fixture main origin>). The
+ * STOA_PREVIEW_TEST_ALLOW_ORIGINS=<fixture main origin>; legacy
+ * FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS is also read). The
  * production board (127.0.0.1:13689) is refused by qa-env before any request.
  * Fixture URL hits are counted by `scripts/qa/link-preview-fixture.mjs`
- * (worker UA = fde2e-report-link-preview/1.0; private second origin must stay 0).
+ * (worker UA = stoa-link-preview/1.0; private second origin must stay 0).
  *
  * Run (after the server/frontend implementation for this change is merged):
  *   bun scripts/qa/link-preview.mjs
@@ -2618,7 +2619,7 @@ async function main() {
   fixture = await startFixture();
   // Only the main fixture origin is allowlisted for the preview fetcher; the
   // private second listener is intentionally absent (A8).
-  process.env.FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS = fixture.url;
+  process.env.STOA_PREVIEW_TEST_ALLOW_ORIGINS = fixture.url;
   qa = await ensureQa([], { qaServeArgs: ["--no-seed", "--keep"] });
   BASE = qa.base;
   BOARD_OWNED = qa.owned !== null;
@@ -2644,7 +2645,7 @@ async function main() {
     ["fixture", `${fixture.url}（private ${fixture.privateUrl}）`],
     ["isolated board", `${BASE} · ${qa.dataDir}`],
     ["allow origins", fixture.url],
-    ["worker UA", "fde2e-report-link-preview/1.0"],
+    ["worker UA", "stoa-link-preview/1.0"],
     ["fixture pid", String(fixture.info.pid)],
     ["serve pid", initialServePid === null ? "n/a" : String(initialServePid)],
     ["chromium pid(s)", launchedChromePids.join(",") || "n/a"],

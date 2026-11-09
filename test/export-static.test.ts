@@ -101,7 +101,7 @@ describe("static export (design §2/§5)", () => {
     const t = makeStore();
     const ui = makeUiFixture();
     try {
-      writeFileSync(join(t.dir, ".env"), "FDE2E_REPORT_AUTH=super-secret-auth-value\n", {
+      writeFileSync(join(t.dir, ".env"), "STOA_AUTH=super-secret-auth-value\n", {
         mode: 0o600,
       });
       const ownerEnv = readFileSync(join(t.dir, "accounts", "owner.env"), "utf8");
@@ -119,7 +119,9 @@ describe("static export (design §2/§5)", () => {
 
       expect(index).not.toContain("super-secret-auth-value");
       expect(index).not.toContain(token);
+      expect(index).not.toContain("STOA_AUTH");
       expect(index).not.toContain("FDE2E_REPORT_AUTH");
+      expect(index).not.toContain("STOA_ACCOUNT_TOKEN");
       expect(index).not.toContain("FDE2E_REPORT_ACCOUNT_TOKEN");
       expect(index).not.toContain(t.dir);
       expect(JSON.stringify(snapshot)).not.toContain("authorization");

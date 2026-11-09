@@ -60,7 +60,7 @@ describe("cacheKey invalidation scan (report-link-preview P1-11)", () => {
         status: "ready",
       });
 
-      const service = makeService(t.store, { FDE2E_REPORT_PREVIEW_RULES_VERSION: "2000" });
+      const service = makeService(t.store, { STOA_PREVIEW_RULES_VERSION: "2000" });
       const scan = await service.scanStale();
       expect(scan.enqueued).toBe(2);
       const claimed = claimNext(t.db, { now: now + 100, limit: 5 });
@@ -141,7 +141,7 @@ describe("cacheKey invalidation scan (report-link-preview P1-11)", () => {
     const t = makeStore({ clock: () => T0 });
     try {
       commit(t.store, "视图 https://example.com/view", "b-view");
-      const service = makeService(t.store, { FDE2E_FILEVIEWER_BASE: "https://file-viewer.example.com" });
+      const service = makeService(t.store, { STOA_FILEVIEWER_BASE: "https://file-viewer.example.com" });
       const view = service.pluginView();
       expect(view.id).toBe("link-preview");
       expect(view.version).toBe("1.0.0");
@@ -149,6 +149,17 @@ describe("cacheKey invalidation scan (report-link-preview P1-11)", () => {
       expect(view.enabled).toBe(true);
       expect(view.requires).toEqual([{ id: "file-viewer", optional: true, status: "missing" }]);
       expect(view.viewer_base).toBe("https://file-viewer.example.com");
+      // fileviewer base double read: new prefix wins, legacy key still read
+      expect(
+        makeService(t.store, {
+          STOA_FILEVIEWER_BASE: "https://new.example.com",
+          FDE2E_FILEVIEWER_BASE: "https://legacy.example.com",
+        }).pluginView().viewer_base,
+      ).toBe("https://new.example.com");
+      expect(
+        makeService(t.store, { FDE2E_FILEVIEWER_BASE: "https://legacy.example.com" }).pluginView()
+          .viewer_base,
+      ).toBe("https://legacy.example.com");
       expect(view.limits).toEqual({ previews_per_post: 3, url_max_chars: 2048 });
       expect(view.worker).toMatchObject({ queued: 1, ready: 0, partial: 0 });
       expect(service.stats().processing).toBe(0);

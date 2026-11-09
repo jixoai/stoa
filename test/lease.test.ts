@@ -110,7 +110,7 @@ describe("idle lease (design §1)", () => {
       cwd: ws.cwd,
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, FDE2E_REPORT_AUTH: "" },
+      env: { ...process.env, STOA_AUTH: "", FDE2E_REPORT_AUTH: "" },
     });
     try {
       await sleep(2500);

@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  accountTokenEnvKey,
   constantTimeEqual,
   deriveSigningKey,
+  legacyAccountTokenEnvKey,
   maskSecret,
   sha256Hex,
   signAccessToken,
@@ -345,5 +347,75 @@ describe("security gates (design §19)", () => {
     } finally {
       workspace.cleanup();
     }
+  });
+});
+
+describe("env double read (stoa-identity §3)", () => {
+  test("account token keys: STOA_TOKEN_* preferred, legacy FDE2E_REPORT_TOKEN_* still read", () => {
+    expect(accountTokenEnvKey("sub-a")).toBe("STOA_TOKEN_SUB_A");
+    expect(legacyAccountTokenEnvKey("sub-a")).toBe("FDE2E_REPORT_TOKEN_SUB_A");
+  });
+
+  test("AuthManager: STOA_AUTH wins over the legacy key; legacy alone still enables auth", () => {
+    const t = makeStore({ clock: () => T0 });
+    const dir = tempDir();
+    const both = join(dir, "both.env");
+    const legacyOnly = join(dir, "legacy.env");
+    const stoaOnly = join(dir, "stoa.env");
+    const empty = join(dir, "empty.env");
+    writeEnvFile(both, { STOA_AUTH: "new", FDE2E_REPORT_AUTH: "old" });
+    writeEnvFile(legacyOnly, { FDE2E_REPORT_AUTH: "old" });
+    writeEnvFile(stoaOnly, { STOA_AUTH: "new" });
+    writeEnvFile(empty, { STOA_AUTH: "", FDE2E_REPORT_AUTH: "" });
+    try {
+      const mk = (envPath: string) =>
+        new AuthManager({
+          store: t.store,
+          envFiles: [envPath],
+          secretSalt: SECRET,
+          envTtlMs: 0,
+          processEnv: {},
+        });
+      const bothAuth = mk(both);
+      expect(bothAuth.current().mode).toBe("auth");
+      expect(bothAuth.verifyLogin("new")).toBe(true);
+      expect(bothAuth.verifyLogin("old")).toBe(false);
+      const legacyAuth = mk(legacyOnly);
+      expect(legacyAuth.current().mode).toBe("auth");
+      expect(legacyAuth.verifyLogin("old")).toBe(true);
+      const stoaAuth = mk(stoaOnly);
+      expect(stoaAuth.current().mode).toBe("auth");
+      expect(stoaAuth.verifyLogin("new")).toBe(true);
+      const emptyAuth = mk(empty);
+      expect(emptyAuth.current().mode).toBe("open");
+    } finally {
+      t.close();
+    }
+  });
+
+  test("STOA_DATA_DIR / STOA_PUBLIC_ROOTS double read (legacy still read, new wins)", () => {
+    expect(
+      resolveDataDir({ cwd: "/tmp", env: { STOA_DATA_DIR: "/data/new" }, allowPointer: false }),
+    ).toBe("/data/new");
+    expect(
+      resolveDataDir({
+        cwd: "/tmp",
+        env: { FDE2E_REPORT_DATA_DIR: "/data/old" },
+        allowPointer: false,
+      }),
+    ).toBe("/data/old");
+    expect(
+      resolveDataDir({
+        cwd: "/tmp",
+        env: { STOA_DATA_DIR: "/data/new", FDE2E_REPORT_DATA_DIR: "/data/old" },
+        allowPointer: false,
+      }),
+    ).toBe("/data/new");
+    expect(() =>
+      assertSafeDataDir("/srv/static/report", { env: { STOA_PUBLIC_ROOTS: "/srv/static" } }),
+    ).toThrow(ReportError);
+    expect(() =>
+      assertSafeDataDir("/srv/static/report", { env: { FDE2E_REPORT_PUBLIC_ROOTS: "/srv/static" } }),
+    ).toThrow(ReportError);
   });
 });

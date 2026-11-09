@@ -1,6 +1,8 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { LEGACY_ENV_PREFIX } from "./env.ts";
 
-export const ACCOUNT_TOKEN_ENV_PREFIX = "FDE2E_REPORT_TOKEN_";
+/** Preferred per-account token key prefix: `STOA_TOKEN_<ACCOUNT>`. */
+export const ACCOUNT_TOKEN_ENV_PREFIX = "STOA_TOKEN_";
 export const ACCESS_TOKEN_PREFIX = "v1";
 export const DEFAULT_ACCESS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -91,12 +93,17 @@ export function accountTokenEnvKey(accountId: string): string {
   return `${ACCOUNT_TOKEN_ENV_PREFIX}${accountId.toUpperCase().replace(/-/g, "_")}`;
 }
 
+/** Legacy per-account token key (`FDE2E_REPORT_TOKEN_<ACCOUNT>`), still read. */
+export function legacyAccountTokenEnvKey(accountId: string): string {
+  return `${LEGACY_ENV_PREFIX}TOKEN_${accountId.toUpperCase().replace(/-/g, "_")}`;
+}
+
 /** Render the per-account env file (0600) that the manager hands to the account. */
 export function renderAccountEnvFile(accountId: string, token: string): string {
   return [
     `# stoa account credential — ${accountId}`,
     `# 0600; hand this file to that account only. Never merge accounts.`,
-    `FDE2E_REPORT_ACCOUNT=${accountId}`,
+    `STOA_ACCOUNT=${accountId}`,
     `${accountTokenEnvKey(accountId)}=${token}`,
     "",
   ].join("\n");

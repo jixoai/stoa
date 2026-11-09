@@ -144,12 +144,17 @@ function accountArgs(dataDir, envPath, accountId) {
   ];
 }
 
+/** Double read: `STOA_TOKEN_<ID>` preferred, legacy `FDE2E_REPORT_TOKEN_<ID>` accepted. */
 function readToken(envFile, accountId) {
   const text = readFileSync(envFile, "utf8");
-  const key = `FDE2E_REPORT_TOKEN_${accountId.toUpperCase().replace(/-/g, "_")}`;
-  const match = new RegExp(`^${key}=(.+)$`, "m").exec(text);
-  if (!match) throw new Error(`missing ${key} in ${envFile}`);
-  return match[1].trim();
+  const suffix = accountId.toUpperCase().replace(/-/g, "_");
+  for (const key of [`STOA_TOKEN_${suffix}`, `FDE2E_REPORT_TOKEN_${suffix}`]) {
+    const match = new RegExp(`^${key}=(.+)$`, "m").exec(text);
+    if (match) return match[1].trim();
+  }
+  throw new Error(
+    `missing STOA_TOKEN_${suffix} (legacy FDE2E_REPORT_TOKEN_${suffix}) in ${envFile}`,
+  );
 }
 
 // ── tiny PNG generator (no third-party deps) ─────────────────────────────────
@@ -523,8 +528,11 @@ async function start() {
   } else {
     if (!existsSync(envPath)) fail(`${dataDir} has report.sqlite but no .env; not a qa-serve data dir`);
     const envText = readFileSync(envPath, "utf8");
-    if (!/^FDE2E_REPORT_AUTH=/m.test(envText)) {
-      fail(`${envPath} has no FDE2E_REPORT_AUTH; qa-serve needs auth mode (delete the dir and start fresh)`);
+    if (!/^(?:STOA_AUTH|FDE2E_REPORT_AUTH)=/m.test(envText)) {
+      fail(
+        `${envPath} has no STOA_AUTH (legacy FDE2E_REPORT_AUTH); qa-serve needs auth mode ` +
+          `(delete the dir and start fresh)`,
+      );
     }
   }
 

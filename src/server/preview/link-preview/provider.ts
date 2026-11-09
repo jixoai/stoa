@@ -5,6 +5,7 @@
  * 已在类型/状态机中预留（P2 实现），不在 P1 返回。
  */
 import { createHash } from "node:crypto";
+import { envKeys, envValue } from "../../../core/env.ts";
 import type {
   ExtractedLink,
   PhaseResult,
@@ -28,7 +29,7 @@ const PAGE_LIKE_DOCUMENT = /\.(pdf|zip|docx?|xlsx?|pptx?|txt|md|json|csv|log)(?:
  * 任何抽取/抓取/元数据规则变化都会 bump（spec P1-3），cacheKey 随之失效。
  */
 export function previewRulesVersion(env: Record<string, string | undefined> = process.env): number {
-  const raw = env.FDE2E_REPORT_PREVIEW_RULES_VERSION;
+  const raw = envValue(env, envKeys("PREVIEW_RULES_VERSION"));
   if (raw !== undefined && raw !== "" && Number.isInteger(Number(raw)) && Number(raw) > 0) {
     return Number(raw);
   }
@@ -38,7 +39,7 @@ export function previewRulesVersion(env: Record<string, string | undefined> = pr
 export function previewPluginVersion(
   env: Record<string, string | undefined> = process.env,
 ): string {
-  const raw = env.FDE2E_REPORT_PREVIEW_PLUGIN_VERSION;
+  const raw = envValue(env, envKeys("PREVIEW_PLUGIN_VERSION"));
   return raw && raw.trim() ? raw.trim() : LINK_PREVIEW.version;
 }
 

@@ -2,6 +2,7 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { errorMessage, fail, ReportError } from "../core/errors.ts";
+import { envValue, FILEVIEWER_BASE_KEYS } from "../core/env.ts";
 import { capabilities, LINEAGE_IDS_LIMIT, READ_POST_ID_MAX_CHARS, READS_BATCH_LIMIT, READS_QUERY_LIMIT } from "../core/protocol.ts";
 import { parseLimit, parseTime } from "../core/pagination.ts";
 import { validateWriteOp, assertBody, MAX_MEDIA_BYTES, MEDIA_TYPES, ALLOWED_EXTS, EXT_CONTENT_TYPE } from "../core/validation.ts";
@@ -185,7 +186,7 @@ function fallbackPluginView(store: Store): PluginView {
       status: builtin ? (store.pluginEnabled(dep.id) ? "enabled" : "disabled") : "missing",
     };
   });
-  const viewerBase = process.env.FDE2E_FILEVIEWER_BASE?.trim();
+  const viewerBase = envValue(process.env, FILEVIEWER_BASE_KEYS)?.trim();
   return {
     id: LINK_PREVIEW.id,
     name: LINK_PREVIEW.name,
@@ -267,7 +268,7 @@ export function createApp(deps: AppDeps): Hono {
     const secret = typeof body.secret === "string" ? body.secret : "";
     if (!secret) fail("BAD_REQUEST", "secret is required");
     const mode = deps.auth.current().mode;
-    if (mode === "open") fail("BAD_REQUEST", "authentication is disabled (FDE2E_REPORT_AUTH is empty)");
+    if (mode === "open") fail("BAD_REQUEST", "authentication is disabled (STOA_AUTH is empty)");
     if (!deps.auth.verifyLogin(secret)) fail("UNAUTHORIZED", "wrong secret");
     const issued = deps.auth.issueAccessToken("owner");
     return c.json({ ok: true, token: issued.token, exp: issued.exp, sub: "owner" });

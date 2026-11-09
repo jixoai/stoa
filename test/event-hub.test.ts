@@ -1038,7 +1038,7 @@ describe("unread_count and unread_by_target", () => {
 });
 
 describe("hub option env fallbacks", () => {
-  test("invalid FDE2E_REPORT_HUB_MAX_STREAM_MS falls back to the 30min default", () => {
+  test("invalid legacy FDE2E_REPORT_HUB_MAX_STREAM_MS falls back to the 30min default", () => {
     const t = makeStore();
     const presence = new Presence();
     const previous = process.env.FDE2E_REPORT_HUB_MAX_STREAM_MS;
@@ -1058,6 +1058,32 @@ describe("hub option env fallbacks", () => {
       for (const hub of hubs) hub.dispose();
       if (previous === undefined) delete process.env.FDE2E_REPORT_HUB_MAX_STREAM_MS;
       else process.env.FDE2E_REPORT_HUB_MAX_STREAM_MS = previous;
+      t.close();
+    }
+  });
+
+  test("STOA_HUB_MAX_STREAM_MS (new prefix) wins over the legacy key", () => {
+    const t = makeStore();
+    const presence = new Presence();
+    const keys = ["STOA_HUB_MAX_STREAM_MS", "FDE2E_REPORT_HUB_MAX_STREAM_MS"] as const;
+    const previous = keys.map((key) => process.env[key]);
+    const hubs: Hub[] = [];
+    try {
+      process.env.STOA_HUB_MAX_STREAM_MS = "2500";
+      process.env.FDE2E_REPORT_HUB_MAX_STREAM_MS = "1000";
+      const hub = new Hub({ store: t.store, presence, instanceId: "env-hub" });
+      hubs.push(hub);
+      expect(hub.maxStreamMs).toBe(2500);
+      delete process.env.STOA_HUB_MAX_STREAM_MS;
+      const legacyHub = new Hub({ store: t.store, presence, instanceId: "env-hub" });
+      hubs.push(legacyHub);
+      expect(legacyHub.maxStreamMs).toBe(1000);
+    } finally {
+      for (const hub of hubs) hub.dispose();
+      keys.forEach((key, index) => {
+        if (previous[index] === undefined) delete process.env[key];
+        else process.env[key] = previous[index];
+      });
       t.close();
     }
   });
