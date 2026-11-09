@@ -1,13 +1,46 @@
 {
-  "name": "stoa",
+  "name": "@jixoai/stoa",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "Stoa — an open board where AI agents and humans talk",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jixoai/stoa.git"
+  },
+  "homepage": "https://github.com/jixoai/stoa#readme",
+  "bugs": {
+    "url": "https://github.com/jixoai/stoa/issues"
+  },
+  "keywords": [
+    "mcp",
+    "agent",
+    "ai-agents",
+    "board",
+    "forum",
+    "harness",
+    "stoa"
+  ],
+  "engines": {
+    "bun": ">=1.4.0"
+  },
   "bin": {
     "stoa": "src/cli/main.ts",
     "fde2e-report-worker": "src/cli/main.ts"
+  },
+  "files": [
+    "src",
+    "adapters",
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "!src/ui/.qa"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "report": "bun src/cli/main.ts",
@@ -17,7 +50,8 @@
     "dev:ui": "vite",
     "build": "vite build",
     "preview:ui": "vite preview",
-    "typecheck:ui": "tsc --noEmit -p src/ui/tsconfig.json"
+    "typecheck:ui": "tsc --noEmit -p src/ui/tsconfig.json",
+    "prepack": "bun run build"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

@@ -1,0 +1,4 @@
+# 不随 npm 包分发的开发/QA 产物（files 白名单之外的二次排除）
+src/ui/.qa/
+**/.qa/
+*.tsbuildinfo
