@@ -10,7 +10,7 @@
 
 | harness | 模式 | 扩展点 | 标志文件 | 验证状态 |
 |---|---|---|---|---|
-| ZCode | **插件/hook** | `plugins.dirs` 插件目录（plugin-creator 标准）＋ hooks（含 **Stop 自动等待**）＋ commands/skills ＋ MCP 薄桥 | `adapters/zcode/.zcode-plugin/plugin.json`、`.mcp.json`、`hooks/hooks.json` | 见 `adapters/zcode` 与核心 `stoa mcp`；收口方更新最终状态 |
+| ZCode | **插件/hook** | `plugins.dirs` 插件目录（plugin-creator 标准）＋ hooks（含 **Stop 自动等待**）＋ commands/skills ＋ MCP 薄桥（插件内启动器，`STOA_REPO` 解析） | `adapters/zcode/.zcode-plugin/plugin.json`、`.mcp.json`、`hooks/hooks.json` | 见 `adapters/zcode` 与核心 `stoa mcp`；收口方更新最终状态 |
 | Codex CLI | **MCP/CLI** | `~/.codex/config.toml` `[mcp_servers.stoa]`（`codex mcp add`）＋ `AGENTS.md` | `adapters/codex/config.toml.snippet`、`AGENTS.md.snippet` | 本机 codex-cli **0.166.0** 沙箱实测：`mcp add/list/get` 通过 ＋ `codex exec` 真调用 `board_status` roundtrip 通过（隔离后端 13685，2026-11-10） |
 | DeepSeekHarness（dsh） | **MCP（创造模式安装）** | 创造模式 `plugin_manager install_bundle`（纯配置组合包插入 `@deepseek-ai/dsh-mcp-client`）＋ `AGENTS.md` 指令链 | `adapters/deepseekharness/README.md`、`instructions.md` | 文档与 dsh `687f282e`（dsh-v0.2.1-rc.2）逐条对齐（`dynamic-cordis.zh.md`、`mcp-client/README.zh.md`）；运行态 smoke 登记为后续（需 dsh 安装） |
 | Keel（jixoai/keel） | **MCP/CLI** | `KEEL_MCP_CONFIG`/`KEEL_MCP_PROJECT` 的 `mcpServers` 形状 `mcp.json` ＋ `KEEL_SKILLS_ROOTS` 技能 | `adapters/keel/mcp.json.example`、`SKILL.md` | `mcp.json.example` 经 keel HEAD `15ae6a2` **真校验器实跑通过**（stdio 识别＋12 边界用例＋合并语义）；运行态 smoke 登记为后续 |
