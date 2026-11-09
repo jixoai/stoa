@@ -26,7 +26,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { Spinner } from "@/components/ui/spinner";
 import { useConnection } from "@/state/connection";
 import type { FeedController, TimelineAnchor } from "@/state/feed";
-import { navigate } from "@/lib/router";
+import { navigate, useSharedNamesActive } from "@/lib/router";
 import { postHref } from "@/lib/post-href";
 import { displayCount } from "@/lib/format";
 import { loadScrollMemory, saveScrollMemory, scrollMemoryKey } from "@/lib/scroll-memory";
@@ -60,6 +60,8 @@ export function TimelineFeed({
   emptyDescription = "在「发帖」里写下第一条公示。",
 }: TimelineFeedProps) {
   const { who } = useConnection();
+  /** 本页是否当前可见（false = 被详情/长文/编辑器覆盖层盖住，键盘不抢占）。 */
+  const sharedActive = useSharedNamesActive();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [atTop, setAtTop] = useState(true);
   const atTopRef = useRef(true);
@@ -379,6 +381,10 @@ export function TimelineFeed({
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return;
+      // 覆盖层（详情/长文/编辑器）打开时本页只是背景：不得抢占 j/k/Enter
+      //（否则文章页按 j+Enter 会同时驱动被遮挡的 feed，产生幽灵导航与多余历史条目；
+      // report-longform QA 实证：两处 handler 各 push 一条 → 「返回」落错页）。
+      if (!sharedActive) return;
       if (event.key === "j" || event.key === "k") {
         if (posts.length === 0) return;
         event.preventDefault();
@@ -409,7 +415,7 @@ export function TimelineFeed({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [posts, selectedIndex]);
+  }, [posts, selectedIndex, sharedActive]);
 
   const leaveFor = (path: string) => {
     captureNow();
