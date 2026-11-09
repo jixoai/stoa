@@ -117,14 +117,18 @@ export function tokenEnvKey(account) {
   return `FDE2E_REPORT_TOKEN_${account.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
 }
 
-/** 在 env 文件文本里按键名取非空值（支持 `export K=V`、引号；键序优先）。 */
+/**
+ * 在 env 文件文本里按键名取非空值（支持 `export K=V`、引号）。
+ * 与核心 `src/core/env.ts` 的 `parseEnv` 对齐：键名同款正则、**重复键后者生效**
+ * （`out[key] = value`）；空值视为未设，继续尝试下一个候选键。
+ */
 function readKeyFromEnvText(text, keys) {
   const values = new Map();
   for (const line of text.split(/\r?\n/)) {
-    const match = /^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);
     if (!match) continue;
     const raw = match[2].trim().replace(/^(["'])(.*)\1$/, "$2");
-    if (raw && !values.has(match[1])) values.set(match[1], raw);
+    values.set(match[1], raw);
   }
   for (const key of keys) {
     const value = values.get(key);
@@ -163,7 +167,7 @@ export function describeConfig(cfg) {
   };
 }
 
-export async function api(cfg, path, { method = "GET", body, timeoutMs = 30_000 } = {}) {
+export async function api(cfg, path, { method = "GET", body, timeoutMs = 20_000 } = {}) {
   const token = loadToken(cfg);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);

@@ -27,6 +27,10 @@
  * 并发：本地游标模式把「读 last → poll → 写 last」整段放在 `<state>.lock` 互斥锁里
  * （见 lib/state-lock.mjs）——常驻 watcher 与 Stop 钩子共用同一游标时不会重复投递；
  * 等锁超时则降级为无锁（stderr 一行说明）保活性。
+ *
+ * B5（第三轮独立评审）：`last` 不能只在首轮读一次盘——常驻 watcher 睡眠期间，Stop 钩子
+ * （stop-wait）会推进同一 state 文件；内存旧游标在下一轮会把同一批事件再投递一次。
+ * 现在**每轮进锁后都重读磁盘游标并取 max(memory, disk)**，poll 始终用两路中较新的游标。
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -196,6 +200,7 @@ function printIdle(mode, last) {
       mode,
       ...(statePath ? { state_file: statePath } : {}),
       cursor: last ?? null,
+      count: 0,
       idle_seconds: maxSeconds,
       events: [],
     }),
@@ -249,7 +254,11 @@ for (;;) {
       },
     });
     try {
-      if (last === null) last = readLocalState()?.last ?? (await initLocalState(instanceId));
+      // B5：每轮进锁后刷新磁盘游标（首轮仍走 init：无 state 文件时取账号当前 cursor）。
+      // 常驻 watcher 睡眠窗口内 stop-wait / 另一会话可能已推进游标，复用内存旧值会重复投递。
+      const disk = readLocalState();
+      if (last === null) last = disk?.last ?? (await initLocalState(instanceId));
+      else if (disk && disk.last > last) last = disk.last;
       const result = await callTool("board_peek", { cursor: last, limit: 200 });
       failures = 0;
       events = result.events ?? [];

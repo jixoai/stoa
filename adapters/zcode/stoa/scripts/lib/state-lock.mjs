@@ -6,18 +6,29 @@
  * 语义（对齐 stoa-adapters 修复规格）：
  *  - 锁文件＝`<state 文件>.lock`，`writeFileSync(..., { flag: "wx" })` 原子创建，
  *    内容 JSON `{pid, at, nonce, host}`（pid+时间戳用于诊断与陈旧判定）。
- *  - 锁已存在时：锁龄 > 10s 视为陈旧 → 抢占（删除后重试，最多 3 次防活锁）；
- *    否则每 50ms 重试，等待超过 `timeoutMs`（默认 20s）→ **降级**：不加锁继续，
- *    并回调 `onDegrade`（调用方在 stderr 说明；保活性优先，并发窗口内可能重复投递）。
+ *  - 锁已存在时：锁龄 > `STALE_LOCK_MS`（默认 40s）视为陈旧 → 抢占（删除后重试，
+ *    最多 3 次防活锁）；否则每 50ms 重试，等待超过 `timeoutMs`（默认 20s）→ **降级**：
+ *    不加锁继续，并回调 `onDegrade`（调用方在 stderr 说明；保活性优先，并发窗口内可能重复投递）。
  *  - release 只在锁仍属于本进程（nonce 匹配）时删除，绝不误删抢占者的锁。
  *  - 无第三方依赖；锁文件 0600，目录 0700。
+ *
+ * 阈值依据（P2-4）：锁的持有区间是「读 last → poll → 写 last」整段——首轮可能覆盖
+ * `initLocalState`（/api/cursor，10s 超时）＋ poll（10s 超时），服务端长轮询单次上限
+ * 25s（src/server/http.ts 的 wait 截止）。旧值 10s 与单次请求超时同量级，会在合法请求
+ * 尚未返回时误判陈旧并抢占，反而制造两路并发投递。40s = 25s 长轮询上限 + 首轮 init/
+ * 写盘/网络余量。`STOA_STATE_LOCK_STALE_MS` 可注入正数覆盖（冒烟用小阈值快速验证抢占）。
  */
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname } from "node:path";
 
-export const STALE_LOCK_MS = 10_000;
+const DEFAULT_STALE_LOCK_MS = 40_000;
+/** 陈旧阈值（ms）：默认 40s；`STOA_STATE_LOCK_STALE_MS` 正数可覆盖（测试注入用）。 */
+export const STALE_LOCK_MS = (() => {
+  const raw = Number(process.env.STOA_STATE_LOCK_STALE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_STALE_LOCK_MS;
+})();
 export const DEFAULT_LOCK_TIMEOUT_MS = 20_000;
 const RETRY_MS = 50;
 const MAX_PREEMPTIONS = 3;

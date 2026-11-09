@@ -3,8 +3,9 @@
  * 见 skills/stoa/SKILL.md 的主线纪律。
  *
  * 注意（stoa-adapters 迁移）：通用 MCP 面已收编进核心（`stoa mcp`，`src/mcp/`），
- * `.mcp.json` 走薄桥；本文件只保留给 `watch.mjs --consume` 的 board_inbox 调用，
- * 工具名/参数/schema 与核心逐字一致（改动需两侧同步）。
+ * `.mcp.json` 走薄桥；本文件只保留 `watch.mjs` 订阅所需的 board_inbox（`--consume`）
+ * 与 board_peek（默认本地游标）桥接，工具名/参数/schema 与核心逐字一致
+ * （改动需两侧同步；冒烟的 tools-parity 逐字 deep-diff 守卫会拦下漂移）。
  *
  * 长文（report-longform §6.2）：board_post/board_reply 支持
  * `file`（读 Markdown 文件）/`kind`/`format`/`article`（后三者同义，冲突即报错、不发请求）；
