@@ -145,14 +145,14 @@ export async function discoverServer(dataDir: string, timeoutMs = 1500): Promise
   if (!info) {
     fail(
       "UNAVAILABLE",
-      `report service is not running for ${dataDir} (no server.json); start it with: fde2e-report-worker serve --data-dir ${dataDir}`,
+      `report service is not running for ${dataDir} (no server.json); start it with: stoa serve --data-dir ${dataDir}`,
     );
   }
   if (!(await probeHealth(info, timeoutMs))) {
     fail(
       "UNAVAILABLE",
       `report service at ${info.url} is not healthy (stale server.json for ${dataDir}); ` +
-        `start it with: fde2e-report-worker serve --data-dir ${dataDir}`,
+        `start it with: stoa serve --data-dir ${dataDir}`,
     );
   }
   return info;

@@ -1110,7 +1110,7 @@ async function cmdDraft(ctx: CliContext): Promise<number> {
   if (sub === "resume") {
     const res = await client.get<{ draft: Record<string, unknown> }>(`/api/drafts/${id}`);
     const command =
-      `fde2e-report-worker post --batch --draft ${id} --as ${account} --data-dir ${ctx.dataDir}`;
+      `stoa post --batch --draft ${id} --as ${account} --data-dir ${ctx.dataDir}`;
     if (ctx.human) emitHuman(command);
     else emit({ ok: true, draft: res.draft, resume_command: command });
     return 0;

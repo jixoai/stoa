@@ -81,7 +81,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   }
   const dataDir = assertSafeDataDir(opts.dataDir);
   if (!existsSync(join(dataDir, "report.sqlite"))) {
-    fail("BAD_REQUEST", `data dir ${dataDir} is not initialized; run: fde2e-report-worker init --data-dir ${dataDir}`);
+    fail("BAD_REQUEST", `data dir ${dataDir} is not initialized; run: stoa init --data-dir ${dataDir}`);
   }
   const startedAt = opts.now ?? Date.now();
   const instanceId = randomBytes(8).toString("hex");
@@ -188,7 +188,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
 
   const authStatus = auth.status(exposed && mode === "open");
   const banner = [
-    `fde2e-report-worker ${VERSION}`,
+    `stoa ${VERSION}`,
     `data dir : ${dataDir}`,
     `env files: ${authStatus.env_files_loaded.join(", ") || "(none)"}` +
       (authStatus.env_files_missing.length

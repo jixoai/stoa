@@ -51,7 +51,7 @@ describe("HTTP API (report-surface: health/CORS/SEED)", () => {
       expect(body.dataDir).toBe(t.dir);
       expect(body.instanceId).toBe("inst-1");
       const caps = await json(await app.request("/api/capabilities"));
-      expect(caps.product).toBe("fde2e-report-worker");
+      expect(caps.product).toBe("stoa");
       expect(caps.protocol).toBe(1);
     } finally {
       t.close();

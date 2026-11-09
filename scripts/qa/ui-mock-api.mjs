@@ -309,7 +309,7 @@ const server = Bun.serve({
     if (url.pathname === "/api/capabilities") {
       return json({
         ok: true,
-        product: "fde2e-report-worker",
+        product: "stoa",
         version: "mock",
         protocol: 1,
         features: { preview_fields: previewFields, preview_events: previewFields },

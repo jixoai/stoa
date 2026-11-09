@@ -1,16 +1,16 @@
 #!/usr/bin/env bun
-/** fde2e-report-worker — CLI entry (design.md §15). */
+/** stoa — CLI entry (design.md §15). Legacy bin name `fde2e-report-worker` is kept as an alias. */
 import { parseArgs, USAGE, hasFlag } from "./args.ts";
 import { dispatch } from "./commands.ts";
 import { emitError } from "./output.ts";
-import { VERSION } from "../core/protocol.ts";
+import { PRODUCT, VERSION } from "../core/protocol.ts";
 import { ReportError, isReportError } from "../core/errors.ts";
 import { CliError } from "./client.ts";
 
 async function main(): Promise<number> {
   const argv = process.argv.slice(2);
   if (argv.includes("--version") || argv[0] === "version") {
-    process.stdout.write(`${VERSION}\n`);
+    process.stdout.write(`${PRODUCT} ${VERSION}\n`);
     return 0;
   }
   let args;
@@ -21,7 +21,7 @@ async function main(): Promise<number> {
     return 1;
   }
   if (hasFlag(args, "help")) {
-    process.stdout.write(USAGE.replace("fde2e-report-worker\n", `fde2e-report-worker ${VERSION}\n`));
+    process.stdout.write(USAGE.replace(`${PRODUCT}\n`, `${PRODUCT} ${VERSION}\n`));
     return 0;
   }
   if (!args.command) {

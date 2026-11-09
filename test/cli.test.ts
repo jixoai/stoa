@@ -65,11 +65,11 @@ describe("CLI surface (design §15, P3)", () => {
   test("version and capabilities", async () => {
     const version = await runCli(["--version"]);
     expect(version.code).toBe(0);
-    expect(version.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(version.stdout.trim()).toMatch(/^stoa \d+\.\d+\.\d+$/);
     const caps = await runCli(["capabilities", ...base()]);
     expect(caps.code).toBe(0);
     const parsed = JSON.parse(caps.stdout) as { product: string; protocol: number };
-    expect(parsed.product).toBe("fde2e-report-worker");
+    expect(parsed.product).toBe("stoa");
     expect(parsed.protocol).toBe(1);
     // --data-dir is required except for --version.
     // Run in an isolated cwd: a .report-pointer left by a previous init in the

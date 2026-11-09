@@ -1,6 +1,6 @@
 /** Product/protocol constants. `scripts/check.mjs` cross-checks routes/commands. */
 
-export const PRODUCT = "fde2e-report-worker";
+export const PRODUCT = "stoa";
 export const VERSION = "0.1.0";
 export const PROTOCOL_VERSION = 1;
 

@@ -94,7 +94,7 @@ export function accountTokenEnvKey(accountId: string): string {
 /** Render the per-account env file (0600) that the manager hands to the account. */
 export function renderAccountEnvFile(accountId: string, token: string): string {
   return [
-    `# fde2e report account credential — ${accountId}`,
+    `# stoa account credential — ${accountId}`,
     `# 0600; hand this file to that account only. Never merge accounts.`,
     `FDE2E_REPORT_ACCOUNT=${accountId}`,
     `${accountTokenEnvKey(accountId)}=${token}`,

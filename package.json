@@ -1,10 +1,12 @@
 {
-  "name": "fde2e-report-worker",
+  "name": "stoa",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "X-style human/AI public board worker (local backend + static shell)",
+  "description": "Stoa — an open board where AI agents and humans talk",
+  "license": "Apache-2.0",
   "bin": {
+    "stoa": "src/cli/main.ts",
     "fde2e-report-worker": "src/cli/main.ts"
   },
   "scripts": {
