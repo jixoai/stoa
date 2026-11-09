@@ -2,13 +2,15 @@
  * Stoa ZCode 适配器：配置、凭据与 state 路径解析（无第三方依赖）。
  *
  * 主线：本适配器让任何 ZCode 会话都能对 Stoa 公示板说话——汇报成果、读 Owner 回话。
- * 配置来源（前者优先；空值一律视为未设）：
+ * 配置来源（前者优先；空值一律视为未设，纯空白同空）：
  *   1. 环境变量：STOA_BASE_URL / STOA_DATA_DIR / STOA_ACCOUNT / STOA_PUBLIC_URL / STOA_CONFIG
- *      （兼容旧前缀 REPORT_CHANNEL_*；per-account token 见 loadToken）
- *   2. 配置文件：~/.config/stoa/report-channel.json
- *      不存在时回退旧路径 ~/.config/fde2e/report-channel.json（stoa-adapters 迁移，零迁移承诺）
+ *      （兼容旧前缀 REPORT_CHANNEL_*；token 见 loadToken）
+ *   2. 配置文件：~/.config/stoa/report-channel.json 与旧路径
+ *      ~/.config/fde2e/report-channel.json **按 key 合并**（stoa 主 + fde2e 旧，先到先得；
+ *      与核心 src/mcp/config.ts 的 fileValue 同语义——两份都在也不会互相遮蔽整份配置）
  * 凭据：只从「该账号自己的 0600 env 文件」读取（accounts/<account>.env，STOA_TOKEN_<ACCOUNT>
- * 优先、旧 FDE2E_REPORT_TOKEN_<ACCOUNT> 兼容），或同名环境变量；绝不写日志、不回显。
+ * 优先、旧 FDE2E_REPORT_TOKEN_<ACCOUNT> 兼容），或同名环境变量（含 flat STOA_TOKEN）；
+ * 绝不写日志、不回显。
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -22,10 +24,10 @@ export const LEGACY_CONFIG_PATH = join(homedir(), ".config", "fde2e", "report-ch
 export const STATE_DIR = join(homedir(), ".local", "state", "stoa", "report-channel");
 export const LEGACY_STATE_DIR = join(homedir(), ".local", "state", "fde2e", "report-channel");
 
-/** 空值＝未设：按序取第一个非空字符串。 */
-function firstNonEmpty(...values) {
+/** 空值＝未设（纯空白同空，与核心 `firstOf` 一致）：按序取第一个非空字符串。 */
+export function firstNonEmpty(...values) {
   for (const value of values) {
-    if (typeof value === "string" && value !== "") return value;
+    if (typeof value === "string" && value.trim() !== "") return value;
   }
   return undefined;
 }
@@ -35,13 +37,23 @@ function envValue(suffix) {
   return firstNonEmpty(process.env[`STOA_${suffix}`], process.env[`REPORT_CHANNEL_${suffix}`]);
 }
 
-/** 显式 STOA_CONFIG/REPORT_CHANNEL_CONFIG > 新路径（存在）> 旧路径（存在）> 新路径（待创建）。 */
-function resolveConfigPath() {
+/** 读取一份配置；非法/缺失一律当空对象（绝不抛错）。 */
+function readConfigFile(path) {
+  if (!existsSync(path)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+/** 显式 STOA_CONFIG/REPORT_CHANNEL_CONFIG；否则 [新路径, 旧路径]（按 key 合并，先到先得）。 */
+function configCandidates() {
   const explicit = envValue("CONFIG");
-  if (explicit) return explicit;
-  if (existsSync(CONFIG_PATH)) return CONFIG_PATH;
-  if (existsSync(LEGACY_CONFIG_PATH)) return LEGACY_CONFIG_PATH;
-  return CONFIG_PATH;
+  if (explicit) return [explicit];
+  return [CONFIG_PATH, LEGACY_CONFIG_PATH];
 }
 
 /**
@@ -80,22 +92,18 @@ export function sessionStateFileName(cfg) {
 }
 
 export function loadConfig() {
-  const path = resolveConfigPath();
-  let file = {};
-  if (existsSync(path)) {
-    try {
-      file = JSON.parse(readFileSync(path, "utf8"));
-    } catch {
-      file = {};
-    }
-  }
+  const candidates = configCandidates();
+  const files = candidates.map(readConfigFile);
+  // 按 key 合并（新主 + 旧回退，先到先得）——与核心 src/mcp/config.ts 的 fileValue 一致；
+  // 不是「整份二选一」：新配置只写部分键时，其余键仍能从旧配置补齐。
+  const fileValue = (key) => firstNonEmpty(...files.map((file) => file[key]));
   return {
-    path,
-    baseUrl: (envValue("BASE_URL") || file.baseUrl || "http://127.0.0.1:13689").replace(/\/+$/, ""),
-    dataDir: envValue("DATA_DIR") || file.dataDir || "",
-    account: envValue("ACCOUNT") || file.account || "manager",
-    publicUrl: (envValue("PUBLIC_URL") || file.publicUrl || "https://report.worker.fde2e.com").replace(/\/+$/, ""),
-    tokenFile: file.tokenFile || "",
+    path: candidates.find((path) => existsSync(path)) ?? candidates[0],
+    baseUrl: (envValue("BASE_URL") || fileValue("baseUrl") || "http://127.0.0.1:13689").replace(/\/+$/, ""),
+    dataDir: envValue("DATA_DIR") || fileValue("dataDir") || "",
+    account: envValue("ACCOUNT") || fileValue("account") || "manager",
+    publicUrl: (envValue("PUBLIC_URL") || fileValue("publicUrl") || "https://report.worker.fde2e.com").replace(/\/+$/, ""),
+    tokenFile: fileValue("tokenFile") || "",
   };
 }
 
@@ -125,13 +133,16 @@ function readKeyFromEnvText(text, keys) {
   return null;
 }
 
-/** 返回 token 或 null（null = 开放模式或未配置；不抛错、不打印）。 */
+/** 返回 token 或 null（null = 开放模式或未配置；不抛错、不打印）。
+ *  层内次序与核心 src/mcp/config.ts 的 loadToken 一致：
+ *  `STOA_TOKEN`（flat）> `STOA_TOKEN_<ACCOUNT>` > `FDE2E_REPORT_TOKEN_<ACCOUNT>`
+ *  > tokenFile > `<dataDir>/accounts/<account>.env`。 */
 export function loadToken(cfg) {
+  const flat = firstNonEmpty(process.env.STOA_TOKEN);
+  if (flat) return flat;
   const keys = [accountTokenEnvKey(cfg.account), tokenEnvKey(cfg.account)];
-  for (const key of keys) {
-    const value = process.env[key];
-    if (value) return value;
-  }
+  const fromEnv = firstNonEmpty(process.env[keys[0]], process.env[keys[1]]);
+  if (fromEnv) return fromEnv;
   const files = [cfg.tokenFile, cfg.dataDir ? join(cfg.dataDir, "accounts", `${cfg.account}.env`) : ""].filter(Boolean);
   for (const file of files) {
     if (!existsSync(file)) continue;
@@ -160,6 +171,9 @@ export async function api(cfg, path, { method = "GET", body, timeoutMs = 30_000 
     const res = await fetch(`${cfg.baseUrl}${path}`, {
       method,
       headers: {
+        accept: "application/json",
+        // 与核心 ApiClient 同款：open 模式下身份就由这个头声明（缺了会被当成 owner）。
+        "x-report-account": cfg.account,
         ...(body === undefined ? {} : { "content-type": "application/json" }),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
