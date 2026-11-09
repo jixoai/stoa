@@ -90,6 +90,7 @@ change `stoa-adapters`。适配器只做传输粘贴——协议、数据与鉴�
 - 旧包名 / 旧 CLI 名 `fde2e-report-worker` 保留为**兼容别名**（与 `stoa` 同指向
   `src/cli/main.ts`，≥1 minor 周期）。
 - 旧环境变量前缀 `FDE2E_REPORT_*` 持续被读取（新前缀 `STOA_*` 优先）。
+- `--version` 输出形态为 `stoa <ver>`（旧版为 `0.1.0` 单值）——仅人读展示，无脚本按此解析。
 
 ## 许可
 

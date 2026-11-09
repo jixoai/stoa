@@ -63,7 +63,10 @@ export function parseEnvFile(path) {
 export function authSecret(dataDir) {
   assertIsolatedDataDir(dataDir);
   const values = parseEnvFile(join(dataDir, ".env"));
-  const value = values.STOA_AUTH ?? values.FDE2E_REPORT_AUTH;
+  // 与主仓 envValue 契约一致：空值视为未设，才回退旧键（`??` 只挡 null/undefined）。
+  const pick = (primary, legacy) =>
+    typeof primary === "string" && primary.trim() !== "" ? primary : legacy;
+  const value = pick(values.STOA_AUTH, values.FDE2E_REPORT_AUTH);
   if (!value) {
     throw new Error(
       `no STOA_AUTH (legacy FDE2E_REPORT_AUTH) in ${dataDir}/.env — this is not a qa-serve data dir ` +
@@ -78,7 +81,9 @@ export function accountToken(dataDir, accountId) {
   assertIsolatedDataDir(dataDir);
   const suffix = accountId.toUpperCase().replace(/-/g, "_");
   const values = parseEnvFile(join(dataDir, "accounts", `${accountId}.env`));
-  const value = values[`STOA_TOKEN_${suffix}`] ?? values[`FDE2E_REPORT_TOKEN_${suffix}`];
+  const pick = (primary, legacy) =>
+    typeof primary === "string" && primary.trim() !== "" ? primary : legacy;
+  const value = pick(values[`STOA_TOKEN_${suffix}`], values[`FDE2E_REPORT_TOKEN_${suffix}`]);
   if (!value) {
     throw new Error(
       `no STOA_TOKEN_${suffix} (legacy FDE2E_REPORT_TOKEN_${suffix}) in ` +

@@ -2,9 +2,17 @@
 
 > 判据不满足不得勾选。兼容面（协议/数据/鉴权/旧 env 前缀/旧 bin）零破坏。
 
+## 登记（复核观察项，非阻塞）
+
+- QA 报告生成器（`scripts/qa/{thread-nesting,share-actions,read-state,read-dwell,route-back,
+  notification-stacks,instance-page,link-preview}.mjs` 与 `ui-mock-api.mjs`）里的「FDE2E™ ·
+  report.worker（人机公示板）」是**我方实例交付报告的品牌行**，不属于开源交付面；本 change
+  不改它们（避免无谓重排报告产物）。若开源化后需要完全中立，另立项参数化（随 `stoa-adapters` 批次）。
+
 ## P1. 规格与改名
 
-- [ ] P1-1. 建立 change（proposal/design/tasks/spec delta）；`npx openspec validate stoa-identity --strict` 通过。
+- [x] P1-1. 建立 change（proposal/design/tasks/spec delta）；`npx openspec validate stoa-identity --strict` 通过。
+  - 证据：建立时 `--strict` 通过；P1-5 追加 3 个 spec delta 后再次 `--strict` 通过（`Change 'stoa-identity' is valid`）。
 - [x] P1-2. 包与 CLI 改名：`package.json`（name=`stoa`、bin 双挂、description、license 字段）；
   `src/cli/args.ts`（USAGE 全部示例 + `parsed.product`）；`test/cli.test.ts` 同步。
   - 判据：`bun src/cli/main.ts --version` 输 `stoa`；旧别名仍可解析；单测绿。
@@ -50,15 +58,15 @@
     与两处「认证」requirement 也字面引用本次改名的键，故一并立 delta（否则归档后 specs 与实现不符）。
 - [x] P1-6. 绿门与兼容回归：`bun test`、`check`、`typecheck:ui`、`build`；`thread-scope`（82/82）、
   `thread-nesting`（30/30）不回归；qa-serve 新旧前缀各起一轮冒烟。
-  - 判据证据（本 commit）：`bun test` **494 pass / 0 fail**（50 files、10713 expect；基线 489/0，
-    +5 双读/兼容桥新断言）；`bun run check` passed（tsc + 50 routes/20 commands + security lint 74 files +
-    ui-lint 0 violations）；`bun run typecheck:ui` rc=0；`bun run build` ✓（dist `<title>Stoa</title>`）；
-    `bun scripts/qa/thread-scope.mjs` **74/74**（mobile+desktop；live-append 的 P1/P4 零点击追加、
-    无幻影胶囊全过），`thread-nesting.mjs` **30/30**；qa-serve 新旧前缀冒烟 **14/14**。
-    以上均在本 change **终版树**（含兼容桥修复）复跑。
-    **数字勘误**：tasks/design 写的 `thread-scope 82/82` 与仓内证据不符——归档 change
-    `2026-11-09-report-thread-live-append/tasks.md` 记录 before 66/66、after **74/74**（即 live-append
-    上线后的唯一有据计数），本 change 未改 QA 脚本与线程逻辑；74/74 判定为不回归。
+  - 判据证据（rebase 到 `ff08b04` 后的**终版树**复跑）：`bun test` **494 pass / 0 fail**（50 files、
+    10713 expect；基线 489/0，+5 双读/兼容桥新断言）；`bun run check` passed（tsc + 50 routes/20 commands +
+    security lint 74 files + ui-lint 0 violations）；`bun run typecheck:ui` rc=0；`bun run build` ✓
+    （dist `<title>Stoa</title>`）；`bun scripts/qa/thread-scope.mjs` **82/82**（mobile+desktop；含
+    `report-thread-live-append` P2-1 两条「跳转后 resize/新提交不回弹」断言），`thread-nesting.mjs`
+    **30/30**；qa-serve 新旧前缀冒烟 **14/14**（已入库 `scripts/qa/stoa-env-prefix-smoke.sh`）。
+    数字沿革（供追溯）：66/66（live-append before）→ 74/74（live-append 原始 after）→ **82/82**
+    （P2-1 复核修复加入两条防回弹断言后；归档 `2026-11-09-report-thread-live-append/tasks.md:70`
+    的 after2 即 82/82）。本 change 未改 QA 脚本与线程逻辑，判定不回归以终版树 82/82 为准。
   - 进程回收证据：qa-serve（pid 10154/11204/11643/11717 均 stopped，pgrep 复核 none）；无 playwright
     chrome 残留；唯一在跑的 `serve` 是他人既有生产实例（pid 83641，13689，另 worktree/生产数据目录），
     未触碰。

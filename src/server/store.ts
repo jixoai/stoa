@@ -43,7 +43,6 @@ import {
   serializeDraftItems,
 } from "../core/drafts.ts";
 import {
-  accountTokenEnvKey,
   randomToken,
   renderAccountEnvFile,
   sha256Hex,
