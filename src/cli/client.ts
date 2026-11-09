@@ -70,6 +70,13 @@ export class ApiClient {
         signal: AbortSignal.timeout(opts.timeoutMs ?? this.defaultTimeoutMs),
       });
     } catch (err) {
+      const name = (err as Error)?.name;
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new CliError(
+          `request timed out after ${opts.timeoutMs ?? this.defaultTimeoutMs}ms`,
+          { timeout: true },
+        );
+      }
       fail(
         "UNAVAILABLE",
         `service unavailable at ${this.baseUrl} (${(err as Error).message}); is it running?`,

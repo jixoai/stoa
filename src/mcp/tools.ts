@@ -12,7 +12,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { ApiClient } from "../cli/client.ts";
+import { ApiClient, CliError } from "../cli/client.ts";
 import { MAX_ARTICLE_BYTES } from "../core/validation.ts";
 import {
   FORCE_ACCOUNT_ENV_KEYS,
@@ -323,11 +323,17 @@ export async function callTool(
       const timeout = Math.max(1, Math.min(Number(args.timeout_seconds) || 40, 120));
       const deadline = Date.now() + timeout * 1000;
       for (;;) {
-        const res = await client.get<{
-          events?: unknown[];
-          target?: number | null;
-          cursor?: number | null;
-        }>("/api/notifications?wait=1", 35_000);
+        // 有界语义（评审 P2-1）：请求超时收敛到剩余预算（+0.5s），与服务端 25s 长轮询解耦。
+        const requestTimeoutMs = Math.max(1_000, Math.min(35_000, deadline - Date.now() + 500));
+        let res: { events?: unknown[]; target?: number | null; cursor?: number | null };
+        try {
+          res = await client.get("/api/notifications?wait=1", requestTimeoutMs);
+        } catch (err) {
+          if (Date.now() >= deadline && (err as CliError)?.detail?.timeout === true) {
+            return { ok: true, as: cfg.account, count: 0, events: [], waited_seconds: timeout };
+          }
+          throw err;
+        }
         const events = res.events ?? [];
         if (events.length > 0) {
           if (typeof res.target === "number") {

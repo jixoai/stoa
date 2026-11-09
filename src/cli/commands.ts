@@ -1255,12 +1255,29 @@ async function cmdWaitNotifications(ctx: CliContext): Promise<number> {
   for (;;) {
     const params = new URLSearchParams({ wait: "1" });
     if (cursor !== null) params.set("cursor", String(cursor));
-    const res = await client.get<{
+    // 有界语义（评审 P2-1）：请求超时收敛到剩余预算（+0.5s 余量），不再被服务端 25s
+    // 长轮询拖住；超时视为本轮无事件，到期限则退出 0 且不推进游标。
+    const requestTimeoutMs =
+      deadline === null ? 35_000 : Math.max(1_000, Math.min(35_000, deadline - Date.now() + 500));
+    let res: {
       events: Array<Record<string, unknown>>;
       target: number | null;
       cursor: number;
       role: string;
-    }>(`/api/notifications?${params.toString()}`, 35_000);
+    };
+    try {
+      res = await client.get(`/api/notifications?${params.toString()}`, requestTimeoutMs);
+    } catch (err) {
+      if (
+        deadline !== null &&
+        Date.now() >= deadline &&
+        (err as CliError)?.detail?.timeout === true
+      ) {
+        process.stderr.write("[report] no notifications within --timeout; exiting without advancing\n");
+        return 0;
+      }
+      throw err;
+    }
     role = res.role ?? role;
     if (!res.events || res.events.length === 0) {
       if (deadline !== null && Date.now() >= deadline) {

@@ -85,7 +85,7 @@ function normalizePanelBrand(html) {
 function findOldPlugin() {
   const candidates = [
     process.env.OLD_PLUGIN_DIR,
-    resolve(REPO_ROOT, "../../../plugins/report-channel"), // worktree 布局：<main>/.worktrees/<name>
+    resolve(REPO_ROOT, "../../plugins/report-channel"), // worktree 布局：<main>/.worktrees/<name>
     resolve(REPO_ROOT, "../../plugins/report-channel"),
     "/Users/kzf/Development/GitHub/jixoai/fde2e/plugins/report-channel",
   ].filter((p) => typeof p === "string");

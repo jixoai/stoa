@@ -28,11 +28,12 @@ export const PANEL_RESOURCE = {
 } as const;
 
 export function renderPanelHtml(cfg: McpConfig): string {
+  // 纵深防御：配置值若含 `</script>` 序列，转义 `<`（JSON 语义不变）以免提前闭合脚本。
   const boot = JSON.stringify({
     baseUrl: cfg.baseUrl,
     publicUrl: cfg.publicUrl,
     account: cfg.account,
-  });
+  }).replace(/</g, "\\u003c");
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
