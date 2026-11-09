@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 打印本会话的 watch state 文件路径（供 commands/report-channel.md 的 shell 展开使用）。
+ * 打印本会话的 watch state 文件路径（供 commands/stoa.md 的 shell 展开使用）。
  * 规则由 lib/config.mjs 的 sessionStateFileName 提供——stop-wait.mjs（Stop 钩子）复用同一派生，
  * 同一会话的常驻订阅与钩子等待共用一份游标。
  *

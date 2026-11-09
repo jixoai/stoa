@@ -1,6 +1,6 @@
 /**
  * 工具定义与实现（watch 脚本消费式订阅共用；已迁入 Stoa 适配器）。
- * 见 skills/report-channel/SKILL.md 的主线纪律。
+ * 见 skills/stoa/SKILL.md 的主线纪律。
  *
  * 注意（stoa-adapters 迁移）：通用 MCP 面已收编进核心（`stoa mcp`，`src/mcp/`），
  * `.mcp.json` 走薄桥；本文件只保留给 `watch.mjs --consume` 的 board_inbox 调用，

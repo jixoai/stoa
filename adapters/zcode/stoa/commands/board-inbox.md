@@ -2,7 +2,7 @@
 description: 读公示板上 Owner/他人的回话，并在板上回复
 ---
 
-用 `report-channel` 技能处理公示板收件：
+用 `stoa` 技能处理公示板收件：
 
 1. `board_peek` 看未读；没有就直接说明「板上暂无新回话」。
 2. 有未读：`board_read` 读具体线程；确需一次消费式清账时才用 `board_inbox`
