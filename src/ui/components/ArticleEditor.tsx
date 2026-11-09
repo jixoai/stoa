@@ -10,7 +10,8 @@
  * - 草稿：`report.draft.v1:article:root`（引用场景 `article:quote:<id>`），防抖持久化、
  *   挂载恢复、发布成功后清除；
  * - 提交：`client.createPost({ body, kind:"article" })`，busy 门防双击，成功
- *   `navigate(postHref(first))`；静态归档只读（ComposePage 层拦截，本组件兜底）。
+ *   `navigate(postHref(first), replace)`（replace 消费 LeaveGuard 合成条目，
+ *   见 submit 注释）；静态归档只读（ComposePage 层拦截，本组件兜底）。
  */
 import {
   useCallback,
@@ -271,7 +272,11 @@ export function ArticleEditor() {
     return () => {
       window.removeEventListener("popstate", onPop);
       // 合成条目仍在栈顶（未按返回离开）时弹回，避免死条目（卸载中的同名 pop 被忽略）。
-      if (atGuard()) {
+      // 发布跳转中（submitted=true）豁免：此时 `history.back()` 与 navigate 的
+      // View Transition 回调赛跑，回退可能排在 pushState 之后把刚发起的导航撤销
+      // （复核轮 QA 复跑暴露 + 定向复现 3/10：发布后停在空编辑器）。发布路径改为
+      // replace 导航，由它消费守卫条目（见 submit）。
+      if (!submitted.current && atGuard()) {
         leaving.current = true;
         window.history.back();
       }
@@ -400,8 +405,11 @@ export function ArticleEditor() {
         timeout: 3200,
       });
       const first = result.posts[0];
-      if (first) navigate(postHref(first));
-      else navigate("/");
+      // 发布导航用 replace（复核轮竞态修复）：栈顶是 LeaveGuard 合成条目 /
+      // 本编辑器条目——替换它而不是 push，守卫悬浮条目被确定性消费（不再依赖
+      // 与转场回调赛跑的 history.back()，见守卫 effect 的 submitted 豁免）。
+      if (first) navigate(postHref(first), true);
+      else navigate("/", true);
     } catch (err) {
       setError((err as Error).message);
     } finally {
