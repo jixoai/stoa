@@ -443,7 +443,7 @@ export function Markdown({
 
 /**
  * 指令块内的行内 Markdown（report-longform §3.2/§3.4）：`parseInline` 后过
- * `filterArticleInline`（link 仅 `https?:`/`#`、image 仅 `https?`/本地媒体），
+ * `filterArticleInline`（链接仅 http(s) 与页内锚点、图片仅 http(s) 与本地媒体），
  * 逐 token 渲染为 React 元素——`steps.expect/detail`、`callout.body/items` 用它，
  * **不解析块级 Markdown**（无标题/列表/表格语义）。
  */
