@@ -811,9 +811,63 @@ try {
     JSON.stringify(quoteInfo),
   );
 
+  // 成员页 / 收藏页：与 feed 同款摘要卡（复用 PostCard 分支）
+  await gotoHash("/u/manager");
+  let memberSummary = null;
+  try {
+    await waitSel('[data-testid="article-summary"]', 10_000);
+    memberSummary = true;
+  } catch {
+    memberSummary = false;
+  }
+  // 收藏走文章页操作栏按钮（客户端自更新；外部 API 写会被页面缓存掩盖）
+  await gotoHash(`/a/${MAIN_ID}`);
+  await waitSel('[data-testid="article-action-bookmark"]');
+  const bookmarkPressedBefore = await page.evaluate(
+    () => document.querySelector('[data-testid="article-action-bookmark"]')?.getAttribute("aria-pressed"),
+  );
+  if (bookmarkPressedBefore !== "true") {
+    await page.click('[data-testid="article-action-bookmark"]');
+    await sleep(page, 600);
+  }
+  await gotoHash("/bookmarks");
+  let bookmarkSummary = null;
+  try {
+    await waitSel('[data-testid="article-summary"]', 10_000);
+    bookmarkSummary = true;
+  } catch {
+    bookmarkSummary = false;
+  }
+  await check(
+    "A8 成员页/收藏页长文也是摘要卡（六处一致）",
+    memberSummary === true && bookmarkSummary === true,
+    JSON.stringify({ memberSummary, bookmarkSummary, bookmarkPressedBefore }),
+  );
+
+  // 软删长文：占位（A1/P1-8）
+  const doomed = await apiJson(BASE, "/api/posts", MANAGER_TOKEN, {
+    method: "POST",
+    body: JSON.stringify({ body: "# 待删长文\n\n正文。", kind: "article", tags: ["note"] }),
+  });
+  const DOOMED_ID = doomed.posts[0].id;
+  const delRes = await fetch(`${BASE}/api/posts/${DOOMED_ID}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${MANAGER_TOKEN}` },
+  });
+  await gotoHash(`/a/${DOOMED_ID}`);
+  await waitSel('[data-testid="article-deleted"]', 10_000);
+  const deletedInfo = await page.evaluate(() => ({
+    placeholder: Boolean(document.querySelector('[data-testid="article-deleted"]')),
+    hash: location.hash,
+  }));
+  await check(
+    "A1 软删长文显示占位（不白屏、不误回退）",
+    delRes.ok && deletedInfo.placeholder && deletedInfo.hash === `#/a/${DOOMED_ID}`,
+    JSON.stringify({ deleteStatus: delRes.status, ...deletedInfo }),
+  );
+
   // /a/<note> 回退
-  await gotoHash(`/a/${NOTE_ID}`);
-  await page.waitForFunction(() => location.hash.startsWith("#/p/"), null, { timeout: 10_000 });
+  await gotoHash(`/a/${NOTE_ID}`);  await page.waitForFunction(() => location.hash.startsWith("#/p/"), null, { timeout: 10_000 });
   await waitSel('[data-testid="thread-timeline"]');
   const fellBack = await page.evaluate(() => location.hash);
   await check("/a/<note> 回退到 /p/<note>（无死路由）", fellBack === `#/p/${NOTE_ID}`, fellBack);
@@ -980,12 +1034,26 @@ try {
     `# 双击提交样例\n\n正文段落。\n\n${fence("callout", JSON.stringify({ body: "ok" }))}`,
   );
   await sleep(page, 600);
-  await Promise.all([
-    page.click('[data-testid="article-submit"]', { clickCount: 2, delay: 30 }).catch(() => {}),
-  ]);
-  await page.waitForFunction(() => location.hash.startsWith("#/a/"), null, { timeout: 15_000 });
+  const submitDisabledBefore = await page.evaluate(
+    () => document.querySelector('[data-testid="article-submit"]')?.disabled ?? null,
+  );
+  await page.click('[data-testid="article-submit"]', { clickCount: 2, delay: 30 }).catch(() => {});
+  let submittedNav = true;
+  try {
+    await page.waitForFunction(() => location.hash.startsWith("#/a/"), null, { timeout: 15_000 });
+  } catch {
+    submittedNav = false;
+  }
   await sleep(page, 800);
-  await check("A14 双击提交只发一次 POST /api/posts", postRequests.length === 1, `requests=${postRequests.length}`);
+  const submitState = await page.evaluate(() => ({
+    hash: location.hash,
+    editorError: document.querySelector('[data-testid="article-editor-error"]')?.textContent?.slice(0, 120) ?? null,
+  }));
+  await check(
+    "A14 双击提交只发一次 POST /api/posts",
+    submittedNav && postRequests.length === 1,
+    JSON.stringify({ requests: postRequests.length, disabledBefore: submitDisabledBefore, ...submitState }),
+  );
 
   // 390 编辑器（全屏 + tabs）
   await gotoHash("/compose?format=article");
@@ -1635,6 +1703,8 @@ try {
     tplPage.on("console", (m) => {
       if (m.type() === "error") errors.push(`template console: ${m.text().slice(0, 160)}`);
     });
+    // 新 context 无 token：先登录（auth 模式）再打开模板文章
+    await login(tplPage);
     await tplPage.goto(`${BASE}/#/a/${TPL_ID}`, { waitUntil: "domcontentloaded" });
     await tplPage.waitForSelector('[data-testid="article-view"]', { timeout: 20_000 });
     await sleep(tplPage, 800);
