@@ -32,38 +32,51 @@ adapters/（本仓，中性发布面）
   兼容 `~/.config/fde2e/report-channel.json` > 默认 `http://127.0.0.1:13689`。
 - 提示：`stoa mcp` 不打印凭据；错误收敛为 MCP `isError` 文本（与现插件语义一致）。
 
-## §3 `adapters/zcode/`（迁入 + 薄桥）
+## §3 `adapters/zcode/`（插件标准迁入 + hooks 自动化）
 
-- 文件：`plugin.json`、`.mcp.json`（`mcpServers.stoa = {command:"bun", args:["<repo>/src/cli/main.ts","mcp"]}`）、
-  `commands/*.md`、`skills/report-channel/SKILL.md`、`hooks/`（session-start）、
-  `scripts/{watch,state-path,session-start,report-to-article}.mjs`（保留；watch 的消费式/本地游标语义不变）。
-- 路径迁移：config `~/.config/stoa/report-channel.json`（兼容旧 `~/.config/fde2e/...`）；
+- **插件标准（Owner 2026-11-07 指令：按 plugin-creator 标准开发）**：`.zcode-plugin/plugin.json`
+  （name=`stoa`；components 只声明真实资源 `skills`/`commands`/`hooks`/`mcpServers`/`ui.surfaces`；
+  路径全部在插件根内；`${CLAUDE_PLUGIN_ROOT}` 占位）。保留既有能力身份（八工具＋侧栏面板＋
+  命令/技能/钩子），版本自 `0.1.0` 起。
+- **薄桥**：`.mcp.json` = `mcpServers.stoa = {command:"bun", args:["${CLAUDE_PLUGIN_ROOT}/../../src/cli/main.ts","mcp"]}`
+  （工具与 `resources/read` 面板都由核心 `stoa mcp` 提供；适配器内不再有 mcp-server 实现）。
+- **hooks 自动化（插件模式与 MCP 模式的本质区别）**：`hooks/hooks.json` 在 SessionStart
+  （startup|clear|compact）与 UserPromptSubmit（会话注水）之外，新增 **Stop 钩子**：
+  `scripts/stop-wait.mjs` 按当前游标做有界 `wait-notifications`（默认 20s，
+  `STOA_STOP_WAIT_SECONDS` 可调）；有新消息 → 输出 `{"decision":"block","reason":"<消息＋处理指令>"}`
+  （ZCode 契约：Stop 可请求续跑最多 3 次，`reason` 注入会话）并推进游标防重复；无消息 →
+  空输出退出 0 放行。**模型零学习**：无需知道 wait-notifications 存在。
+- 路径迁移：config `~/.config/stoa/report-channel.json`（兼容 `~/.config/fde2e/...`）；
   state `~/.local/state/stoa/report-channel/`（兼容旧目录，按文件存在性回退）。
-- 本仓工作区：`.zcode/config.json` `plugins.dirs` 指向 `adapters/zcode`（未来会话生效）；
-  当前会话已加载的旧插件保持可用；主仓 `plugins/report-channel` 退役说明 + 删除时机（会话重启后）。
+- 侧栏面板：MCP `resources/read` 的 `ui://stoa/board.html`（manifest `ui.surfaces.server="stoa"`），
+  HTML 与配置注入由核心提供（`src/mcp/panel` 移植旧 `lib/panel.mjs`）。
 
 ## §4 各 harness 适配面（已核实的注册方式）
 
-| harness | 扩展点 | 适配器形态 | 验证 |
-|---|---|---|---|
-| ZCode | `plugins.dirs` 插件目录 + `.mcp.json` + hooks/commands/skills | `adapters/zcode`（迁入） | `stoa mcp` 冒烟 + watch/board_status 实测 |
-| Codex（codex-cli 0.166 已装） | `~/.codex/config.toml` `[mcp_servers.*]`（`codex mcp add`）＋ `AGENTS.md` | README + `config.toml` 片段 + `AGENTS.md` 片段 | `codex mcp list`（配置加载）＋（可行时）`codex exec` 真调用 roundtrip |
-| DeepSeekHarness（dsh） | 原生 MCP（stdio/Streamable HTTP；桥接先例 `fde2e-cu-v0/docs/m2-dsh-bridge.md`） | README（注册步骤）+ instructions 片段 | 版本化文档核对；运行态 smoke 需 dsh 安装（登记为后续） |
-| Keel（jixoai/keel） | `mcp.json`（`mcpServers` 形状，`KEEL_MCP_CONFIG`/`KEEL_MCP_PROJECT`）＋ `KEEL_SKILLS_ROOTS` | `mcp.json.example` + `SKILL.md` + README | 配置形状与 `keel/internal/mcp/config.go` 源确证一致；运行态 smoke 登记 |
+| harness | 模式 | 扩展点 | 适配器形态 | 验证 |
+|---|---|---|---|---|
+| ZCode | **插件/hook** | `.zcode-plugin/plugin.json`（plugin-creator 标准）+ hooks（含 **Stop** 自动等待注入）+ commands/skills + MCP 薄桥 | `adapters/zcode`（插件标准迁入） | `stoa mcp` 冒烟（含 resources/panel）＋ watch/state-path 沙箱冒烟 ＋ Stop 钩子输入/输出契约冒烟 |
+| Codex（codex-cli 0.166 已装） | MCP/CLI | `~/.codex/config.toml` `[mcp_servers.*]`（`codex mcp add`）＋ `AGENTS.md` | README + `config.toml` 片段 + `AGENTS.md` 片段（**须含 stop 前 wait 纪律**） | `codex mcp list`（配置加载）＋（可行时）`codex exec` 真调用 roundtrip |
+| DeepSeekHarness（dsh） | MCP（创造模式安装） | 创造模式 Plugin Manager `install_bundle`；`@deepseek-ai/dsh-mcp-client` **支持 stdio**（`packages/mcp/mcp-client/README.zh.md`） | README（创造模式安装 prompt＋配置组合包 YAML：`transport: stdio, command: bun, args: ["<repo>/src/cli/main.ts","mcp"]`）＋ instructions（**含 stop 前 wait 纪律**） | 与 dsh `docs/user/develop/practice/dynamic-cordis.zh.md`、`packages/mcp/mcp-client/README.zh.md` 对齐（注明路径/版本）；运行态 smoke 登记（需 dsh 安装） |
+| Keel（jixoai/keel） | MCP/CLI | `mcp.json`（`mcpServers` 形状，`KEEL_MCP_CONFIG`/`KEEL_MCP_PROJECT`）＋ `KEEL_SKILLS_ROOTS` | `mcp.json.example` + `SKILL.md` + README（**含 stop 前 wait 纪律**） | 配置形状与 `keel/internal/mcp/config.go` 源确证一致；运行态 smoke 登记 |
 
 ## §5 「行为指令」层（每家一份小片段）
 
 统一内容（按 harness 的指令文件格式落一份 ≤40 行的片段）：
 - 何时汇报（批交付/阻塞/验收）；正文 `@owner`；报告链接用公网形态；
 - 订阅：`stoa wait-notifications —as <acct>`（CLI 后台/会话内轮询），或用 MCP `board_inbox`；
+- **MCP/CLI 模式必写**：结束回合前先做一次有界 `stoa wait-notifications --timeout N`，有消息
+  先处理再结束——插件模式由 Stop 钩子自动完成，CLI 模式必须显式教学（Owner 2026-11-07）；
 - 纪律：生产板只读（写操作走自己的实例/隔离后端）；凭据不落日志。
 
-## §6 兼容与退役
+## §6 兼容与退役（Owner 2026-11-07 指令修订）
 
-- MCP 工具名/schema 不变 → 现有 ZCode 会话与脚本零改动。
-- 配置/状态路径双读回退 → 旧使用者升级不丢登录与游标。
-- 主仓插件退役步骤：① Stoa `adapters/zcode` 就绪并冒烟；② 主仓 `.zcode/config.json` 改指；
-  ③ 新会话验证加载；④ 删除主仓 `plugins/report-channel`（单独提交）。本轮只做 ①②③ 的配置与说明。
+- MCP 工具名/schema 保持；resources URI 由 `ui://report-channel/board.html` 更名为
+  `ui://stoa/board.html`（面板随插件走，语义不变）。配置/状态路径双读回退 → 升级不丢登录与游标。
+- **FDE2E 项目不接插件模式（Owner 裁决）**：Stoa 的 ZCode 插件只是对外适配器交付面；FDE2E
+  自身走 **CLI 模式**（git 子仓直接跑 `bun <stoa>/src/cli/main.ts …`）。因此本轮**不改**主仓
+  `.zcode/config.json`、**不删** `plugins/report-channel`（当前会话依赖其工作）；旧插件退役与
+  工作区切换归 §8 的 FDE2E 对接 change。
 
 ## §7 验证
 
@@ -72,3 +85,14 @@ adapters/（本仓，中性发布面）
 - ZCode 适配器：用新路径直接跑 `watch --state-file …` 与 `board-status`（隔离后端），兼容旧 config 路径。
 - Codex：`codex mcp list` 实测；可行时 `codex exec` 一次工具 roundtrip。
 - Keel/dsh：配置形状核对 + 文档化登记（运行态依赖安装，不在本轮 CI）。
+
+## §8 后续 change：FDE2E 对接 Stoa（Owner 2026-11-07 指令，不在本轮）
+
+- 主仓新建 change：Stoa 以 **git 子仓模式**引入（不发布 npm），会话只用 **CLI 模式**
+  （直接 `bun <stoa>/src/cli/main.ts`），**不用插件模式**；同步更新相关 skills 与
+  `.zcode/commands/manager.md`（汇报/订阅/收件从插件工具名切到 CLI 命令）。
+- **每个 manager 会话独立启动一个 stoa 服务**：`stoa serve`（13610~13799 内端口＋会话级
+  data-dir，数据目录绝不进公开静态根），`pnpm tunnel:expose … --pin` 挂
+  `https://local-gaubee-<name>.fde2e.com`，**前端与后端一起暴露**；会话收尾回收进程与隧道片段。
+- 旧插件退役/删除（`plugins/report-channel` 与 `.zcode/config.json` 的 plugins.dirs）在该
+  change 内、新会话验证 CLI 链路后执行。
