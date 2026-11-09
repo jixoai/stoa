@@ -40,17 +40,17 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Gates — tests
-        run: bun test
-
       - name: Gates — lint/check
         run: bun run check
 
       - name: Gates — typecheck
         run: bun run typecheck
 
-      - name: Build (dist/ ships in the package)
+      - name: Build (dist/ ships in the package and export tests need it)
         run: bun run build
+
+      - name: Gates — tests
+        run: bun test
 
       - name: Publish to npm (trusted publishing, provenance)
         run: npm publish --provenance --access public
