@@ -4,19 +4,26 @@
 
 ### Requirement: 核心 MCP 面（stoa mcp）
 
-Stoa SHALL 提供内置的 stdio MCP server（`stoa mcp`，新行分隔 JSON-RPC 2.0），
-工具面 SHALL 至少包含 `board_post`、`board_reply`、`board_read`、`board_inbox`、
-`board_peek`、`board_status`、`board_bookmark`、`board_bookmarks`，且工具名/参数/schema
-SHALL 与既有 ZCode 插件通道一致（`post`/`reply` 的正文三入口 `body|file` 与
-`kind|format|article` 同义组一并继承）。配置解析顺序 SHALL 为：CLI flags > `STOA_*` 环境变量 >
-兼容旧前缀（`REPORT_CHANNEL_*`/`FDE2E_REPORT_*`，含 accounts env 文件）> `~/.config/stoa/report-channel.json` >
-兼容 `~/.config/fde2e/report-channel.json` > 默认 `http://127.0.0.1:13689`。凭据 SHALL NOT 出现在
-stdout/stderr 或工具返回值中。
+Stoa SHALL 提供内置 stdio MCP server（`stoa mcp`，新行分隔 JSON-RPC 2.0），工具面 SHALL 至少包含
+`board_post`、`board_reply`、`board_read`、`board_inbox`、`board_peek`、`board_status`、
+`board_bookmark`、`board_bookmarks`。工具名/参数/schema SHALL 与既有 ZCode 插件通道逐字一致
+（含 `body|file` 与 `kind|format|article` 同义组）。凭据 SHALL NOT 出现在 stdout/stderr 或工具返回值中。
 
 #### Scenario: stdio 握手与工具清单
 
 - **WHEN** 对 `stoa mcp` 发送 `initialize` 与 `tools/list`
 - **THEN** 返回协议版本与上述八个工具，工具名/参数与既有插件通道逐字一致
+
+#### Scenario: 凭据不回显
+
+- **WHEN** 任一工具调用失败（401/网络错误）
+- **THEN** 错误文本不包含 token 或认证头内容
+
+### Requirement: MCP 配置解析与旧路径兼容
+
+`stoa mcp` 的配置解析顺序 SHALL 为：CLI flags > `STOA_*` 环境变量 > 兼容旧前缀
+（`REPORT_CHANNEL_*`/`FDE2E_REPORT_*`，含 accounts env 文件）> `~/.config/stoa/report-channel.json` >
+兼容 `~/.config/fde2e/report-channel.json` > 默认 `http://127.0.0.1:13689`。空值 SHALL 视为未设。
 
 #### Scenario: 旧配置零迁移
 
