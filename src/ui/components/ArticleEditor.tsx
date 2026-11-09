@@ -52,6 +52,7 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -407,16 +408,19 @@ export function ArticleEditor() {
           <ChevronDownIcon data-icon="inline-end" />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-48">
-          <DropdownMenuLabel>指令块（P1 四块）</DropdownMenuLabel>
-          {ARTICLE_BLOCK_NAMES.map((name) => (
-            <DropdownMenuItem
-              key={name}
-              data-testid={`article-insert-${name}`}
-              onClick={() => insertBlock(name)}
-            >
-              {BLOCK_LABELS[name]}
-            </DropdownMenuItem>
-          ))}
+          {/* 官方纪律：DropdownMenuLabel＝GroupLabel，必须在 DropdownMenuGroup 内 */}
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>指令块（P1 四块）</DropdownMenuLabel>
+            {ARTICLE_BLOCK_NAMES.map((name) => (
+              <DropdownMenuItem
+                key={name}
+                data-testid={`article-insert-${name}`}
+                onClick={() => insertBlock(name)}
+              >
+                {BLOCK_LABELS[name]}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuGroup>
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled>gallery / log（P2）</DropdownMenuItem>
         </DropdownMenuContent>

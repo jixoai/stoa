@@ -8,7 +8,7 @@
  *   讨论区自身不建 observer、不写 `report.read*` 之外的任何存储；
  * - 静态归档：只读展示快照内既有回复，0 网络请求（composer 由页面层按 staticMode 收起）。
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { PostView, ThreadView } from "@core/types";
 import { MessageCircleIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,48 @@ export function ArticleDiscussion({ post, thread, loaded, onOpenReply }: Article
       ),
     [plan],
   );
+  // 键盘可达（report-longform §4.6/A14）：回复行与线程页同一套 j/k 选中 + Enter 打开。
+  const replyNodes = useMemo(
+    () => rows.filter((row) => row.kind === "post").map((row) => row.node),
+    [rows],
+  );
+  const [selectedIndex, setSelectedIndex] = useState(-1);
+  useEffect(() => {
+    const isTyping = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      if (!el) return false;
+      return ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable;
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return;
+      if (event.key === "j" || event.key === "k") {
+        if (replyNodes.length === 0) return;
+        event.preventDefault();
+        setSelectedIndex((index) => {
+          const next =
+            event.key === "j"
+              ? Math.min(replyNodes.length - 1, index < 0 ? 0 : index + 1)
+              : Math.max(0, index < 0 ? 0 : index - 1);
+          const node = replyNodes[next];
+          if (node) {
+            document
+              .querySelector<HTMLElement>(`[data-post-id="${CSS.escape(node.id)}"]`)
+              ?.scrollIntoView({ block: "nearest" });
+          }
+          return next;
+        });
+        return;
+      }
+      if (event.key === "Enter" && selectedIndex >= 0) {
+        const node = replyNodes[selectedIndex];
+        if (!node) return;
+        event.preventDefault();
+        navigate(postHref(node));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [replyNodes, selectedIndex]);
   const replyCount = post.reply_count;
   return (
     <section
@@ -82,7 +124,7 @@ export function ArticleDiscussion({ post, thread, loaded, onOpenReply }: Article
         <ThreadTimelineRows
           rows={rows}
           loaded={loaded}
-          selectedId={null}
+          selectedId={selectedIndex >= 0 ? (replyNodes[selectedIndex]?.id ?? null) : null}
           onOpen={(rowPost) => navigate(postHref(rowPost))}
           onReply={(rowPost) => navigate(`/p/${encodeURIComponent(rowPost.id)}?reply=1`)}
           onQuote={(rowPost) => navigate(`/compose?quote=${encodeURIComponent(rowPost.id)}`)}
