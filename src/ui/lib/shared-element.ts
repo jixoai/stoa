@@ -7,7 +7,8 @@
  * - 正确语义是「被点击的那个主体元素参与形变」：点击处理器里把名字打到该卡片的头像/
  *   作者行上，转场快照读到的就是它；其余同名的旧名字在打标前清掉。
  *
- * 目标页（焦点帖/成员页头）继续用静态 `sharedId`，名字与这里一致（按帖子/账号 id）。
+ * 目标页（焦点帖/成员页头）继续用静态 `sharedId`，名字与这里一致（按帖子/账号 id）；
+ * 宿主内已带同名静态标签时本函数不再重复登记（同一快照重复名会让浏览器放弃转场）。
  */
 
 const AVATAR_ATTR = "data-shared-avatar";
@@ -42,13 +43,20 @@ export function markSharedSubject(host: Element | null, subject: string | null |
     [...host.querySelectorAll<HTMLElement>(`[${attr}]`)].find(
       (el) => el.closest(`[${HOST_ATTR}]`) === host,
     ) ?? null;
+  // canShare 宿主（线程页 focal 卡等）的**内层元素**已带静态共享名
+  // （AuthorAvatar/AuthorLine 的 `sharedId`）。再在包裹层登记同名会让同一快照出现
+  // 两个同名元素，浏览器报 "Unexpected duplicate view-transition-name" 并整次放弃
+  // 转场（复核 B1 实证：线程页 focal 长文卡点「阅读全文」→ `#/a/<id>`，console error
+  // `vt-author-<id>`；两处名字都在 focal 卡内、静态名已足够做连续变形）。
+  const alreadyNamed = (name: string) =>
+    [...host.querySelectorAll<HTMLElement>("*")].some((el) => el.style.viewTransitionName === name);
   const avatar = scoped(AVATAR_ATTR);
   const author = scoped(AUTHOR_ATTR);
-  if (avatar) {
+  if (avatar && !alreadyNamed(`vt-avatar-${subject}`)) {
     avatar.style.setProperty("view-transition-name", `vt-avatar-${subject}`);
     avatar.dataset.vtIntent = "avatar";
   }
-  if (author) {
+  if (author && !alreadyNamed(`vt-author-${subject}`)) {
     author.style.setProperty("view-transition-name", `vt-author-${subject}`);
     author.dataset.vtIntent = "author";
   }

@@ -122,7 +122,12 @@ export interface ThreadTimelineRowsProps {
   focalRowRef?: Ref<HTMLDivElement>;
   /** focal 行附加内容（ThreadPage 的时间/回复数 footer）。 */
   renderFocalExtra?: (node: ThreadNode) => ReactNode;
-  /** 打开帖子（focal 行不接；article → `#/a/<id>`）。 */
+  /**
+   * 打开帖子（article → `#/a/<id>`）。
+   * focal 行：note 不接（本页就是它的线程页）；**article 接**——摘要卡的
+   * 「阅读全文」入口由此渲染（spec report-app-ui「/p/<articleId> focal 用摘要卡 +
+   * 「阅读全文」入口」，复核 B1）。
+   */
   onOpen?: (post: PostView) => void;
   onReply?: (post: PostView) => void;
   onQuote?: (post: PostView) => void;
@@ -225,7 +230,9 @@ export function ThreadTimelineRows({
             avatarPx={row.compact ? undefined : THREAD_AVATAR}
             avatarGapPx={THREAD_AVATAR_GAP}
             paddingTop={isFocal ? FOCAL_PAD_TOP : THREAD_PAD_TOP}
-            onOpen={isFocal ? undefined : onOpen}
+            // focal note：不导航（focal = 本页主体，卡点击无去处）；
+            // focal article：接 onOpen → 摘要卡「阅读全文」渲染并跳 `#/a/<id>`。
+            onOpen={isFocal && node.kind !== "article" ? undefined : onOpen}
             onReply={onReply}
             onQuote={onQuote}
           />
