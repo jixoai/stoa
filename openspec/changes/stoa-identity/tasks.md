@@ -62,6 +62,26 @@
   - 进程回收证据：qa-serve（pid 10154/11204/11643/11717 均 stopped，pgrep 复核 none）；无 playwright
     chrome 残留；唯一在跑的 `serve` 是他人既有生产实例（pid 83641，13689，另 worktree/生产数据目录），
     未触碰。
-- [ ] P1-7. 仓改名与远程：合并推送 main → `gh repo rename stoa --repo jixoai/fde2e-workers --yes` →
+- [x] P1-7. 仓改名与远程：合并推送 main → `gh repo rename stoa --repo jixoai/fde2e-workers --yes` →
   全检出 `remote set-url` 更新与 fetch/push 验证；主仓侧引用同步。
-- [ ] P1-8. 归档 + 报告（含逐项判据证据）；上报 Owner 需要其账号/付费的待办清单（域名/组织/公开仓/npm）。
+  - 判据：仓改名生效、各检出 fetch 通过、主仓指针与 .gitmodules 同步。
+  - 证据：GitHub 仓 `jixoai/fde2e-workers` → **`jixoai/stoa`**（旧 URL 自动 302）；4 个检出
+    （生产/ feat-longform / feat-thread-live-append / 本 worktree）remote 更新为
+    `https://github.com/jixoai/stoa.git` 并 fetch 通过（origin/main=b85d504）；主仓
+    `.worktrees/fde2e-workers-task-report-v0`：`.gitmodules` URL 更新 + `git submodule sync` +
+    指针提交 `eef5fea3`（workers→b85d504）已推送 `task/report-worker-v0`。
+    我方实例：壳重部署 `app-CYzaxofc.js`（www+alpha，sha256 三面一致）；生产后端按纪律
+    `sqlite3 .backup`（bak-20261109-2208）后重启（新 pid 25282，healthz OK，board_status
+    auth=manager cursor=490 正常——旧 `FDE2E_REPORT_*` 凭据在新代码上实测可读）。
+- [x] P1-8. 归档 + 报告（含逐项判据证据）；上报 Owner 需要其账号/付费的待办清单（域名/组织/公开仓/npm）。
+  - 判据：归档就位；清单可执行。
+  - 证据：AGENTS.md 已按 Stoa 身份重写（命名法/认证通则/开源边界与我方实例）；兼容冒烟脚本入库
+    `scripts/qa/stoa-env-prefix-smoke.sh`（新旧前缀各一轮 **PASS=14 / FAIL=0**，在 rebase 后树上复跑）；
+    `openspec validate --strict` 通过 → 归档（见归档提交）。Owner 待办清单见下（域名 / 组织 /
+    公开仓 / npm），均为需 Owner 账号或付费的动作。
+    - 域名：`stoa.com`、`stoa.io` 已注册；`stoa.dev` / `stoa.app` 需到注册商精查（本地 whois 无该 TLD 数据）。
+    - 组织：GitHub 用户名/组织 `stoa`、`stoa-io` 已被占；`stoaproject` 空。当前仓暂挂 `jixoai` 名下，
+      后续可迁到独立组织（需 Owner 决定组织名与所有权）。
+    - 公开仓：仓仍为 **PRIVATE**；开源公开动作（含 LICENSE 生效、README 面向公众）需 Owner 确认后执行。
+    - npm：裸名 `stoa` 被废弃占位包（0.0.0）占用；发布继续暂缓（仓内 bun 直跑）；未来用 `@stoa/*`
+      scope（需 Owner 的 npm 组织）。
