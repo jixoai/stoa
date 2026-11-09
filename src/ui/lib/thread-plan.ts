@@ -333,6 +333,24 @@ export function countAddedInScope(
   return addedReplies + addedHidden;
 }
 
+/**
+ * 相对上一份 plan，本页作用域内**第一条新增回复行**的节点 id（先序序）。
+ *
+ * 用作「N 条新回复」提示的跳转锚点（report-thread-live-append）；null = 无新增行
+ * （只有折叠子树计数增长时点击提示回退滚到底）。
+ */
+export function firstAddedInScope(
+  prev: TimelinePlan | null,
+  next: TimelinePlan | null,
+): string | null {
+  if (!next) return null;
+  const knownReplies = new Set((prev?.replyNodes ?? []).map((node) => node.id));
+  for (const node of next.replyNodes) {
+    if (!knownReplies.has(node.id)) return node.id;
+  }
+  return null;
+}
+
 // ── 会话拓扑与通知叠锚点（report-notification-stacks；与 timeline planner 共用作用域语义）──
 //
 // 本段是 `report-notification-stacks` 在 thread-plan.ts 上的**扩展**（design §11.1）：

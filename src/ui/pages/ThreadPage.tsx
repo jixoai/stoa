@@ -11,7 +11,7 @@ import {
   type RefObject,
 } from "react";
 import type { PostView, ThreadNode, ThreadView } from "@core/types";
-import { ArrowUpIcon, ChevronRightIcon } from "lucide-react";
+import { ArrowDownIcon, ChevronRightIcon } from "lucide-react";
 import { PostCard } from "@/components/PostCard";
 import { ReplyComposer } from "@/components/ReplyComposer";
 import { ContentSwap } from "@/components/ContentSwap";
@@ -36,6 +36,7 @@ import { loadThreadScrollMemory, saveThreadScrollMemory } from "@/lib/scroll-mem
 import {
   buildTimelinePlan,
   countAddedInScope,
+  firstAddedInScope,
   planForThreadView,
   type PlanRow,
   type TimelinePlan,
@@ -255,6 +256,23 @@ function restoreThreadScroll(
   return true;
 }
 
+/**
+ * 贴底判定阈值：静默追加前「真实内容末尾」（最后一行底边）距容器底 ≤ 该值
+ * 视为「正在看实时位」。用行底边而不是 scrollHeight：锚定 spacer 会给
+ * scrollHeight 灌水，滚到顶部时它照样报「离底很远」，但视觉上尾部可能就在眼前。
+ */
+const NEAR_BOTTOM_PX = 64;
+
+function isNearBottom(container: HTMLElement | null): boolean {
+  if (!container) return false;
+  const rows = container.querySelectorAll<HTMLElement>("[data-timeline-row]");
+  const lastRow = rows.length ? rows[rows.length - 1] : null;
+  const contentBottom = lastRow
+    ? lastRow.getBoundingClientRect().bottom
+    : container.getBoundingClientRect().bottom;
+  return contentBottom - container.getBoundingClientRect().bottom <= NEAR_BOTTOM_PX;
+}
+
 // ── 初始锚定 / 数据晚到补偿 / 返回恢复（layout 阶段，无平滑滚动）──────────────
 //
 // 这个「锚定哨兵」必须**渲染在 timeline 内容里**：冷缓存时 focal 行要等
@@ -275,6 +293,8 @@ interface ThreadAnchoringProps {
   anchorLocked: RefObject<boolean>;
   anchoredFor: RefObject<string | null>;
   programmaticTop: RefObject<number>;
+  /** 贴底跟随标记（report-thread-live-append）：静默追加时置位，本组件在提交帧消费。 */
+  followBottomRef: RefObject<boolean>;
 }
 
 function ThreadAnchoring({
@@ -289,6 +309,7 @@ function ThreadAnchoring({
   anchorLocked,
   anchoredFor,
   programmaticTop,
+  followBottomRef,
 }: ThreadAnchoringProps) {
   /** 布局仍在收敛（回复行落地/字体/媒体）时的重试次数上限。 */
   const retries = useRef(0);
@@ -321,6 +342,20 @@ function ThreadAnchoring({
         return;
       }
       if (!container || !row) return;
+
+      if (followBottomRef.current) {
+        // 贴底跟随（report-thread-live-append）：静默追加时用户本来就在底部，
+        // 视图由我们定位到「追加后的新底」——新回复直接出现在眼前。
+        // 解锚后走首可见行补偿：后续推送不再回贴 focal，也不会把用户甩走。
+        followBottomRef.current = false;
+        anchoredFor.current = postId;
+        const max = Math.max(0, container.scrollHeight - container.clientHeight);
+        programmaticTop.current = max;
+        container.scrollTop = max;
+        anchorLocked.current = false;
+        lastFirstRef.current = readFirstVisible(container);
+        return;
+      }
 
       if (anchoredFor.current !== postId) {
         const memory = directionRef.current === "back" ? loadThreadScrollMemory(postId) : null;
@@ -389,8 +424,17 @@ export function ThreadPage() {
   /** 完整线程是否已从网络回来（回复骨架 → 真实回复的开关）。 */
   const [loaded, setLoaded] = useState(() => Boolean(postId && getCachedThread(postId)));
   const [error, setError] = useState<string | null>(null);
-  const [pendingThread, setPendingThread] = useState<ThreadView | null>(null);
   const [newReplyCount, setNewReplyCount] = useState(0);
+  const newReplyCountRef = useRef(0);
+  /** 提示点击的跳转锚点：本批累积中「第一条新回复」的节点 id（先序序）。 */
+  const jumpTargetRef = useRef<string | null>(null);
+  /** 贴底跟随标记：静默追加时按提交前视口位置置位，由 ThreadAnchoring 在提交帧消费。 */
+  const followBottomRef = useRef(false);
+  const clearReplyIndicator = useCallback(() => {
+    newReplyCountRef.current = 0;
+    jumpTargetRef.current = null;
+    setNewReplyCount(0);
+  }, []);
   /**
    * 本页的完整线程基线是否「新鲜」：路由切换置 false；只有非静默/初次完整线程
    * **真正提交**（含转场 flush）后置 true。陈旧缓存与种子上的静默结果按初次加载
@@ -442,10 +486,10 @@ export function ThreadPage() {
       setLoaded(true);
       freshRef.current = true;
     }
-    // 完整线程已经落地：旧的「新回复」待合并项已过时（防幻影胶囊）。
-    setPendingThread(null);
-    setNewReplyCount(0);
-  }, [transitionEpoch]);
+    // 完整线程已经落地：离底提示与跟随标记都过时了（防幻影提示）。
+    clearReplyIndicator();
+    followBottomRef.current = false;
+  }, [transitionEpoch, clearReplyIndicator]);
   const [selectedIndex, setSelectedIndex] = useState(-1);
   /** focal 被服务端截断（深链超 maxDepth）时用单帖接口补出来的焦点帖。 */
   const [syntheticFocal, setSyntheticFocal] = useState<PostView | null>(null);
@@ -500,8 +544,20 @@ export function ThreadPage() {
             } else {
               const added = countAddedInScope(prevPlan, nextPlan);
               if (added > 0) {
-                setPendingThread(next);
-                setNewReplyCount(added);
+                // 零点击直接追加（report-thread-live-append）：
+                // 贴底 → 提交后跟随贴底（新回复直接出现在眼前）；离底 → 视口不动 + 可跳转提示。
+                const atBottom = isNearBottom(containerRef.current);
+                followBottomRef.current = atBottom;
+                if (atBottom) {
+                  clearReplyIndicator();
+                } else {
+                  if (newReplyCountRef.current === 0) {
+                    jumpTargetRef.current = firstAddedInScope(prevPlan, nextPlan);
+                  }
+                  newReplyCountRef.current += added;
+                  setNewReplyCount(newReplyCountRef.current);
+                }
+                commitThread(next, true);
               }
             }
           } else {
@@ -509,15 +565,14 @@ export function ThreadPage() {
           }
         } else {
           commitThread(next, true);
-          setPendingThread(null);
-          setNewReplyCount(0);
+          clearReplyIndicator();
         }
         setError(null);
       } catch (err) {
         if (!silent) setError((err as Error).message);
       }
     },
-    [client, postId],
+    [client, postId, clearReplyIndicator],
   );
 
   useEffect(() => {
@@ -530,12 +585,12 @@ export function ThreadPage() {
     threadRef.current = seed;
     setThread(seed);
     setLoaded(Boolean(postId && getCachedThread(postId)));
-    setPendingThread(null);
-    setNewReplyCount(0);
+    clearReplyIndicator();
+    followBottomRef.current = false;
     setSelectedIndex(-1);
     setSyntheticFocal(null);
     void load(false);
-  }, [load]);
+  }, [load, clearReplyIndicator]);
 
   const scheduleRefresh = useCallback(() => {
     if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current);
@@ -721,6 +776,8 @@ export function ThreadPage() {
     };
     const onScroll = () => {
       if (Math.abs(container.scrollTop - programmaticTop.current) > 1) unlock();
+      // 用户自行（或跟随）回到贴底位：离底提示完成使命，清除（report-thread-live-append）。
+      if (newReplyCountRef.current > 0 && isNearBottom(container)) clearReplyIndicator();
     };
     container.addEventListener("wheel", unlock, { passive: true });
     container.addEventListener("touchstart", unlock, { passive: true });
@@ -734,7 +791,7 @@ export function ThreadPage() {
       container.removeEventListener("keydown", unlock);
       container.removeEventListener("scroll", onScroll);
     };
-  }, [postId]);
+  }, [postId, clearReplyIndicator]);
 
   // 窗口尺寸变化：仍未解锁时重算 F / spacer / scrollTop。
   useEffect(() => {
@@ -850,11 +907,23 @@ export function ThreadPage() {
   const replyPost = (post: PostView) => navigate(`/p/${encodeURIComponent(post.id)}?reply=1`);
   const quotePost = (post: PostView) => navigate(`/compose?quote=${encodeURIComponent(post.id)}`);
 
-  const mergePending = () => {
-    if (!pendingThread) return;
-    setThread(pendingThread);
-    setPendingThread(null);
-    setNewReplyCount(0);
+  /** 离底提示点击：把第一条新回复对齐到容器顶部（已是该位则不动），清计数。 */
+  const jumpToNew = () => {
+    const container = containerRef.current;
+    if (container) {
+      const target = jumpTargetRef.current;
+      const row = target
+        ? container.querySelector<HTMLElement>(
+            `[data-timeline-row][data-post-id="${CSS.escape(target)}"]`,
+          )
+        : null;
+      const top = row
+        ? row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+        : Math.max(0, container.scrollHeight - container.clientHeight);
+      programmaticTop.current = top;
+      container.scrollTop = top;
+    }
+    clearReplyIndicator();
   };
 
   if (error && !focal) {
@@ -1077,6 +1146,7 @@ export function ThreadPage() {
                   anchorLocked={anchorLocked}
                   anchoredFor={anchoredFor}
                   programmaticTop={programmaticTop}
+                  followBottomRef={followBottomRef}
                 />
               </>
             ) : null}
@@ -1088,10 +1158,11 @@ export function ThreadPage() {
               type="button"
               data-testid="new-replies-pill"
               className="pointer-events-auto h-7 rounded-full px-3"
-              onClick={mergePending}
+              aria-label={`跳到 ${newReplyCount} 条新回复`}
+              onClick={jumpToNew}
             >
-              <ArrowUpIcon data-icon="inline-start" />
-              {newReplyCount} 条新回复
+              <ArrowDownIcon data-icon="inline-start" />
+              {newReplyCount > 99 ? "99+ 条新回复" : `${newReplyCount} 条新回复`}
             </Button>
           </div>
         ) : null}

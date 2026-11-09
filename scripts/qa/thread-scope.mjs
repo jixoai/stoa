@@ -26,8 +26,10 @@
  *   R1 root 页仍包含全部分支（8 个节点 id 全部命中）
  *   R2 root 页 focal=root 贴顶（scrollTop=0）
  *   R3 root 页导轨不回归
- *   P1 深链页 + 兄弟分支新回复 → 不出「新回复」胶囊、DOM 行集合不变
- *   P1 深链页 + focal 子树新回复 → 胶囊计数=1，点击后新帖进入 DOM
+ *   P1 深链页 + 兄弟分支新回复 → 不出「新回复」提示、DOM 行集合不变（作用域外不打扰）
+ *   P1 深链页贴底 + focal 子树新回复 → 零点击直接追加进 DOM + 跟随贴底、无提示
+ *   P1 深链页离底 + focal 子树新回复 → 自动追加进 DOM、视口不动（首可见行 ±2px）、
+ *      提示「1 条新回复」；点击跳到第一条新回复并清提示（report-thread-live-append）
  *   P2 祖先逃生：深链页点 B1 → B1 子树；再点 root → 兄弟分支可见
  *   P3 无 pointer 预取的陈旧缓存导航（hash / history.back / 通知进入）：
  *      进入页面直接显示新回复，不出现点击后无变化的幻影胶囊
@@ -106,6 +108,16 @@ const SIBLINGS = [
  *   root ─┬─ sibling
  *         └─ b1 ── focal ── r1
  */
+/**
+ * 新回复追加专用夹具（每个视口独立创建，避免把新帖混入 before/after 截图夹具）：
+ *
+ *   root ─┬─ sibling
+ *         └─ b1 ── focal ─┬─ r1
+ *                         └─ F1..F7（尾部填充；tail = F7）
+ *
+ * 填充让「滚到顶部」在真实视口里确有折叠线以下的尾部——「离底 → 自动追加 + 提示跳转」
+ * 才是真场景；新回复一律挂在 tail 下（先序末位），追加后就在列表尾部。
+ */
 async function createPillFixture(label) {
   const tag = `PILL-${label}`;
   const root = await createPost(ownerToken, `${tag} 根帖：新回复胶囊作用域验收。`);
@@ -113,7 +125,11 @@ async function createPillFixture(label) {
   const b1 = await createReply(ownerToken, root, `${tag}-B1 分支 B 第一层。`);
   const focal = await createReply(managerToken, b1, `${tag}-FOCAL 焦点帖。`);
   const r1 = await createReply(ownerToken, focal, `${tag}-R1 focal 回复。`);
-  return { root, sibling, b1, focal, r1 };
+  const fills = [];
+  for (let index = 1; index <= 7; index += 1) {
+    fills.push(await createReply(managerToken, focal, `${tag}-F${index} 填充回复 ${index}。`));
+  }
+  return { root, sibling, b1, focal, r1, fills, tail: fills[fills.length - 1] };
 }
 
 /**
@@ -433,20 +449,34 @@ async function runViewport(browser, spec) {
   );
   shots.root = await shot(3, "root-all-branches");
 
-  // ── P1 新回复胶囊：兄弟分支不打扰 / focal 子树正常入队 ──────────────────────
+  // ── P1 新回复实时追加：兄弟分支不打扰 / 贴底零点击跟随 / 离底提示可跳转 ──────
   const P = await createPillFixture(label);
   await gotoHash(page, `#/p/${P.focal}`, 1800);
-  await waitForThread(page, { ancestors: 2, replies: 1 });
+  await waitForThread(page, { ancestors: 2, replies: 8 });
   await wait(page, 400);
   const pill = page.locator('[data-testid="new-replies-pill"]');
-  const deepPillIds = [P.root, P.b1, P.focal, P.r1];
+  const initialScope = await page.evaluate(READ_SCOPE);
+  const initialIds = initialScope.postIds;
+  const scrollTo = (target) =>
+    page.evaluate((where) => {
+      const container = document.querySelector('[data-testid="thread-scroll"]');
+      container.scrollTop = where === "bottom" ? container.scrollHeight : 0;
+    }, target);
+  /** 首可见 post 行（视口坐标；容器顶之下第一条）。 */
+  const firstVisibleRow = (scopeData) => {
+    const c = scopeData.container;
+    const row = scopeData.rows.find(
+      (item) => ["ancestor", "focal", "reply"].includes(item.kind) && item.bottom > c.top + 1,
+    );
+    return row ? { id: row.postId, top: row.top } : null;
+  };
 
-  // ① 兄弟分支新回复：旧实现按整棵 root 计数 → 误报胶囊且点击后无行可显示。
+  // ① 兄弟分支新回复：作用域外 → 不追加、不出提示、行集合不变。
   const siblingFetch = waitForThreadFetch(page);
   const siblingNew = await createReply(
     ownerToken,
     P.sibling,
-    `PILL-${label}-S2 兄弟分支新回复（不应触发胶囊）。`,
+    `PILL-${label}-S2 兄弟分支新回复（不应入本页）。`,
   );
   const siblingLoaded = await siblingFetch;
   await wait(page, 700);
@@ -454,53 +484,127 @@ async function runViewport(browser, spec) {
   const siblingPillCount = await pill.count();
   check(
     label,
-    "P1 兄弟分支新回复：不出新回复胶囊",
+    "P1 兄弟分支新回复：不出新回复提示",
     siblingLoaded && siblingPillCount === 0,
     `threadFetch=${siblingLoaded} pill=${siblingPillCount}`,
   );
   check(
     label,
-    "P1 兄弟分支新回复：DOM 行集合不变（仍是作用域 4 行）",
-    sameIds(siblingScope.postIds, deepPillIds) &&
+    "P1 兄弟分支新回复：DOM 行集合不变（作用域行集合不变）",
+    sameIds(siblingScope.postIds, initialIds) &&
       !siblingScope.postIds.includes(siblingNew) &&
       !siblingScope.scopeText.includes(`PILL-${label}-S2`),
     `actual=[${siblingScope.postIds.join(",")}]`,
   );
   shots.sibling = await shot(4, "sibling-reply-no-pill");
 
-  // ② focal 子树新回复：出胶囊（计数=1），点击后新帖进入 DOM。
-  const focalFetch = waitForThreadFetch(page);
-  const focalNew = await createReply(
+  // ② 贴底（实时位）：新回复零点击直接追加 + 跟随贴底，无提示。
+  await scrollTo("bottom");
+  await wait(page, 400);
+  const bottomFetch = waitForThreadFetch(page);
+  const bottomNew = await createReply(
     managerToken,
-    P.r1,
-    `PILL-${label}-R1A focal 子树新回复（应入胶囊）。`,
+    P.tail,
+    `PILL-${label}-R1A 尾部新回复（应零点击直接追加）。`,
   );
-  const focalLoaded = await focalFetch;
-  const pillShown = await page
-    .waitForSelector('[data-testid="new-replies-pill"]', { timeout: 12_000 })
-    .then(() => true)
-    .catch(() => false);
-  const pillText = pillShown ? (await pill.innerText()).replace(/\s+/g, " ").trim() : "";
+  const bottomLoaded = await bottomFetch;
+  await wait(page, 800);
+  const bottomScope = await page.evaluate(READ_SCOPE);
+  const bottomPill = await pillState(page);
+  const bc = bottomScope.container;
+  const bottomRow = bottomScope.rows.find((row) => row.postId === bottomNew);
   check(
     label,
-    "P1 focal 子树新回复：出现胶囊且计数=1",
-    focalLoaded && pillShown && pillText === "1 条新回复",
-    `threadFetch=${focalLoaded} pill=${pillShown} text="${pillText}"`,
+    "P1 贴底新回复：零点击直接进 DOM（无需点提示）",
+    bottomLoaded &&
+      bottomScope.postIds.includes(bottomNew) &&
+      bottomScope.scopeText.includes(`PILL-${label}-R1A`),
+    `threadFetch=${bottomLoaded} newVisible=${bottomScope.postIds.includes(bottomNew)} rows=[${bottomScope.postIds.join(",")}]`,
   );
-  shots.pill = await shot(5, "focal-reply-pill");
-  if (pillShown) {
-    await pill.click();
+  check(
+    label,
+    "P1 贴底新回复：不出提示且跟随贴底、新回复完整可见",
+    bottomPill.count === 0 &&
+      Boolean(bottomRow) &&
+      bottomRow.top >= bc.top - 2 &&
+      bottomRow.bottom <= bc.top + bc.clientHeight + 2 &&
+      bc.scrollHeight - bc.scrollTop - bc.clientHeight <= 2,
+    `pill=${bottomPill.count} nearBottom=${(bc.scrollHeight - bc.scrollTop - bc.clientHeight).toFixed(1)} row=${bottomRow ? `${bottomRow.top.toFixed(0)}..${bottomRow.bottom.toFixed(0)}` : "missing"} viewport=${bc.top.toFixed(0)}..${(bc.top + bc.clientHeight).toFixed(0)}`,
+  );
+  shots.appendBottom = await shot(5, "reply-appended-bottom-follow");
+
+  // ③ 离底（往上翻阅）：自动追加进 DOM、视口不动、出可跳转提示。
+  await scrollTo("top");
+  await wait(page, 400);
+  const awayBefore = await page.evaluate(READ_SCOPE);
+  const awayFirst = firstVisibleRow(awayBefore);
+  const awayFetch = waitForThreadFetch(page);
+  const awayNew = await createReply(
+    managerToken,
+    P.tail,
+    `PILL-${label}-R1B 尾部新回复（应自动追加 + 提示跳转）。`,
+  );
+  const awayLoaded = await awayFetch;
+  await wait(page, 800);
+  const awayScope = await page.evaluate(READ_SCOPE);
+  const awayPill = await pillState(page);
+  const awayFirstAfter = firstVisibleRow(awayScope);
+  check(
+    label,
+    "P1 离底新回复：自动追加进 DOM（零点击）",
+    awayLoaded &&
+      awayScope.postIds.includes(awayNew) &&
+      awayScope.scopeText.includes(`PILL-${label}-R1B`),
+    `threadFetch=${awayLoaded} newVisible=${awayScope.postIds.includes(awayNew)} rows=[${awayScope.postIds.join(",")}]`,
+  );
+  check(
+    label,
+    "P1 离底新回复：视口不动（首可见行 ±2px）",
+    Boolean(awayFirst && awayFirstAfter) &&
+      awayFirst.id === awayFirstAfter.id &&
+      Math.abs(awayFirst.top - awayFirstAfter.top) <= 2,
+    `before=${awayFirst?.id ?? "?"}@${awayFirst?.top.toFixed(1) ?? "?"} after=${awayFirstAfter?.id ?? "?"}@${awayFirstAfter?.top.toFixed(1) ?? "?"}`,
+  );
+  check(
+    label,
+    "P1 离底新回复：出现「1 条新回复」提示",
+    awayPill.count === 1 && awayPill.text === "1 条新回复",
+    `pill=${awayPill.count} text="${awayPill.text}"`,
+  );
+  shots.appendAway = await shot(6, "reply-appended-away-hint");
+  // 点击前的跳转期望：把第一条新回复对齐到容器顶；不足一屏时自然被 max 收 clamp。
+  const jumpExpect = await page.evaluate((newId) => {
+    const container = document.querySelector('[data-testid="thread-scroll"]');
+    const row = container.querySelector(
+      `[data-timeline-row][data-post-id="${newId}"]`,
+    );
+    const rowRect = row.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    return {
+      target: rowRect.top - containerRect.top + container.scrollTop,
+      max: container.scrollHeight - container.clientHeight,
+    };
+  }, awayNew);
+  if (awayPill.count) {
+    await awayPill.pill.first().click();
     await wait(page, 800);
   }
-  const merged = await page.evaluate(READ_SCOPE);
+  const jumpScope = await page.evaluate(READ_SCOPE);
+  const jumpPill = await pillState(page);
+  const jumpRow = jumpScope.rows.find((row) => row.postId === awayNew);
+  const jc = jumpScope.container;
+  const expectedTop = Math.min(jumpExpect.target, jumpExpect.max);
   check(
     label,
-    "P1 点击胶囊：新帖进入 DOM，兄弟分支新回复仍不出现",
-    merged.postIds.includes(focalNew) &&
-      merged.scopeText.includes(`PILL-${label}-R1A`) &&
-      !merged.scopeText.includes(`PILL-${label}-S2`),
-    `newVisible=${merged.postIds.includes(focalNew)} rows=[${merged.postIds.join(",")}]`,
+    "P1 点击提示：滚动到第一条新回复（不足一屏时到底）、提示清除",
+    Boolean(jumpRow) &&
+      Math.abs(jc.scrollTop - expectedTop) <= 2 &&
+      jumpRow.top >= jc.top - 2 &&
+      jumpRow.bottom <= jc.top + jc.clientHeight + 2 &&
+      jumpPill.count === 0,
+    `scrollTop=${jc.scrollTop.toFixed(1)} expected=${expectedTop.toFixed(1)} (target=${jumpExpect.target.toFixed(1)} max=${jumpExpect.max.toFixed(1)}) row=${jumpRow ? `${jumpRow.top.toFixed(0)}..${jumpRow.bottom.toFixed(0)}` : "missing"} pill=${jumpPill.count}`,
   );
+  shots.jumpAfter = await shot(7, "reply-jump-after-click");
 
   // ── P2 祖先逃生：点击 B1 → B1 子树；再点 root → 兄弟分支可见 ────────────────
   await page
@@ -553,7 +657,7 @@ async function runViewport(browser, spec) {
     escapePill.count === 0,
     `pill=${escapePill.count} text="${escapePill.text}"`,
   );
-  shots.escape = await shot(6, "ancestor-escape-root");
+  shots.escape = await shot(8, "ancestor-escape-root");
 
   // ── P3 陈旧缓存导航（无 pointer 预取）：hash / history.back / 通知进入 ──────
   // P2 走点击祖先（pointer → prefetchThread 会把缓存刷新），会掩盖陈旧缓存缺陷；
@@ -587,7 +691,7 @@ async function runViewport(browser, spec) {
         hScope.postIds.includes(hFocalNew),
       `rows=[${hScope?.postIds.join(",") ?? ""}]`,
     );
-    shots.staleHash = await shot(7, "stale-cache-hash-no-pill");
+    shots.staleHash = await shot(9, "stale-cache-hash-no-pill");
 
     // ⑧ history.back：focal 页期间再各发 1 条 → 浏览器返回 root
     await gotoHash(page, `#/p/${H.focal}`, 1600);
@@ -615,7 +719,7 @@ async function runViewport(browser, spec) {
         bScope.postIds.includes(bFocalNew),
       `rows=[${bScope?.postIds.join(",") ?? ""}]`,
     );
-    shots.staleBack = await shot(8, "stale-cache-back-no-pill");
+    shots.staleBack = await shot(10, "stale-cache-back-no-pill");
 
     // ⑨ 通知进入：缓存 focal 页 → 离开 → 两处新回复 → 通知页点旧通知行进 focal
     const N = await createStaleFixture(label, "N");
@@ -660,7 +764,7 @@ async function runViewport(browser, spec) {
         !nScope.scopeText.includes(`${N.tag}-S2`),
       `rows=[${nScope?.postIds.join(",") ?? ""}]`,
     );
-    shots.staleNotification = await shot(9, "stale-cache-notification-no-pill");
+    shots.staleNotification = await shot(11, "stale-cache-notification-no-pill");
   }
 
   // ── P4 真 seed：B1 无任何线程缓存，只有单帖 seed，hash 直达 ─────────────────
@@ -772,7 +876,7 @@ async function runViewport(browser, spec) {
       seedReady && Boolean(seedScope) && seedScope.postIds.includes(seedNew),
       `rows=[${seedScope?.postIds.join(",") ?? ""}]`,
     );
-    shots.seed = await shot(10, "seed-b1-hash-no-pill");
+    shots.seed = await shot(12, "seed-b1-hash-no-pill");
   }
 
   check(

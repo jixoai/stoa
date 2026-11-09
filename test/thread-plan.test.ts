@@ -11,6 +11,7 @@ import type { CollapsedGroup, ThreadNode, ThreadView } from "../src/core/types.t
 import {
   buildTimelinePlan,
   countAddedInScope,
+  firstAddedInScope,
   planForThreadView,
   type TimelinePlan,
 } from "../src/ui/lib/thread-plan.ts";
@@ -546,7 +547,7 @@ describe("buildTimelinePlan 缺口与既有语义", () => {
   });
 });
 
-describe("planForThreadView / countAddedInScope（新回复胶囊口径）", () => {
+describe("planForThreadView / countAddedInScope / firstAddedInScope（新回复追加与提示口径）", () => {
   test("兄弟分支新增回复：差集计数 0（深链页不出胶囊）", () => {
     const base = branchFixture();
     const prev = planForThreadView(threadView(base, "focal"), "focal");
@@ -623,5 +624,56 @@ describe("planForThreadView / countAddedInScope（新回复胶囊口径）", () 
     ]);
     const next = planForThreadView(threadView(nextNodes, "focal"), "focal", synthetic);
     expect(countAddedInScope(prev, next)).toBe(1);
+  });
+
+  test("firstAddedInScope：先序序第一条新增行；兄弟/无行差集为 null", () => {
+    const base = branchFixture();
+    const prev = planForThreadView(threadView(base, "focal"), "focal");
+
+    // r1 子树内与 focal 深处各来一条：先序里 r1x（r1 子树内）先于 r4（focal 的末子）。
+    const nested = recount([
+      ...base,
+      node("r1x", "r1", { author: "manager", createdAt: 180 }),
+    ]);
+    const direct = recount([
+      ...base,
+      node("r4", "focal", { author: "manager", createdAt: 190 }),
+    ]);
+    const both = recount([
+      ...base,
+      node("r1x", "r1", { author: "manager", createdAt: 180 }),
+      node("r4", "focal", { author: "manager", createdAt: 190 }),
+    ]);
+
+    expect(
+      firstAddedInScope(prev, planForThreadView(threadView(nested, "focal"), "focal")),
+    ).toBe("r1x");
+    expect(
+      firstAddedInScope(prev, planForThreadView(threadView(direct, "focal"), "focal")),
+    ).toBe("r4");
+    expect(
+      firstAddedInScope(prev, planForThreadView(threadView(both, "focal"), "focal")),
+    ).toBe("r1x");
+
+    // 兄弟分支新增：本页无新增行 → null（提示回退滚到底）。
+    const sibling = recount([
+      ...base,
+      node("a1x", "a1", { author: "manager", createdAt: 200 }),
+    ]);
+    expect(
+      firstAddedInScope(prev, planForThreadView(threadView(sibling, "focal"), "focal")),
+    ).toBe(null);
+
+    // 只有折叠子树计数增长（无新行）→ null，与 countAddedInScope=1 并存。
+    const fixture = (focalCount: number) =>
+      withChildCounts([
+        node("root", null, { createdAt: 100, childCount: 3 }),
+        node("focal", "root", { createdAt: 110, childCount: focalCount }),
+        node("r1", "focal", { createdAt: 120 }),
+      ]);
+    const prevHidden = planForThreadView(threadView(fixture(3), "focal"), "focal");
+    const nextHidden = planForThreadView(threadView(fixture(4), "focal"), "focal");
+    expect(countAddedInScope(prevHidden, nextHidden)).toBe(1);
+    expect(firstAddedInScope(prevHidden, nextHidden)).toBe(null);
   });
 });
