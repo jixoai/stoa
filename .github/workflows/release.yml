@@ -19,6 +19,9 @@ concurrency:
 jobs:
   npm-publish:
     runs-on: ubuntu-latest
+    # npm 侧 trusted publishing 配置的环境名（Owner 配置：release.yml / npm-publish）；
+    # OIDC token 的 environment claim 必须与 npm 设置一致，否则发布返回 404。
+    environment: npm-publish
     steps:
       - name: Checkout
         uses: actions/checkout@v4
