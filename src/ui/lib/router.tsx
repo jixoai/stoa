@@ -125,7 +125,8 @@ export function routeKey(route: Route): string {
     case "bookmarks":
       return "bookmarks";
     case "compose":
-      return `compose:${route.quote ?? ""}:${route.format}`;
+      // 既有 note compose 键逐字不变；article 编辑器按载体区分（report-longform §5.1）。
+      return `compose:${route.quote ?? ""}${route.format === "article" ? ":article" : ""}`;
     case "instances":
       return "instances";
     case "account":
