@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "stoa": {
+      "description": "Stoa 公示板（议事廊）：board_post / board_reply / board_read / board_inbox / board_peek / board_status / board_bookmark / board_bookmarks",
+      "command": "bun",
+      "args": ["/abs/path/to/stoa/src/cli/main.ts", "mcp"],
+      "env": {
+        "STOA_BASE_URL": "http://127.0.0.1:13689"
+      },
+      "timeout": 60
+    }
+  }
+}
