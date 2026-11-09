@@ -120,69 +120,34 @@ feed/线程/搜索/收藏/成员页 SHALL 用「长文摘要卡」表示 article
 - **WHEN** 一条 article 回复出现在自接链紧凑行
 - **THEN** 该行显示摘要卡而非全文，链的编号/导轨/紧凑样式不变
 
-### Requirement: 目录、锚点与阅读进度
-
-文章视图 SHALL 从 Markdown headings 自动生成目录（少于 2 个标题时不显示），
-SHALL NOT 提供 `fde2e:toc` 块；标题 SHALL 有确定性锚点 id：纯文本 → NFKC →
-小写 → 非 `[a-z0-9\u4e00-\u9fff-]` 替换为 `-` → 合并/去首尾 → 截断 64 码点 →
-空串为 `section`；重复标题 SHALL 依次加 `-2`、`-3`。
-目录 SHALL 是 `<nav aria-label="目录">`，点击 SHALL 滚动到标题且不被吸顶头遮挡
-（`scroll-margin-top`）。页面 SHALL 支持 `?s=<slug>` 深链定位（未知 slug 忽略）。
-阅读进度 SHALL 以滚动比例 0..1 单调更新，并用 `role="progressbar"` 暴露；
-active 目录项 SHALL 随滚动切换。`prefers-reduced-motion` 下所有滚动 SHALL 瞬时。
-
-#### Scenario: 自动生成 TOC
-
-- **WHEN** article 含 2 个以上 H2/H3
-- **THEN** 目录自动出现；DOM 中不存在 `fde2e:toc` 块或专用 toc 渲染器；
-  少于 2 个标题时不渲染空目录
-
-#### Scenario: 重复标题锚点
-
-- **WHEN** 文章有三个同名 H2「结果」
-- **THEN** 锚点依次为 `结果`、`结果-2`、`结果-3`；目录三项各自跳到正确位置
-
-#### Scenario: 深链定位
-
-- **WHEN** 打开 `#/a/<id>?s=<slug>`
-- **THEN** 页面滚动到对应标题，标题顶边在吸顶头下沿 ±4px；未知 slug 时停在顶部
-
-#### Scenario: 阅读进度
-
-- **WHEN** 从文章顶部滚到底部
-- **THEN** 进度条从 0 到 1 单调变化；目录 active 项从第一节切到最后一节
-
-#### Scenario: 减少动态
-
-- **WHEN** `prefers-reduced-motion: reduce` 下点击目录或深链
-- **THEN** 滚动瞬时完成，无平滑动画
-
 ### Requirement: 长文无障碍与响应式
 
-文章视图 SHALL 使用语义 `<article>` 与 `<nav aria-label="目录">`；标题层级
+文章视图 SHALL 使用语义 `<article>` 与讨论区 `<section aria-label="讨论">`；标题层级
 SHALL 为 h1→h2→h3 不跳级；图片 SHALL 有 `alt`（块 schema 的 alt/标题/caption
-回退）；TOC 链接、摘要卡与操作按钮 SHALL 键盘可达且热区 ≥44px。390×844 SHALL
-单列、TOC 收起为 Sheet；1280×900 SHALL 正文 ≤68ch + 右侧 TOC；200% 字号下
-SHALL NOT 出现横向溢出（表格/代码块内部滚动）。颜色 SHALL 使用主题令牌，
-对比度达到 AA；`prefers-reduced-motion` SHALL 关闭非必要动画。
+回退）；摘要卡与操作按钮 SHALL 键盘可达且热区 ≥44px。390×844 SHALL 单列；
+1280×900 SHALL 正文 ≤68ch；200% 字号下 SHALL NOT 出现横向溢出（表格/代码块内部
+滚动）。颜色 SHALL 使用主题令牌，对比度达到 AA；`prefers-reduced-motion` SHALL
+关闭非必要动画。
+（TOC/锚点/阅读进度与移动端 TOC Sheet、桌面右侧 TOC 属 P2，见 tasks.md P2-2；
+本 delta 不含该组要求——复核 O8 拆分。）
 
 #### Scenario: 移动端
 
 - **WHEN** 在 390×844 打开长文
-- **THEN** 单列显示，目录以「目录」按钮打开 Sheet，页面无横向滚动条
+- **THEN** 单列显示，页面无横向滚动条
 
 #### Scenario: 桌面端
 
 - **WHEN** 在 1280×900 打开长文
-- **THEN** 正文列 ≤68ch，右侧目录 sticky 可见，滚动时 active 项更新
+- **THEN** 正文列 ≤68ch
 
 #### Scenario: 字号放大
 
 - **WHEN** 系统字号放大到 200%
-- **THEN** 标题/正文/目录不重叠、不截断、无横向溢出；宽表格在自身容器内横向滚动
+- **THEN** 标题/正文/讨论区不重叠、不截断、无横向溢出；宽表格在自身容器内横向滚动
 
 #### Scenario: 键盘
 
 - **WHEN** 仅用键盘
-- **THEN** 可 Tab 到目录项并 Enter 跳转、Tab 到操作按钮并 Enter 触发、
-  Esc/返回可离开文章页
+- **THEN** 可 Tab 到摘要卡与操作按钮并 Enter 触发、讨论区回复行可 j/k 选中并
+  Enter 打开、Esc/返回可离开文章页

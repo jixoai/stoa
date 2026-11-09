@@ -6,6 +6,10 @@
 > 本 change 目标 schema **v7**（只加 `posts.kind`）。`report-notification-stacks`
 > 已合入（worker `f3d9489` 基线）；本 change 已在它之上实现。
 > 每项判据不满足不得勾选。
+>
+> **复核修复轮（2026-11-10，独立 code review 6.5/10）**：两个阻塞项（B1/B2）与
+> O1–O12 观察项的处理见 P1-23…P1-28 与文末「复核观察项登记」；本轮全部数字
+> （bun test 总数 / QA 步数·请求数·耗时 / 性能实测）均取自下列证据段的终版实测。
 
 ## P1. 数据模型与解析
 
@@ -27,7 +31,7 @@
     `文×800,000`（>2MiB）拒文案含 "2 MiB utf-8" / note 200,000 过、200,001 拒文案
     含 "200000" / 未知 kind 400 文案含 "invalid kind"）；未传 kind 的 note 路径
     由既有 `test/social.test.ts`、`test/http.test.ts`、`test/cli.test.ts` 全绿覆盖
-    （531 tests / 0 fail）。
+    （终版 537 tests / 0 fail）。
 - [x] P1-3. `src/server/db.ts`：`SCHEMA_VERSION = 7`（v6 已被 `post_reads`
   占用）；`posts` 建表含 `kind TEXT NOT NULL DEFAULT 'note'`；旧库（v5/v6）
   `hasColumn` 守卫 `ALTER TABLE posts ADD COLUMN kind ...`；重复 migrate 幂等。
@@ -211,7 +215,7 @@
     `--format bogus`、>2MiB 拒绝、batch JSONL kind、人类输出 `posted (article)`；
     QA A11 三条（post --file --format article → kind=article；--format bogus
     报错；人类输出 `posted (article)`）；note 默认路径由既有 cli 用例全绿覆盖
-    （531 tests / 0 fail）。
+    （终版 537 tests / 0 fail）。
 - [x] P1-16. 插件（主仓）：`tools.mjs` `board_post`/`board_reply` 加
   `file`/`kind`/`format`/`article`（body 可选、body 与 file 恰好一个；
   `kind`/`format`/`article` 同义，缺省 note，冲突报错）；`callTool` 读文件、限 2MiB、
@@ -276,15 +280,17 @@
   `test/article-{parse,http,export,ui}.test.ts` 或等价覆盖。
   - 判据：全绿；无 `any`；无 console error；`NOTIFICATION_TYPES` 未变；
     既有 note 用例 0 回归。
-  - 证据：`bun test` → **531 pass / 0 fail**（54 文件）；`bun run check` →
-    lints ok（cli 20 commands / 76 source files / 0 ui-lint 违例）；
-    `bun run typecheck` 与 `bun run typecheck:ui` 均通过（根 tsconfig 为此新增
-    `jsx`/`DOM.Iterable` 以纳入 `test/article-router.test.ts` 与 `router.tsx`
-    的检查）；`npx openspec validate report-longform --strict` → valid；
-    `bun run build` → 成功（dist 939KB/156KB）；
+  - 证据（复核修复轮终版实测，2026-11-10）：`bun test` → **537 pass / 0 fail**
+    （54 文件 / 10,963 期望）；`bun run check` → lints ok（bun / api routes 50 /
+    cli 20 commands / 76 source files）+ ui-lint 0 违例；`bun run typecheck` 与
+    `bun run typecheck:ui` 均通过（根 tsconfig 为此新增 `jsx`/`DOM.Iterable` 以
+    纳入 `test/article-router.test.ts` 与 `router.tsx` 的检查）；
+    `npx openspec validate report-longform --strict` → valid；
+    `bun run build` → 成功（dist JS 941.69KB / CSS 156.64KB）；
     `rg ": any|as any|any\[\]" 新增文件` → NO any；
     `git diff 90d0d4b..HEAD -- src/core/types.ts` 未触碰 `NOTIFICATION_TYPES`；
-    QA 全流程 console.error/pageerror 0（收尾断言）。
+    QA 全流程 console.error/pageerror 0（收尾断言）；
+    回归：`thread-scope` **82/82**、`thread-nesting` **30/30** 全绿。
 - [x] P1-20. E2E/QA：`scripts/qa/report-longform.mjs` + 隔离后端 + Playwright
   覆盖 A1、A2（P1 四块）、A3、A4、A5、A6、A8、A9、A10、A11、A12、A13、
   A14；截图/请求记录落 `src/ui/.qa/longform/`（390/1280）。
@@ -292,20 +298,27 @@
     callout items/code、compare viewport 不一致 warning 与 <860px 一次一张）；
     失败截图+响应状态留档；结束 kill 隔离服务并列 PID；生产板 0 写入；
     `steps.json` 可被 P1-17 模板转成 article 作为交付物。
-  - 证据：QA 脚本最后一轮 **56/56 PASS / 0 FAIL**（44s；`results.json` 记录
-    157 请求 + 157 响应 + 16 截图；隔离后端 port 13698 / pid 记录在案，
-    finally `qa.stop()` 已回收）。覆盖：A5 上限×6、A8×8（feed/线程/搜索/
-    通知/引用/成员页/收藏页）、A1×5（h1/讨论区/独立线程页入口/软删/回退）、
-    A2×5（stats/steps/行内 MD/compare/窄屏）+ A2-模板×5、A3、A4×2、A9×3、
-    A6×2（feed 首行 347ms/20 行/6 摘要/0 长任务；文章首屏 58ms）、
-    A14×9（编辑器/axe/键盘流/子集）、A10×2、A11×3、A12、A13。
+  - 证据（复核修复轮终版实测，2026-11-10；交付报告副本同批刷新于主仓
+    `.agents/reports/manager/report-longform/`）：QA 脚本 **62/62 PASS / 0 FAIL**
+    （56s；`results.json` 记录 164 请求 + 164 响应 + 17 截图；隔离后端
+    port 13687 / pid 13417，finally `qa.stop()` 已回收）。覆盖：A5 上限×6、
+    A8×8（feed/线程/搜索/通知/引用/成员页/收藏页）、A1×5（h1/讨论区/独立线程页
+    入口/软删/回退）、A2×5（stats/steps/行内 MD/compare/窄屏）+ A2-模板×5、A3、
+    A4×2、A9×3、A6×2（feed 冷启动首行 **338ms**/20 行/6 摘要/0 长任务；
+    文章首屏 **51ms**）、A14×9（编辑器/axe/键盘流/子集）、A10×2、A11×3、A12、
+    A13；复核修复新增 B1×2（focal 作用域入口 + 点击落 `#/a/<id>`）、B2×2
+    （发帖页入口 + 双向切换）、O4、O5、O6 断言，收尾「0 运行时错误」，
+    发布跳转（双击提交）确定性 PASS。夹具口径（复核 O2）：A5 的「512KB 正文」
+    夹具＝512,000 字符 ASCII（恰 512,000 字节），断言文案与实现常量
+    `MAX_ARTICLE_CHARS = 512_000` 一致（产品口径「512KB」即此字符上限），
+    无文案/实值漂移；`文×800,000`（UTF-8 2.4MB）专测 2MiB 字节护栏。
     判据对应：steps degraded/skipped ✅、stats before→after/tone ✅、
     callout items/code ✅、compare viewport 不一致 warning ✅ 与 <860px
     一次一张 ✅；失败即截图（`fail-NN.png`）+ 请求/响应留档；生产板零写入
     （qa-serve 拒绝生产 dataDir 与保留端口）；`steps.json` 已被 P1-17 模板
     转成 `article.md` 作为交付物（`article-conversion.json`）。截图/请求记录
     落 `src/ui/.qa/longform/`（默认 `--report-dir`），交付副本另置主仓
-    `.agents/reports/manager/report-longform/`。
+    `.agents/reports/manager/report-longform/`（复核轮已按终版 HEAD 整体刷新）。
 - [x] P1-21. 四块渲染件：stats/steps/compare/callout（design §3.2/§4.4）；
   官方 Card/Badge/Alert/Tabs 组合；`data-article-block` 标记；超限截断/警告；
   未知字段忽略；steps 五态 Badge、command/output pre 横向滚动、media 开
@@ -349,6 +362,97 @@
     门控）；回复提交并入：`onPosted → load(false)` 重新取线程（不整页刷新，
     见 ArticlePage/ThreadPage 同形逻辑），EventHub `post.created`
     精确失效（`useEventHub` 订阅按 root_id/post_id 匹配）。
+
+## P1. 复核修复（独立 code review 6.5/10 的阻塞项与观察项）
+
+- [x] P1-23.（**B1**，阻塞）`/p/<article>` focal 的「阅读全文」入口：`ThreadTimelineRows`
+  focal 行对 article 接 `onOpen`（note 保持不导航，focal 整卡对 note 仍无去处）；
+  `ArticleSummaryCard` 的「阅读全文」按钮由此渲染 → `navigate(postHref(node))`
+  → `#/a/<id>`（D10 同一摘要卡实现，不另造第二套入口）。
+  - 判据：线程页 focal 摘要卡内恰好 1 个「阅读全文」；点击落 `#/a/<id>`；
+    note focal 卡点击仍不导航。
+  - 证据：QA「A8/B1 线程页 focal＝摘要卡 + 恰好 1 个「阅读全文」入口（focal 作用域；
+    不渲染全文）」（`focal.querySelectorAll('[data-testid="article-open-full"]').length === 1`；
+    修前全局选择器命中背景 feed 造成假阳）+ QA「B1 线程页 focal「阅读全文」→ #/a/<id>」
+    （实测 `hash="#/a/<MAIN_ID>"`）。
+- [x] P1-24.（**B1 连带缺陷**，共享元素重复名）focal 卡点「阅读全文」触发 `/p → /a`
+  转场时，`markSharedSubject` 在包裹层登记的名字与内层静态名
+  （`AuthorAvatar`/`AuthorLine` 的 `sharedId` → `vt-avatar/vt-author-<id>`）重复：
+  同一快照两个同名元素，浏览器报 `Unexpected duplicate view-transition-name:
+  vt-author-<id>` 并放弃整次转场（B1 修复暴露的既有潜伏缺陷——此前 focal 卡点击
+  不导航，重复名从未进入转场）。修：`markSharedSubject` 增加 alreadyNamed 守卫
+  （宿主内已带同名静态标签则不再登记包裹层）。
+  - 判据：线程页 focal 长文卡点「阅读全文」→ `#/a/<id>` 全程 0 console error；
+    feed→article、a→p→a 键盘流等既有共享元素转场不回归。
+  - 证据：现场取证（点后同步 dump：`vt-author-<id>` 两处同名：`data-shared-author`
+    包裹层 + AuthorLine 内层）；修复后 QA「全流程无页面运行时错误（console.error/
+  pageerror）」= **0**（修前该断言 FAIL 一条）。
+- [x] P1-25.（**B2**，阻塞）长文编辑器 UI 入口：新增 `ComposeFormatTabs`
+  （官方 `Tabs` 组合层 + 路由接线），发帖页与长文编辑器双端渲染：
+  `/compose` ⇄ `/compose?format=article` 双向互切（`navigate(target, replace)`，
+  引用上下文 `quote` 保留；replace 同时解掉编辑器的 LeaveGuard 合成条目）；
+  `PostComposer` 删除无调用方的 `kind` 死参数（note 路径不带 kind → 服务端归一
+  `note`，行为逐字不变）。
+  - 判据：产品 UI 内可从发帖页点击进入长文编辑器；双向切换可用；无死参数。
+  - 证据：QA「A14/B2 发帖页「长文」入口：点击 → hash 含 format=article → 编辑器挂载」
+    （before `#/compose` 笔记 composer 可见 → after `#/compose?format=article` +
+    `article-editor` 挂载）与「A14/B2 长文编辑器可切回「帖子」（双向）」；
+    `rg "kind = \"note\"|kind\?: PostKind" PostComposer.tsx` 0 命中。
+- [x] P1-26.（**O5/O6**）提交门：`ArticleEditor.submit` 以当前 `body` **同步现算**
+  一次 `parseArticle` 并据此拒绝（不再只信 300ms 防抖的旧 `errors`）；
+  `disabled` 加入 `body.length > MAX_ARTICLE_CHARS` 与 UTF-8 `> MAX_ARTICLE_BYTES`
+  （可见 `article-over-limit` 提示，文案含真实数字，与服务端 `assertBody`
+  同口径：字节先判、再字符）。
+  - 判据：防抖窗口内点击被拦（0 POST + 错误面板）；>512,000 字符时提交禁用 +
+    护栏提示可见。
+  - 证据：QA「O5 提交门竞态：防抖窗口内点击被同步校验拦住」（`enabledAtClick=true`
+    证明确实处于防抖窗口、`posts:[0,0]`＝0 POST、错误面板「有校验错误未修复」、
+    提交键此后禁用）与「O6 超限禁提交（520,000 > 512,000）」（chars=520,006、
+    `disabled=true`、提示「正文 520,006 字符，超过 512,000 上限」）。
+- [x] P1-27.（**O4**）引用草稿键竞态：`draftKey` 改由路由 `quoteId` 直接定型
+  （`article:quote:<id>`，不再按 `quoted` 异步推导）；引用就绪前渲染骨架
+  （`article-editor-loading`），编辑器挂载即定型；引用加载失败给可见
+  `article-editor-quote-error` Alert（不阻塞撰写）。
+  - 判据：预置「根草稿污染」+「引用草稿」后进入引用编辑器，恢复引用草稿、
+    不读取/覆盖/清除根草稿。
+  - 证据：QA「O4 引用草稿按 article:quote:<id> 恢复（不被 article:root 串写；
+    根草稿未被动过）」（value=引用草稿、`rootDraft` 原样保留、quote 键存在）。
+- [x] P1-28.（**O1/O8/O10/O11**）收口修复：
+  - O10：`export.ts` 正文媒体扫描去 `kind` 门（note 正文手写媒体同样入快照）；
+    证据＝`test/export-static.test.ts` 新增「note body media lands in the snapshot
+    media list too」用例（8 pass）。
+  - O11：`ArticlePage` 复制链接传 `post.kind`（不再字面量 `"article"`）。
+  - O8：spec delta（report-app-ui）移除 P2 的「目录、锚点与阅读进度」要求整节，
+    无障碍要求删除 TOC 项（留 tasks P2-2）；`npx openspec validate
+    report-longform --strict` → valid。
+  - O1：design D18/A6 性能预算改「目标值/门禁值」分列（暖缓存/同文档目标
+    <300ms；E2E 冷启动整页加载门禁 <1500ms；QA 断言用门禁值、tasks 记实测值）。
+  - 证据：见上；A6 实测终版见 P1-20 证据段。
+- [x] P1-29.（复核轮 QA 复跑暴露的真实竞态）发布跳转被 LeaveGuard 撤销：
+  `submit` 成功后 `navigate(postHref(first))`（push）与守卫 effect 清理里的
+  `history.back()` 赛跑——回退排在 View Transition 回调的 pushState 之后时，
+  刚发的文章视图被弹回编辑器（用户停在空编辑器）。修：发布导航改
+  `navigate(href, true)`（replace，确定性消费守卫/编辑器条目）＋守卫清理对
+  `submitted.current`（发布中）豁免回退。
+  - 判据：连续发布 10 次全部落 `#/a/<id>`；QA「A14 双击提交只发一次」的
+    `submittedNav` 恢复确定性。
+  - 证据：定向复现（临时脚本，未入库：fill → 立即双击提交 → 等 `#/a/`，×10 轮）：
+    修复前 **3/10 被撤销**（`hash=#/compose?format=article`），修复后 **10/10 成功、
+    0 console error**；QA 终版「A14 双击提交只发一次 POST /api/posts」PASS
+    （hash `#/a/<id>`，同断言即回归门）。
+
+## 复核观察项登记（P2/后续，本轮不修；2026-11-10 复核轮登记）
+
+- [ ] R-1（**O3**）既有负载敏感用例：`test/link-preview-html.test.ts` 的 512KiB
+  解析 <50ms 在高负载（并发 QA/构建）下偶发红。处置纪律：门禁跑遇红先单独复跑
+  该文件确认既有性，证据里注明「负载敏感、单跑通过」；不动该用例阈值（既有change
+  的验收口径）。
+- [ ] R-2（**O7**）axe serious：文章页/编辑器 `color-contrast`（5 节点）、
+  `label-content-name-mismatch`（4 节点）；critical 已为 0（门禁）。
+  收敛（对比度令牌/按钮可访问名）留 P2 视觉打磨。
+- [ ] R-3（**O9**）CLI `VALUE_FLAGS` 是全局集合：`--file/--format` 加入后对所有
+  子命令可见（非命令级白名单）。收紧为按命令声明留后续（`src/cli/args.ts`）。
+- [ ] R-4（**O12**）复核观察项 O12（以复核报告原文为准）登记为后续处理。
 
 ## P2. gallery/log、TOC/进度与导入
 

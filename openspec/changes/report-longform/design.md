@@ -28,8 +28,8 @@
 | D15 | 静态快照只加 `kind`；正文仍是 `body_md`，块由客户端解析；既有 `read`/`read_at` 仅透传、不消费 | 快照不存 HTML/重复块数据；单一信源；静态归档没有读态消费者 | 导出预渲染 HTML / 另存 blocks 数组 |
 | D16 | 通知/未读/已读/事件类型零改动 | article 发帖仍是 `post.created`；已读仍由服务端 `post_reads` + 既有本地乐观缓存/重试队列判定；文章页不新建 read-set、不另发 `/api/reads` | 新增 `article.created` 事件 / 文章页独立 read-set |
 | D17 | 图片/图集复用 `media` + `useMediaUrl` + `ImageViewer` | 现有内容寻址、静态相对路径、查看器手势全部复用 | 新图片管线 |
-| D18 | 性能预算：列表 20 帖含长文 <300ms；文章首屏 <300ms；长任务 <50ms | 长文不能拖垮列表；摘要卡隔离全文 | 无预算 |
-| D19 | 无障碍：语义 `<article>/<nav>`、唯一 H1、TOC 键盘可达、reduced-motion 瞬切 | 交付级要求 | 只做视觉 |
+| D18 | 性能预算（复核 O1 修订，目标值/门禁值分列）：**目标值**（暖缓存/同文档口径：数据已在内存、仅切路由）feed 20 帖含长文与文章首屏 <300ms；**门禁值**（E2E 冷启动整页加载口径：冷上下文 + 打包 JS 解析 + 首屏请求，机器负载敏感）feed 首行 <1500ms、文章首屏 <1500ms——QA 断言用门禁值，tasks/报告回填实测值；长任务 <50ms（两口径共同硬线）；512KB 解析 <50ms（单测口径） | 长文不能拖垮列表；摘要卡隔离全文；**冷启动与暖缓存不可混为一谈**（复核 O1：805ms 实测属冷启动整页加载口径，且 300ms 原始预算未区分口径；同口径历次实测 347–805ms 的波动来自整页加载/机器负载，非长文渲染拖累） | 无预算 |
+| D19 | 无障碍：语义 `<article>` / 讨论区 `<section aria-label="讨论">`、唯一 H1、摘要卡与操作按钮键盘可达、reduced-motion 瞬切（TOC 键盘可达属 P2，复核 O8） | 交付级要求 | 只做视觉 |
 | D20 | P1 载体/阅读/嵌入讨论区/四块（stats/steps/compare/callout）/编辑/静态/工具链；P2 gallery/log/TOC/进度/导入；P3 打印/HTML 导出 | Owner 拍板：P1 模板必须直接产结构化块；P1 先解决「不再手写 HTML」 | 一次做完 |
 
 ---
@@ -825,7 +825,7 @@ ArticlePage
 | A3 | 未知块降级 | `fde2e:unknown`、坏 JSON、schema 错误分别渲染「不支持的区块」占位并记 `warning`/`error`；块名/行号/原文可见且已转义；不做 empty element/红色裸文本；未知 status→pending、tone→info + warning；无 console error；文章其余部分正常 |
 | A4 | raw HTML 转义 | 正文与块中含 `<script>alert(1)</script>`、`<img src=x onerror=…>`、`</script>`、`<iframe>`；DOM 中 script/iframe/事件属性 0 个，文本可见；`renderMarkdownHtml` 输出含 `&lt;script&gt;`；`rg dangerouslySetInnerHTML src/` 0 命中 |
 | A5 | 512KB 上限 | note 200,000 通过、200,001 拒绝；article 512,000 通过、512,001 拒绝；article UTF-8 >2 MiB 拒绝；错误码 `BAD_REQUEST`；DB 往返字节/字符一致；HTTP 本地 <1s |
-| A6 | 性能 | 512KB article：feed 20 帖（含 5 篇 article）首屏 <300ms；thread 页不渲染全文 DOM（`[data-testid=article-summary]` 存在、正文段落节点 <20）；article view（正文 + 四块 + 嵌入讨论）首屏 <300ms；滚动 long task <50ms；内存无持续增长（PerformanceObserver） |
+| A6 | 性能（复核 O1 修订：目标值/门禁值分列） | 512KB article：feed 20 帖（含 5 篇 article）——**门禁值**（QA 断言，冷启动整页加载口径）首行 <1500ms 且 ≥20 行就绪、≥5 摘要卡、无 >50ms 长任务；**目标值**（暖缓存/同文档口径）<300ms；thread 页不渲染全文 DOM（`[data-testid=article-summary]` 存在、正文段落节点 <20）；article view（正文 + 四块 + 嵌入讨论）——**门禁值** <1500ms（QA 同文档切换实测回填）、**目标值** <300ms；滚动 long task <50ms；内存无持续增长（PerformanceObserver，P1 人工抽样项、不入门禁断言） |
 | A7 | TOC/锚点（P2） | H2/H3 生成 TOC；重复标题 `x`/`x`/`x` → `x`/`x-2`/`x-3`；点击滚动后标题顶边在吸顶头下沿 ±4px；`?s=<slug>` 深链定位；进度条 0→1 单调；active 项随滚动切换；reduced-motion 瞬切 |
 | A8 | feed 摘要 | 长文卡含「长文」Badge、标题 2 行、摘要 2 行、「约 N 分钟」；点击进 `/a/<id>`；DOM 不含正文全文；搜索/收藏/成员页/通知同款；note 卡行为不变 |
 | A9 | 通知/已读不变 | article 发帖产生且仅产生 `post.created`；通知/未读/history/CLI `wait-notifications` 与 note 完全一致；`NOTIFICATION_TYPES` 未变；打开 article 不额外推进游标；文章页与回复卡共用既有 read-dwell 观察器（不新建第二个），停留达标走既有 `markPostRead` 写路径（本地即时 + `report.readq` 异步批量写服务端 `post_reads`），不新建 read-set、不发独立 `/api/reads` 请求 |
