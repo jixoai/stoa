@@ -507,3 +507,30 @@ describe("CLI in auth mode (account tokens)", () => {
     }
   }, 90000);
 });
+
+describe("CLI body flags (report-cli-message-flag)", () => {
+  test("reply -m / post --message set exact body; conflicts and unknown short flags fail", async () => {
+    const root = await runCli(["post", "cli body root", ...base(), "--as", "a"]);
+    expect(root.code).toBe(0);
+    const parentId = (JSON.parse(root.stdout) as { posts: Array<{ id: string }> }).posts[0]!.id;
+
+    const reply = await runCli(["reply", parentId, "-m", "结论", ...base(), "--as", "a"]);
+    expect(reply.code).toBe(0);
+    const replyBody = (JSON.parse(reply.stdout) as { posts: Array<{ body_md: string }> }).posts[0]!;
+    expect(replyBody.body_md).toBe("结论");
+    expect(replyBody.body_md.startsWith("-m")).toBe(false);
+
+    const post = await runCli(["post", "--message", "hello flag", ...base(), "--as", "a"]);
+    expect(post.code).toBe(0);
+    const postBody = (JSON.parse(post.stdout) as { posts: Array<{ body_md: string }> }).posts[0]!;
+    expect(postBody.body_md).toBe("hello flag");
+
+    const conflict = await runCli(["post", "positional", "-m", "flagged", ...base(), "--as", "a"]);
+    expect(conflict.code).not.toBe(0);
+    expect(conflict.stderr).toContain("not both");
+
+    const unknown = await runCli(["post", "-x", "value", ...base(), "--as", "a"]);
+    expect(unknown.code).not.toBe(0);
+    expect(unknown.stderr).toContain("unknown flag");
+  });
+});

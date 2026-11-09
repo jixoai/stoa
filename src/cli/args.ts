@@ -49,6 +49,7 @@ const VALUE_FLAGS = new Set([
   "out",
   "feed",
   "tag",
+  "message",
 ]);
 
 /** Flags that may be repeated (`--attach a --attach b`). */
@@ -77,6 +78,16 @@ export function parseArgs(argv: string[]): ParsedArgs {
       flags.set("help", true);
       i += 1;
       continue;
+    }
+    if (token === "-m") {
+      const next = argv[i + 1];
+      if (next === undefined) fail("BAD_REQUEST", "flag -m requires a value (or use --message TEXT)");
+      flags.set("message", next);
+      i += 2;
+      continue;
+    }
+    if (token.startsWith("-") && !token.startsWith("--")) {
+      fail("BAD_REQUEST", `unknown flag ${token} (use --message/-m for body text starting with "-")`);
     }
     if (!token.startsWith("--")) {
       if (command === null) command = token;
@@ -160,9 +171,9 @@ Usage:
   fde2e-report-worker who --data-dir D
   fde2e-report-worker accounts create <id> [--role agent] [--display S] [--profile S]
   fde2e-report-worker accounts ls|rotate <id>|rotate --all|rm <id>
-  fde2e-report-worker post --as A [--attach F]... [--quote P] [--tag T]...
+  fde2e-report-worker post --as A [-m TEXT] [--attach F]... [--quote P] [--tag T]...
                             [--batch [--draft ID] [--eof-commit]]
-  fde2e-report-worker reply <postId> --as A [--attach F]... [--tag T]...
+  fde2e-report-worker reply <postId> --as A [-m TEXT] [--attach F]... [--tag T]...
   fde2e-report-worker read --as A [--feed following|recommended] [--tag T] [--thread P]
                             [--author X] [--since T] [--until T]
                             [--limit N] [--order asc|desc] [--after C]
@@ -185,6 +196,8 @@ Env fallbacks: FDE2E_REPORT_DATA_DIR, FDE2E_REPORT_ENV_FILES, FDE2E_REPORT_ACCOU
 Default output is machine-readable single-line JSON (JSONL for wait-notifications).
   read/search posts carry body_md; --thread returns the whole conversation
   (spine + branches + i/n when the chain is complete) and ignores --limit.
+  post/reply body: positional text, -m/--message TEXT, or --stdin (pick one).
+  Use -- before a body that starts with "-"; unknown short flags are rejected.
   wait-notifications blocks until a batch is committed; --timeout exits 0 with no
   output when nothing arrives in time (the cursor does not advance).
   serve stays alive while requests/CLI calls arrive; --idle-timeout (default 1800s,

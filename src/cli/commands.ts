@@ -557,9 +557,19 @@ async function cmdAccounts(ctx: CliContext): Promise<number> {
 }
 
 function bodyFromArgs(ctx: CliContext, positionals: string[], stdinFlag: boolean): Promise<string> {
+  const message = flagValue(ctx.args, "message");
+  const positional = positionals.join(" ").trim();
+  if (stdinFlag && (message !== null || positional)) {
+    fail("BAD_REQUEST", "body: --stdin cannot be combined with positional text or -m/--message");
+  }
   if (stdinFlag) return readStdinAll();
-  const body = positionals.join(" ").trim();
-  if (!body) fail("BAD_REQUEST", "body is required (pass it as an argument or use --stdin)");
+  if (message !== null && positional) {
+    fail("BAD_REQUEST", "body: pass text positionally or via -m/--message, not both");
+  }
+  const body = message ?? positional;
+  if (!body.trim()) {
+    fail("BAD_REQUEST", "body is required (positional text, -m/--message, or --stdin)");
+  }
   return Promise.resolve(body);
 }
 
