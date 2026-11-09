@@ -19,6 +19,7 @@ BUN="$(command -v bun)"
 PORT=13687
 WORK_ROOT="/tmp/stoa-adapters-a"
 DATA_DIR="${WORK_ROOT}/mcp-config-sources"
+HOME_QA="${WORK_ROOT}/home-qa-serve"
 FAIL=0
 PASSED=0
 
@@ -26,11 +27,13 @@ ok()  { PASSED=$((PASSED+1)); echo "PASS ${1}"; }
 bad() { FAIL=$((FAIL+1)); echo "FAIL ${1} ${2:-}"; }
 
 # ── 隔离后端 ─────────────────────────────────────────────────────────────────
-rm -rf "${DATA_DIR}"
-mkdir -p "${WORK_ROOT}"
+rm -rf "${DATA_DIR}" "${HOME_QA}"
+mkdir -p "${WORK_ROOT}" "${HOME_QA}"
 QA_OUT="/tmp/stoa-adapters-a-config-serve.out"
 : >"${QA_OUT}"
-"${BUN}" "${QA}" --data-dir "${DATA_DIR}" --no-seed --keep --port "${PORT}" >"${QA_OUT}" 2>&1 &
+# env -i 白名单：后端（及其内部 init/serve 子进程）绝不继承调用者的 STOA_*/凭据。
+env -i "PATH=${PATH}" "HOME=${HOME_QA}" "TMPDIR=${TMPDIR:-/tmp}" \
+  "${BUN}" "${QA}" --data-dir "${DATA_DIR}" --no-seed --keep --port "${PORT}" >"${QA_OUT}" 2>&1 &
 QA_WRAPPER_PID=$!
 URL=""
 i=0
@@ -214,7 +217,8 @@ run_session "Round E" "${WORK_ROOT}/round-e.out" \
 assert_status "Round E" "${WORK_ROOT}/round-e.out" "manager" "${HOME_E}/.config/stoa/report-channel.json" "${DATA_DIR}"
 
 # ── 回收 ─────────────────────────────────────────────────────────────────────
-"${BUN}" "${QA}" --stop --data-dir "${DATA_DIR}" --keep >/dev/null 2>&1 || true
+env -i "PATH=${PATH}" "HOME=${HOME_QA}" "TMPDIR=${TMPDIR:-/tmp}" \
+  "${BUN}" "${QA}" --stop --data-dir "${DATA_DIR}" --keep >/dev/null 2>&1 || true
 kill "${QA_WRAPPER_PID}" 2>/dev/null || true
 wait "${QA_WRAPPER_PID}" 2>/dev/null || true
 i=0
@@ -230,7 +234,7 @@ else
 fi
 LEFT="$(pgrep -f "qa-serve.mjs --data-dir ${DATA_DIR}" | tr '\n' ' ')"
 [ -z "${LEFT// /}" ] && ok "无 qa-serve 残留" || bad "qa-serve 残留" "${LEFT}"
-rm -rf "${DATA_DIR}" "${HOME_A}" "${HOME_B}" "${HOME_C}" "${HOME_D}" "${HOME_E}"
+rm -rf "${DATA_DIR}" "${HOME_A}" "${HOME_B}" "${HOME_C}" "${HOME_D}" "${HOME_E}" "${HOME_QA}"
 for out in round-a round-b round-c round-d round-e; do
   rm -f "${WORK_ROOT}/${out}.out" "${WORK_ROOT}/${out}.out.err"
 done
