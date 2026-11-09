@@ -7,7 +7,7 @@
  *
  * 覆盖：
  *  1. feed 实时（推荐/关注，DOM 内容 ≤2s）
- *  2. 线程实时（新回复胶囊 ≤2s）与删除（回复/根帖消失）
+ *  2. 线程实时（新回复 ≤2s 零点击直接进 DOM）与删除（回复/根帖消失）
  *  3. 通知角标：@owner 按帖 +1、打开详情 -1、服务端 cursor 不变、reload 保留、ack 清空
  *  4. 断线补拉：offline 5s + 3 条 → 恢复 ≤10s 各一次
  *  5. 可见性：agent B 收不到 agent C 私域事件（DOM + SSE 字节流）
@@ -312,19 +312,19 @@ try {
 
   const replyMarker = marker("REPLY");
   const reply = await replyTo(BASE, managerToken, threadRoot.id, `${replyMarker} 线程实时回复`);
-  const pillDelay = await waitUntil(
-    () => ownerPage.locator('[data-testid="new-replies-pill"]').count().then((n) => n > 0),
+  // report-thread-live-append：新回复零点击直接追进 DOM（不再需要点胶囊合并）。
+  const appendDelay = await waitUntil(
+    () => ownerPage.evaluate((text) => document.body.innerText.includes(text), replyMarker),
     5_000,
   );
-  check("线程：他人回复 ≤2s 出现新回复胶囊", pillDelay <= 2_000, `${pillDelay}ms`);
-  await ownerPage.screenshot({ path: join(SHOTS, "02-thread-live-pill-desktop.png") });
-  await ownerPage.click('[data-testid="new-replies-pill"]');
-  await ownerPage.waitForTimeout(600);
+  check("线程：他人回复 ≤2s 零点击直接进 DOM", appendDelay <= 2_000, `${appendDelay}ms`);
+  await ownerPage.screenshot({ path: join(SHOTS, "02-thread-live-append-desktop.png") });
+  await ownerPage.waitForTimeout(400);
   const replyVisible = await ownerPage.evaluate(
     (text) => document.body.innerText.includes(text),
     replyMarker,
   );
-  check("线程：吸收胶囊后回复内容可见", replyVisible);
+  check("线程：回复内容可见（无需点击任何提示）", replyVisible);
 
   await deletePost(BASE, managerToken, reply.id);
   const replyGoneDelay = await waitUntil(
@@ -510,7 +510,9 @@ try {
     "空闲 60s：除 presence（who/accounts）外零业务请求",
     business.length === 0,
     `window=${idleElapsed}ms requests=${requests.length} business=${business.length}` +
-      (business.length ? ` (${[...new Set(business.map((row) => row.path))].join(",")})` : ""),
+      (business.length
+        ? ` (${business.map((row) => `p${row.page}:${row.path}`).join(",")})`
+        : ""),
   );
   const restMs = await ownerPage.evaluate(async (token) => {
     const started = performance.now();
@@ -589,6 +591,7 @@ try {
   check(
     "删除事件：提醒行转「已删除」而非新增提醒",
     rowBeforeDelete >= 1 && deletedRow >= 1 && stillCredited === 0,
+    `rowBefore=${rowBeforeDelete} deletedRow=${deletedRow} stillCredited=${stillCredited}`,
   );
   check(
     "删除事件：不计未读（角标回到创建前）",

@@ -551,7 +551,9 @@ export function ThreadPage() {
                 if (atBottom) {
                   clearReplyIndicator();
                 } else {
-                  if (newReplyCountRef.current === 0) {
+                  // 跳转锚点取「本批累积中第一条新增行」；首批只有折叠计数增长
+                  // （firstAddedInScope=null）时，后续批次补捕。
+                  if (jumpTargetRef.current === null) {
                     jumpTargetRef.current = firstAddedInScope(prevPlan, nextPlan);
                   }
                   newReplyCountRef.current += added;
@@ -566,6 +568,8 @@ export function ThreadPage() {
         } else {
           commitThread(next, true);
           clearReplyIndicator();
+          // 非静默全量提交：挂起的贴底跟随标记一并作废（防跨提交残留；复核卫生项 4）。
+          followBottomRef.current = false;
         }
         setError(null);
       } catch (err) {
@@ -907,7 +911,7 @@ export function ThreadPage() {
   const replyPost = (post: PostView) => navigate(`/p/${encodeURIComponent(post.id)}?reply=1`);
   const quotePost = (post: PostView) => navigate(`/compose?quote=${encodeURIComponent(post.id)}`);
 
-  /** 离底提示点击：把第一条新回复对齐到容器顶部（已是该位则不动），清计数。 */
+  /** 离底提示点击：把第一条新回复对齐到容器顶部（不足一屏时 clamp 到底），清计数。 */
   const jumpToNew = () => {
     const container = containerRef.current;
     if (container) {
@@ -917,11 +921,17 @@ export function ThreadPage() {
             `[data-timeline-row][data-post-id="${CSS.escape(target)}"]`,
           )
         : null;
-      const top = row
+      const max = Math.max(0, container.scrollHeight - container.clientHeight);
+      const wanted = row
         ? row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
-        : Math.max(0, container.scrollHeight - container.clientHeight);
+        : max;
+      const top = Math.min(Math.max(0, wanted), max);
       programmaticTop.current = top;
       container.scrollTop = top;
+      // 跳转是「我们替用户把视口定位到新内容」：解锚并刷新首可见基线——
+      // 否则下一次同页提交/缩放会按旧锚定把视口拉回 focal（复核 B1）。
+      anchorLocked.current = false;
+      lastFirstRef.current = readFirstVisible(container);
     }
     clearReplyIndicator();
   };

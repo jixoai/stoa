@@ -60,3 +60,21 @@
     子仓推送 main `17d37c3..fb7605f`；生产检出 ff 至 `fb7605f`；主仓 E2E 索引 `62f81a49`；
     指针更新 `7de3b620`（task/report-worker-v0）。同批卫生：归档 report-thread-nesting `523a50f`、
     清理 report-share-actions 归档残留 `fb7605f`。
+
+
+## P2. 对抗复核修复（2026-11-09 代码复核 7/10，两阻塞项修复后复核结论由证据替代）
+
+- [x] P2-1. **B1 跳转未解锚**（实测复现：跳转后下一次同页提交/resize 被 anchorNow 拉回 focal）：
+  `jumpToNew` 写位后补 `anchorLocked=false` + `lastFirstRef` 刷新 + `programmaticTop` 记实际 clamp 值。
+  回归断言入 `thread-scope.mjs`：「跳转后 resize 不回弹」「跳转后新提交不回弹」（两视口 PASS；
+  after2 **82/82**）。
+- [x] P2-2. **B2 既有 QA 资产失配**：`thread-timeline.mjs` C 块按新语义拆为 C1（零点击追加 + 视口不打扰）
+  / C2（点击跳转 clamp 到底）；`event-hub-client.mjs` §2 改「≤2s 零点击进 DOM」（原旧胶囊语义会崩）。
+  两视口 C1/C2 PASS；event-hub 38/40（2 项为 §2 崩溃期长期不可达、修复后首次暴露的既有失败，
+  已补详情参数登记：空闲 60s 出现 1 次 /api/notifications 补拉；删除提醒行断言）。
+- [x] P2-3. 观察项修复：#1 跳转锚点跨批补捕（null 才写）；#4 非静默提交清 follow 标记；
+  #5 补「滚回底部清提示」与「计数重置」断言。
+- [x] P2-4. 复核修复包部署：`app-CjqcQagr.js`（www+alpha 同产物，sha256 三面一致）；生产只读 smoke
+  两视口复跑通过（bundleNew / 初始无提示 / 0 console error）。
+- [x] P2-5. 既有失败登记（另立项修复）：`thread-timeline` ⑨/V3/子线程导航（子线程入口 count=0——
+  thread-depth 后服务端不再截断深子树，夹具需重造）；event-hub §6/删除两检查（§2 崩溃期不可达）。

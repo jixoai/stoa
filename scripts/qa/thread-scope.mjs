@@ -572,6 +572,37 @@ async function runViewport(browser, spec) {
     `pill=${awayPill.count} text="${awayPill.text}"`,
   );
   shots.appendAway = await shot(6, "reply-appended-away-hint");
+
+  // ③b 手动滚回底部：离底提示完成使命自动清除（复核观察项 5）。
+  await scrollTo("bottom");
+  await wait(page, 400);
+  const clearedPill = await pillState(page);
+  check(
+    label,
+    "P1 滚回底部：离底提示自动清除",
+    clearedPill.count === 0,
+    `pill=${clearedPill.count} text="${clearedPill.text}"`,
+  );
+
+  // ④ 离底再收一条（提示计数从 0 重新起算）→ 点击跳转；跳转后 resize 与下一次
+  // 同页提交都不得把视口拉回 focal（复核 B1 回归：修复前 anchorNow 会回弹）。
+  await scrollTo("top");
+  await wait(page, 400);
+  const awayFetch2 = waitForThreadFetch(page);
+  const awayNew2 = await createReply(
+    managerToken,
+    P.tail,
+    `PILL-${label}-R1C 尾部新回复（自动追加 + 跳转锚点）。`,
+  );
+  const awayLoaded2 = await awayFetch2;
+  await wait(page, 800);
+  const awayPill2 = await pillState(page);
+  check(
+    label,
+    "P1 离底再收一条：自动追加且提示计数重置为 1",
+    awayLoaded2 && awayPill2.count === 1 && awayPill2.text === "1 条新回复",
+    `threadFetch=${awayLoaded2} pill=${awayPill2.count} text="${awayPill2.text}"`,
+  );
   // 点击前的跳转期望：把第一条新回复对齐到容器顶；不足一屏时自然被 max 收 clamp。
   const jumpExpect = await page.evaluate((newId) => {
     const container = document.querySelector('[data-testid="thread-scroll"]');
@@ -584,14 +615,14 @@ async function runViewport(browser, spec) {
       target: rowRect.top - containerRect.top + container.scrollTop,
       max: container.scrollHeight - container.clientHeight,
     };
-  }, awayNew);
-  if (awayPill.count) {
-    await awayPill.pill.first().click();
+  }, awayNew2);
+  if (awayPill2.count) {
+    await awayPill2.pill.first().click();
     await wait(page, 800);
   }
   const jumpScope = await page.evaluate(READ_SCOPE);
   const jumpPill = await pillState(page);
-  const jumpRow = jumpScope.rows.find((row) => row.postId === awayNew);
+  const jumpRow = jumpScope.rows.find((row) => row.postId === awayNew2);
   const jc = jumpScope.container;
   const expectedTop = Math.min(jumpExpect.target, jumpExpect.max);
   check(
@@ -605,6 +636,46 @@ async function runViewport(browser, spec) {
     `scrollTop=${jc.scrollTop.toFixed(1)} expected=${expectedTop.toFixed(1)} (target=${jumpExpect.target.toFixed(1)} max=${jumpExpect.max.toFixed(1)}) row=${jumpRow ? `${jumpRow.top.toFixed(0)}..${jumpRow.bottom.toFixed(0)}` : "missing"} pill=${jumpPill.count}`,
   );
   shots.jumpAfter = await shot(7, "reply-jump-after-click");
+
+  // ④b B1 回归：跳转后 resize → 首可见行/滚动位不被拉回 focal。
+  const preResizeTop = jc.scrollTop;
+  const preResizeFirst = firstVisibleRow(jumpScope);
+  await page.setViewportSize({ width: viewport.width, height: viewport.height - 60 });
+  await wait(page, 500);
+  const resizedScope = await page.evaluate(READ_SCOPE);
+  const resizedFirst = firstVisibleRow(resizedScope);
+  check(
+    label,
+    "P1 跳转后 resize：视口不被拉回 focal（首可见行 ±2px、scrollTop 不回落）",
+    resizedScope.container.scrollTop >= preResizeTop - 2 &&
+      Boolean(preResizeFirst && resizedFirst) &&
+      preResizeFirst.id === resizedFirst.id &&
+      Math.abs(preResizeFirst.top - resizedFirst.top) <= 2,
+    `scrollTop ${preResizeTop.toFixed(1)}→${resizedScope.container.scrollTop.toFixed(1)} first=${preResizeFirst?.id ?? "?"}@${preResizeFirst?.top.toFixed(1) ?? "?"}→${resizedFirst?.id ?? "?"}@${resizedFirst?.top.toFixed(1) ?? "?"}`,
+  );
+  await page.setViewportSize({ width: viewport.width, height: viewport.height });
+  await wait(page, 300);
+
+  // ④c B1 回归：跳转后下一条同页新回复 → 零点击进 DOM 且视口不回 focal。
+  const commitFetch = waitForThreadFetch(page);
+  const postJumpNew = await createReply(
+    managerToken,
+    P.tail,
+    `PILL-${label}-R1D 跳转后新回复（不得回弹 focal）。`,
+  );
+  await commitFetch;
+  await wait(page, 800);
+  const afterCommitScope = await page.evaluate(READ_SCOPE);
+  const afterCommitFirst = firstVisibleRow(afterCommitScope);
+  check(
+    label,
+    "P1 跳转后新提交：新回复零点击进 DOM 且视口不回 focal",
+    afterCommitScope.postIds.includes(postJumpNew) &&
+      afterCommitScope.container.scrollTop >= preResizeTop - 2 &&
+      Boolean(afterCommitFirst) &&
+      afterCommitFirst.id !== P.root,
+    `scrollTop=${afterCommitScope.container.scrollTop.toFixed(1)} first=${afterCommitFirst?.id ?? "?"} newVisible=${afterCommitScope.postIds.includes(postJumpNew)}`,
+  );
 
   // ── P2 祖先逃生：点击 B1 → B1 子树；再点 root → 兄弟分支可见 ────────────────
   await page

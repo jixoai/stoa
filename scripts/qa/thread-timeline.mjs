@@ -39,7 +39,7 @@ import { chromium } from "playwright-core";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { accountToken, apiJson, authSecret, ensureQa } from "./lib/qa-env.mjs";
+import { accountToken, apiJson, argValue, authSecret, ensureQa } from "./lib/qa-env.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHOT_DIR = resolve(HERE, "../../src/ui/.qa/thread-timeline");
@@ -711,27 +711,68 @@ async function runViewport(browser, spec) {
     `${before.anchorId}@${before.offsetPx.toFixed(1)} → ${after.anchorId}@${after.offsetPx.toFixed(1)} anchorMode=${afterGeometry.anchor}`,
   );
 
-  // ── 解锁后的数据更新：保持首可见行（design §4.2.7）───────────────────────────
+  // ── 解锁后的数据更新（report-thread-live-append 新语义）：零点击自动追进 DOM，
+  //    离底时视口不动 + 出「新回复」提示；点击提示＝跳转（旧「点击才合并」已废除）──
   const mergeTag = `TL1-MERGE-${label}-${Date.now()}`;
   await createReply(managerToken, F.focal, `${mergeTag} 合并窗口新回复。`);
-  await page.waitForSelector('[data-testid="new-replies-pill"]', { timeout: 12_000 });
-  const beforeMerge = firstVisible(await page.evaluate(READ_GEOMETRY));
+  await page.waitForFunction(
+    (tag) => document.querySelector('[data-testid="thread-scroll"]')?.innerText.includes(tag),
+    mergeTag,
+    { timeout: 12_000 },
+  );
+  const appendedGeometry = await page.evaluate(READ_GEOMETRY);
+  const appended = firstVisible(appendedGeometry);
+  const appendedFocal = appendedGeometry.rows.find((row) => row.kind === "focal");
+  check(
+    label,
+    "C1 解锁后新回复：零点击自动追加、视口不打扰（首可见行/偏移 ±2、未被拉回 focal）",
+    after.anchorId !== null &&
+      appended.anchorId === after.anchorId &&
+      Math.abs(appended.offsetPx - after.offsetPx) <= 2 &&
+      appendedGeometry.bodyText.includes(mergeTag) &&
+      Boolean(appendedFocal) &&
+      appendedFocal.top > appendedGeometry.container.top + 10,
+    `${after.anchorId}@${after.offsetPx.toFixed(1)} → ${appended.anchorId}@${appended.offsetPx.toFixed(1)} focalTop=${appendedFocal ? (appendedFocal.top - appendedGeometry.container.top).toFixed(1) : "?"}`,
+  );
+  const mergePillText = await page
+    .locator('[data-testid="new-replies-pill"]')
+    .innerText()
+    .then((text) => text.replace(/\s+/g, " ").trim())
+    .catch(() => "");
+  check(
+    label,
+    "C1 离底新回复：出现「1 条新回复」提示",
+    mergePillText.includes("1 条新回复"),
+    `pill="${mergePillText}"`,
+  );
+  const jumpTarget = await page.evaluate((tag) => {
+    const container = document.querySelector('[data-testid="thread-scroll"]');
+    const row = [...container.querySelectorAll("[data-timeline-row][data-post-id]")].find((item) =>
+      item.innerText.includes(tag),
+    );
+    if (!row) return null;
+    const rowRect = row.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    return {
+      target: rowRect.top - containerRect.top + container.scrollTop,
+      max: container.scrollHeight - container.clientHeight,
+    };
+  }, mergeTag);
   await page.click('[data-testid="new-replies-pill"]');
   await wait(page, 700);
   const afterMergeGeometry = await page.evaluate(READ_GEOMETRY);
-  const afterMerge = firstVisible(afterMergeGeometry);
-  const mergedFocal = afterMergeGeometry.rows.find((row) => row.kind === "focal");
-  const mergedText = afterMergeGeometry.bodyText.includes(mergeTag);
+  const mergedRow = afterMergeGeometry.rows.find((row) => row.text.includes(mergeTag));
+  const expectedJump = jumpTarget ? Math.min(jumpTarget.target, jumpTarget.max) : Number.NaN;
   check(
     label,
-    "C 解锁后合并新回复：首可见行/偏移 ±2、未被拉回 focal",
-    beforeMerge.anchorId !== null &&
-      beforeMerge.anchorId === afterMerge.anchorId &&
-      Math.abs(afterMerge.offsetPx - beforeMerge.offsetPx) <= 2 &&
-      mergedText &&
-      Boolean(mergedFocal) &&
-      mergedFocal.top > afterMergeGeometry.container.top + 10,
-    `${beforeMerge.anchorId}@${beforeMerge.offsetPx.toFixed(1)} → ${afterMerge.anchorId}@${afterMerge.offsetPx.toFixed(1)} focalTop=${mergedFocal ? (mergedFocal.top - afterMergeGeometry.container.top).toFixed(1) : "?"}`,
+    "C2 点击提示：滚动到第一条新回复（不足一屏 clamp 到底）、提示清除",
+    jumpTarget !== null &&
+      Math.abs(afterMergeGeometry.container.scrollTop - expectedJump) <= 2 &&
+      Boolean(mergedRow) &&
+      mergedRow.top >= afterMergeGeometry.container.top - 2 &&
+      mergedRow.bottom <= afterMergeGeometry.container.top + afterMergeGeometry.container.clientHeight + 2 &&
+      (await page.locator('[data-testid="new-replies-pill"]').count()) === 0,
+    `scrollTop=${afterMergeGeometry.container.scrollTop.toFixed(1)} expected=${expectedJump.toFixed(1)} row=${mergedRow ? `${mergedRow.top.toFixed(0)}..${mergedRow.bottom.toFixed(0)}` : "missing"}`,
   );
 
   // ── B2 种子阶段幻影子线程入口：延迟线程接口，确保真的落在 seed 窗口 ──────────
@@ -1311,14 +1352,15 @@ async function runViewport(browser, spec) {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 let browser = null;
-const evidence = { base: BASE, dataDir: qa.dataDir, servePid: qa.info?.pid ?? null, fixtures: F, viewports: {} };
+const onlyViewport = argValue(process.argv.slice(2), "viewport", null);
+const evidence = { base: BASE, dataDir: qa.dataDir, servePid: qa.info?.pid ?? null, fixtures: F, viewports: {}, onlyViewport };
 try {
   mkdirSync(SHOT_DIR, { recursive: true });
   browser = await chromium.launch({ channel: "chrome" });
   for (const spec of [
     { label: "mobile", viewport: { width: 390, height: 844 }, mobile: true },
     { label: "desktop", viewport: { width: 1280, height: 900 }, mobile: false },
-  ]) {
+  ].filter((spec) => !onlyViewport || spec.label === onlyViewport)) {
     const out = await runViewport(browser, spec);
     evidence.viewports[spec.label] = out;
   }
