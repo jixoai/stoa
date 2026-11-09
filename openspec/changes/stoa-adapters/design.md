@@ -32,7 +32,7 @@ adapters/（本仓，中性发布面）
   兼容 `~/.config/fde2e/report-channel.json` > 默认 `http://127.0.0.1:13689`。
 - 提示：`stoa mcp` 不打印凭据；错误收敛为 MCP `isError` 文本（与现插件语义一致）。
 
-## §3 `adapters/zcode/`（插件标准迁入 + hooks 自动化）
+## §3 `adapters/zcode/stoa/`（插件标准迁入 + hooks 自动化；插件根目录名=manifest name，满足 plugin-creator 标准）
 
 - **插件标准（Owner 2026-11-10 指令：按 plugin-creator 标准开发）**：`.zcode-plugin/plugin.json`
   （name=`stoa`；components 只声明真实资源 `skills`/`commands`/`hooks`/`mcpServers`/`ui.surfaces`；
@@ -59,7 +59,7 @@ adapters/（本仓，中性发布面）
 
 | harness | 模式 | 扩展点 | 适配器形态 | 验证 |
 |---|---|---|---|---|
-| ZCode | **插件/hook** | `.zcode-plugin/plugin.json`（plugin-creator 标准）+ hooks（含 **Stop** 自动等待注入）+ commands/skills + MCP 薄桥 | `adapters/zcode`（插件标准迁入） | `stoa mcp` 冒烟（含 resources/panel）＋ watch/state-path 沙箱冒烟 ＋ Stop 钩子输入/输出契约冒烟 |
+| ZCode | **插件/hook** | `adapters/zcode/stoa/` 下的 `.zcode-plugin/plugin.json`（plugin-creator 标准）+ hooks（含 **Stop** 自动等待注入）+ commands/skills + MCP 薄桥 | `adapters/zcode`（插件标准迁入） | `stoa mcp` 冒烟（含 resources/panel）＋ watch/state-path 沙箱冒烟 ＋ Stop 钩子输入/输出契约冒烟 |
 | Codex（codex-cli 0.166 已装） | MCP/CLI | `~/.codex/config.toml` `[mcp_servers.*]`（`codex mcp add`）＋ `AGENTS.md` | README + `config.toml` 片段 + `AGENTS.md` 片段（**须含 stop 前 wait 纪律**） | `codex mcp list`（配置加载）＋（可行时）`codex exec` 真调用 roundtrip |
 | DeepSeekHarness（dsh） | MCP（创造模式安装） | 创造模式 Plugin Manager `install_bundle`；`@deepseek-ai/dsh-mcp-client` **支持 stdio**（`packages/mcp/mcp-client/README.zh.md`） | README（创造模式安装 prompt＋配置组合包 YAML：`transport: stdio, command: bun, args: ["<repo>/src/cli/main.ts","mcp"]`）＋ instructions（**含 stop 前 wait 纪律**） | 与 dsh `docs/user/develop/practice/dynamic-cordis.zh.md`、`packages/mcp/mcp-client/README.zh.md` 对齐（注明路径/版本）；运行态 smoke 登记（需 dsh 安装） |
 | Keel（jixoai/keel） | MCP/CLI | `mcp.json`（`mcpServers` 形状，`KEEL_MCP_CONFIG`/`KEEL_MCP_PROJECT`）＋ `KEEL_SKILLS_ROOTS` | `mcp.json.example` + `SKILL.md` + README（**含 stop 前 wait 纪律**） | 配置形状与 `keel/internal/mcp/config.go` 源确证一致；运行态 smoke 登记 |

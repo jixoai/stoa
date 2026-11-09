@@ -14,7 +14,7 @@ Codex / DeepSeekHarness / Keel 三个适配器完全未开发；MCP server 也�
   兼容 `FDE2E_REPORT_*` / `REPORT_CHANNEL_*` > `~/.config/stoa/report-channel.json` >
   兼容 `~/.config/fde2e/report-channel.json`。
 - **`adapters/` 目录（中性发布面）**：
-  - `adapters/zcode/`：现 `plugins/report-channel` 按 **plugin-creator 标准**迁入
+  - `adapters/zcode/stoa/`：现 `plugins/report-channel` 按 **plugin-creator 标准**迁入
     （`.zcode-plugin/plugin.json` + commands/skills/hooks/watch/state-path/session-start/
     report-to-article），MCP server 改为薄桥接 `stoa mcp`；**新增 Stop 钩子**实现「自动等待
     wait-notifications → 消息注入续跑」（插件模式：模型零学习）；配置与 state 路径主用

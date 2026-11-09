@@ -16,7 +16,7 @@
 
 ## P1. 适配器
 
-- [ ] P1-4. `adapters/zcode/`（Owner 2026-11-10：按 plugin-creator 标准开发）：`.zcode-plugin/plugin.json`
+- [ ] P1-4. `adapters/zcode/stoa/`（Owner 2026-11-10：按 plugin-creator 标准开发）：`.zcode-plugin/plugin.json`
   （name=`stoa`，资源路径在插件根内，`${CLAUDE_PLUGIN_ROOT}` 占位）+ `.mcp.json` 薄桥 `stoa mcp`
   + commands/skills/scripts（watch/state-path/session-start/report-to-article）；config/state 路径新主用
   + 旧路径回退；**新增 Stop 钩子 `scripts/stop-wait.mjs`**（有界 wait-notifications → 新消息输出

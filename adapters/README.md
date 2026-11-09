@@ -10,11 +10,11 @@
 
 | harness | 模式 | 扩展点 | 标志文件 | 验证状态 |
 |---|---|---|---|---|
-| ZCode | **插件/hook** | `plugins.dirs` 插件目录（plugin-creator 标准）＋ hooks（含 **Stop 自动等待**）＋ commands/skills ＋ MCP 薄桥（插件内启动器，`STOA_REPO` 解析） | `adapters/zcode/.zcode-plugin/plugin.json`、`.mcp.json`、`hooks/hooks.json` | 见 `adapters/zcode` 与核心 `stoa mcp`；收口方更新最终状态 |
+| ZCode | **插件/hook** | `plugins.dirs` 插件目录（plugin-creator 标准）＋ hooks（含 **Stop 自动等待**）＋ commands/skills ＋ MCP 薄桥（启动器三档：`STOA_REPO` > 插件内相对 > `bunx @jixoai/stoa`） | `adapters/zcode/stoa/.zcode-plugin/plugin.json`、`.mcp.json`、`hooks/hooks.json` | 插件根 `adapters/zcode/stoa`（目录名=manifest name）；plugin-creator `preflightPlugin`＝`[]`＋`zcode plugins validate`＝`Plugin manifest is valid`；沙箱冒烟 **57/57**（Stop 两态/state 锁并发/无 dataDir 远程形态/启动器三档）；面板 `ui://stoa/board.html` |
 | Codex CLI | **MCP/CLI** | `~/.codex/config.toml` `[mcp_servers.stoa]`（`codex mcp add`）＋ `AGENTS.md` | `adapters/codex/config.toml.snippet`、`AGENTS.md.snippet` | 本机 codex-cli **0.166.0** 沙箱实测：`mcp add/list/get` 通过 ＋ `codex exec` 真调用 `board_status` roundtrip 通过（隔离后端 13685，2026-11-10） |
 | DeepSeekHarness（dsh） | **MCP（创造模式安装）** | 创造模式 `plugin_manager install_bundle`（纯配置组合包插入 `@deepseek-ai/dsh-mcp-client`）＋ `AGENTS.md` 指令链 | `adapters/deepseekharness/README.md`、`instructions.md` | 文档与 dsh `687f282e`（dsh-v0.2.1-rc.2）逐条对齐（`dynamic-cordis.zh.md`、`mcp-client/README.zh.md`）；运行态 smoke 登记为后续（需 dsh 安装） |
 | Keel（jixoai/keel） | **MCP/CLI** | `KEEL_MCP_CONFIG`/`KEEL_MCP_PROJECT` 的 `mcpServers` 形状 `mcp.json` ＋ `KEEL_SKILLS_ROOTS` 技能 | `adapters/keel/mcp.json.example`、`SKILL.md` | `mcp.json.example` 经 keel HEAD `15ae6a2` **真校验器实跑通过**（stdio 识别＋12 边界用例＋合并语义）；运行态 smoke 登记为后续 |
-| （核心）`stoa mcp` | — | stdio JSON-RPC MCP 服务（8 个 `board_*` 工具）＋ CLI（`wait-notifications`/`post`/`read`…） | `src/mcp/`、`src/cli/` | 见 `adapters/zcode` 与核心 `stoa mcp`；收口方更新最终状态 |
+| （核心）`stoa mcp` | — | stdio JSON-RPC MCP 服务（8 个 `board_*` 工具＋`resources/list|read` 面板）＋ CLI（`post`/`read`/`wait-notifications` 直连或指针两模式） | `src/mcp/`、`src/cli/` | `bun test` **561/0**（mcp 24 项）；parity **11/11**（工具 8/8 逐字、面板品牌归一后逐字、未知资源 -32602、凭据不回显）；配置来源 **7/7**（敌对 ambient 下仍绿）；协议 `-32700/-32600`、capabilities.resources、长轮询并发不阻塞 |
 
 ## 行为指令：一份内容、四份载体
 
@@ -30,7 +30,7 @@
 | Codex | `adapters/codex/AGENTS.md.snippet` | 追加进 `~/.codex/AGENTS.md` 或项目 `AGENTS.md` |
 | dsh | `adapters/deepseekharness/instructions.md` | 追加进工作区 `AGENTS.md` 或 `$DSH_HOME/AGENTS.md`（dsh 启动加载整条 AGENTS.md 链） |
 | Keel | `adapters/keel/SKILL.md` | 放进 `KEEL_SKILLS_ROOTS` 任一根；正文即行为指令（渐进披露） |
-| ZCode | `adapters/zcode/skills/report-channel/SKILL.md` ＋ **Stop 钩子**（`scripts/stop-wait.mjs`） | 插件模式：订阅等待由 Stop 钩子**自动**完成（模型零学习），SKILL.md 管汇报纪律 |
+| ZCode | `adapters/zcode/stoa/skills/stoa/SKILL.md` ＋ **Stop 钩子**（`adapters/zcode/stoa/scripts/stop-wait.mjs`） | 插件模式：订阅等待由 Stop 钩子**自动**完成（模型零学习），SKILL.md 管汇报纪律（默认本地游标；仅唯一主会话可 `--consume`） |
 
 > 改一处必须四份同步（内容上逐条等价）；收口方在 tasks/验收时交叉核对。
 
