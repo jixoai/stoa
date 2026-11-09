@@ -49,6 +49,39 @@ const bad = (label, detail = "") => {
   console.log(`FAIL ${label}${detail ? ` — ${detail}` : ""}`);
 };
 
+/**
+ * P2-2 hermetic（非 hermetic 回归）：调用者 shell 里的 stoa 配置/凭据一律不进子进程。
+ * `STOA_TOKEN`/`STOA_TOKEN_*`/`STOA_FORCE_ACCOUNT`/`STOA_CONFIG`/`REPORT_CHANNEL_*`/
+ * `FDE2E_REPORT_*` 全部清掉；每轮需要的值由 childEnv 显式注入。
+ */
+const AMBIENT_PREFIXES = ["STOA_", "REPORT_CHANNEL_", "FDE2E_REPORT_"];
+function baseEnv() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (AMBIENT_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+    env[key] = value;
+  }
+  return env;
+}
+function childEnv(overrides = {}) {
+  return { ...baseEnv(), ...overrides };
+}
+
+/**
+ * 已知品牌差异 allowlist（Owner 2026-11-07 中性化）：面板 HTML 内 MCP Apps 桥的
+ * `appInfo.name` 由旧插件的 "report-channel" 改为 "stoa"。旧侧只允许这一处文本
+ * 替换后再逐字比对——其余任何差异仍判 FAIL。
+ */
+const PANEL_BRAND_REWRITES = [
+  ['appInfo: { name: "report-channel"', 'appInfo: { name: "stoa"'],
+];
+function normalizePanelBrand(html) {
+  let out = html;
+  for (const [from, to] of PANEL_BRAND_REWRITES) out = out.split(from).join(to);
+  return out;
+}
+
 function findOldPlugin() {
   const candidates = [
     process.env.OLD_PLUGIN_DIR,
@@ -95,7 +128,7 @@ async function startBackend() {
   const wrapper = spawn(
     BUN,
     [QA_SERVE, "--data-dir", DATA_DIR, "--no-seed", "--keep", "--port", String(PORT)],
-    { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"], env: process.env },
+    { cwd: REPO_ROOT, stdio: ["ignore", "pipe", "pipe"], env: childEnv() },
   );
   wrapper.stderr.on("data", (chunk) => process.stderr.write(`[qa-serve] ${chunk}`));
   const line = await new Promise((resolveLine, rejectLine) => {
@@ -196,6 +229,7 @@ async function main() {
     spawnSync(BUN, [QA_SERVE, "--stop", "--data-dir", DATA_DIR, "--keep"], {
       cwd: REPO_ROOT,
       encoding: "utf8",
+      env: childEnv(),
     });
     try {
       backend.wrapper.kill("SIGTERM");
@@ -242,27 +276,25 @@ async function main() {
       "旧插件",
       NODE,
       [join(oldPlugin, "scripts/mcp-server.mjs")],
-      {
-        ...process.env,
+      childEnv({
         HOME: HOME_OLD,
         REPORT_CHANNEL_BASE_URL: backend.url,
         REPORT_CHANNEL_ACCOUNT: "manager",
         REPORT_CHANNEL_DATA_DIR: DATA_DIR,
         REPORT_CHANNEL_FORCE_ACCOUNT: "",
-      },
+      }),
       requestsFor(OLD_PANEL_URI),
     );
     sessions.new = await runMcpSession(
       "新核心",
       BUN,
       [CLI, "mcp"],
-      {
-        ...process.env,
+      childEnv({
         HOME: HOME_NEW,
         STOA_BASE_URL: backend.url,
         STOA_ACCOUNT: "manager",
         STOA_DATA_DIR: DATA_DIR,
-      },
+      }),
       requestsFor(NEW_PANEL_URI),
     );
   } catch (err) {
@@ -361,6 +393,9 @@ async function main() {
     } else {
       const oldHtml = String(oldContent.text ?? "");
       const newHtml = String(newContent.text ?? "");
+      // 品牌差异归一化：旧面板只允许 appInfo.name 一处 report-channel→stoa 替换。
+      const oldNormalized = normalizePanelBrand(oldHtml);
+      const residualBrand = oldNormalized.includes("report-channel");
       const bootNeedles = [
         `"baseUrl":"${backend.url}"`,
         '"account":"manager"',
@@ -375,17 +410,22 @@ async function main() {
         bad("resources/read 配置注入", `缺 ${missingInjection.join(", ")}`);
       } else if (newHtml.includes(token)) {
         bad("resources/read 凭据不回显", "HTML 中出现 token");
-      } else if (oldHtml !== newHtml) {
+      } else if (residualBrand) {
+        bad(
+          "resources/read 品牌差异 allowlist",
+          "旧面板归一化 appInfo.name 后仍有 report-channel 残留（只允许已知那一处）",
+        );
+      } else if (oldNormalized !== newHtml) {
         const sha = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
         bad(
           "resources/read HTML 逐字一致",
-          `old sha=${sha(oldHtml)} len=${oldHtml.length} / new sha=${sha(newHtml)} len=${newHtml.length}`,
+          `old(normalized) sha=${sha(oldNormalized)} len=${oldNormalized.length} / new sha=${sha(newHtml)} len=${newHtml.length}`,
         );
       } else {
         const sha = createHash("sha256").update(newHtml).digest("hex").slice(0, 16);
         ok(
           "resources/read HTML 逐字一致（注入 baseUrl/publicUrl/account，无凭据）",
-          `sha256=${sha}… len=${newHtml.length}`,
+          `sha256=${sha}… len=${newHtml.length}；品牌差异仅 appInfo.name report-channel→stoa（allowlist 归一化）`,
         );
       }
     }

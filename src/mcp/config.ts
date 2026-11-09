@@ -9,7 +9,9 @@
  *      （附加键同层：`STOA_PUBLIC_URL` / `STOA_CONFIG`）
  *   3. 兼容旧前缀：`REPORT_CHANNEL_BASE_URL` / `REPORT_CHANNEL_ACCOUNT` /
  *      `REPORT_CHANNEL_DATA_DIR` / `REPORT_CHANNEL_PUBLIC_URL` / `REPORT_CHANNEL_CONFIG`，
- *      以及 `FDE2E_REPORT_TOKEN_<ACCOUNT>`（新式 `STOA_TOKEN_<ACCOUNT>` 同层优先）
+ *      以及 `FDE2E_REPORT_TOKEN_<ACCOUNT>`（新式 `STOA_TOKEN_<ACCOUNT>` 同层优先）。
+ *      **收窄口径**：`FDE2E_REPORT_*` 只兼容 per-account token 这一个键；baseUrl /
+ *      account / dataDir / publicUrl / config 只读 `REPORT_CHANNEL_*` 旧前缀。
  *   4. accounts env 文件：配置文件 `tokenFile` 字段 → `<dataDir>/accounts/<account>.env`
  *   5. 配置文件 `~/.config/stoa/report-channel.json`（主路径）
  *   6. 兼容旧配置文件 `~/.config/fde2e/report-channel.json`（按文件存在性回退）
@@ -60,6 +62,8 @@ export interface McpConfig {
   tokenFile: string;
   /** CLI `--token` 显式直给（最高优先；绝不能进入 describeConfig/日志）。 */
   explicitToken: string;
+  /** CLI `--as`（`stoa mcp --as`）：服务级账号覆盖，高于 FORCE_ACCOUNT 与配置账号。 */
+  accountOverride?: string;
 }
 
 interface ConfigFileValues {
@@ -157,6 +161,7 @@ export function resolveMcpConfig(opts: ResolveMcpConfigOptions = {}): McpConfig 
     publicUrl,
     tokenFile,
     explicitToken: firstOf([flags.token]),
+    accountOverride: "",
   };
 }
 

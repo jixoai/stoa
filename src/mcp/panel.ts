@@ -1,7 +1,8 @@
 /**
  * 公示板侧栏面板（MCP App 资源：`ui://stoa/board.html`）。
  * 来源＝现 ZCode 插件 `plugins/report-channel/scripts/lib/panel.mjs` 的 TS 移植：
- * HTML 模板体逐字保持（仅资源 URI 更名 `ui://report-channel/board.html` → `ui://stoa/board.html`），
+ * HTML 模板体逐字保持（仅资源 URI 更名 `ui://report-channel/board.html` → `ui://stoa/board.html`，
+ * 以及 MCP Apps 桥身份 `appInfo.name` 中性化 `report-channel` → `stoa`），
  * `text/html;profile=mcp-app` 与「桥不通则降级为静态说明 + 直链」的行为不变。
  *
  * 官方口径：侧栏入口 = 清单 `ui.surfaces` + MCP `resources/read` 返回
@@ -101,7 +102,7 @@ async function callTool(name, args) {
 }
 async function connect() {
   await rpc("ui/initialize", {
-    appInfo: { name: "report-channel", version: "0.3.0" },
+    appInfo: { name: "stoa", version: "0.3.0" },
     appCapabilities: {},
     protocolVersion: "2025-06-18",
   });

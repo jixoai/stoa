@@ -237,8 +237,9 @@ export function summarizePost(cfg: McpConfig, post: RawPost): Record<string, unk
 }
 
 /**
- * 工具调用的账号解析（逐字继承旧插件 `cfgFor`）：
- * `args.as` > `STOA_FORCE_ACCOUNT`/`REPORT_CHANNEL_FORCE_ACCOUNT` > 配置账号。
+ * 工具调用的账号解析（逐字继承旧插件 `cfgFor`，并补 `stoa mcp --as` 服务级覆盖）：
+ * `args.as` > CLI `--as`（accountOverride）> `STOA_FORCE_ACCOUNT`/
+ * `REPORT_CHANNEL_FORCE_ACCOUNT` > 配置账号。
  */
 export function cfgFor(
   base: McpConfig,
@@ -246,7 +247,11 @@ export function cfgFor(
   env: Record<string, string | undefined> = process.env,
 ): McpConfig {
   const as = typeof args.as === "string" && args.as.trim() !== "" ? args.as : "";
-  const account = as || firstOf(FORCE_ACCOUNT_ENV_KEYS.map((key) => env[key])) || base.account;
+  const account =
+    as ||
+    firstOf([base.accountOverride]) ||
+    firstOf(FORCE_ACCOUNT_ENV_KEYS.map((key) => env[key])) ||
+    base.account;
   return { ...base, account };
 }
 
