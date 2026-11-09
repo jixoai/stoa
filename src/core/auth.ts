@@ -105,6 +105,11 @@ export function renderAccountEnvFile(accountId: string, token: string): string {
     `# 0600; hand this file to that account only. Never merge accounts.`,
     `STOA_ACCOUNT=${accountId}`,
     `${accountTokenEnvKey(accountId)}=${token}`,
+    // Compatibility alias: older readers look the pre-rename key up BY NAME
+    // (e.g. the ZCode report-channel plugin's config.mjs reads
+    // FDE2E_REPORT_TOKEN_<ACCOUNT> from this file). Drop this line once that
+    // plugin migrates to STOA_* (change stoa-adapters).
+    `${legacyAccountTokenEnvKey(accountId)}=${token}`,
     "",
   ].join("\n");
 }

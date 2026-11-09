@@ -7,10 +7,12 @@ import {
   deriveSigningKey,
   legacyAccountTokenEnvKey,
   maskSecret,
+  renderAccountEnvFile,
   sha256Hex,
   signAccessToken,
   verifyAccessToken,
 } from "../src/core/auth.ts";
+import { parseEnv } from "../src/core/env.ts";
 import { AuthManager } from "../src/server/auth.ts";
 import { ReportError } from "../src/core/errors.ts";
 import {
@@ -354,6 +356,14 @@ describe("env double read (stoa-identity §3)", () => {
   test("account token keys: STOA_TOKEN_* preferred, legacy FDE2E_REPORT_TOKEN_* still read", () => {
     expect(accountTokenEnvKey("sub-a")).toBe("STOA_TOKEN_SUB_A");
     expect(legacyAccountTokenEnvKey("sub-a")).toBe("FDE2E_REPORT_TOKEN_SUB_A");
+  });
+
+  test("rendered account env file carries the new key and a legacy alias (plugin compat)", () => {
+    const rendered = renderAccountEnvFile("sub-a", "tok-123");
+    const values = parseEnv(rendered);
+    expect(values.STOA_ACCOUNT).toBe("sub-a");
+    expect(values[accountTokenEnvKey("sub-a")]).toBe("tok-123");
+    expect(values[legacyAccountTokenEnvKey("sub-a")]).toBe("tok-123");
   });
 
   test("AuthManager: STOA_AUTH wins over the legacy key; legacy alone still enables auth", () => {

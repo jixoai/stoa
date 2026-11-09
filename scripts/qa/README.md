@@ -133,9 +133,10 @@ Behaviour:
   `src/ui/.qa/cleanup-reply-qa.mjs`) **require** `REPORT_QA_BASE` and exit with
   instructions otherwise — they must not silently start a board that disappears
   when the script ends.
-- Scripts read the login secret (`FDE2E_REPORT_AUTH`) and account tokens only
-  from the isolated data dir (`<dataDir>/.env`, `<dataDir>/accounts/*.env`) and
-  never print them.
+- Scripts read the login secret (`STOA_AUTH`; legacy `FDE2E_REPORT_AUTH` is also accepted)
+  and account tokens only from the isolated data dir (`<dataDir>/.env`,
+  `<dataDir>/accounts/*.env`, `STOA_TOKEN_*` with the legacy `FDE2E_REPORT_TOKEN_*` fallback)
+  and never print them.
 
 Old paths `src/ui/.qa/notifications-read.mjs`, `src/ui/.qa/reply-composer.mjs`,
 `src/ui/.qa/overlay-back.mjs` and `src/ui/.qa/account-bookmarks.mjs` are thin
@@ -228,7 +229,8 @@ Prerequisites (full run):
   `bun run build` before A3; pass `--no-build` to reuse an existing build.
 - The driver auto-starts `scripts/qa/qa-serve.mjs` with an empty
   `/tmp/report-qa-*` board and sets
-  `FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS=<fixture main origin>` for that
+  `STOA_PREVIEW_TEST_ALLOW_ORIGINS=<fixture main origin>` (legacy
+  `FDE2E_REPORT_PREVIEW_TEST_ALLOW_ORIGINS` is also read) for that
   child only. The fixture's second loopback listener is deliberately NOT
   allowlisted (A8).
 

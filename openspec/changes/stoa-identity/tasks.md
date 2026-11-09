@@ -19,10 +19,14 @@
   - 判据证据（commit `d6aea4f`）：`src/core/env.ts` 新增 `envKeys/envValue`（新前缀优先、旧键回退、
     空值视为未设置）；`init` 新生成 env/凭据文件写 `STOA_*`（`STOA_AUTH`/`STOA_SECRET`/`STOA_ACCOUNT`/
     `STOA_TOKEN_<ID>`），旧键全链继续被读；`scripts/check.mjs` 不读旧键（无需适配，已核）。
+    **兼容桥**：新生成的账号凭据文件在写入新键后**追加一行旧键别名**（同一 token）——我方
+    ZCode 插件 `plugins/report-channel/scripts/lib/config.mjs:51` 按**旧键名逐行解析**该文件，
+    只写新键会让「新建账号 + 现插件」读不到凭据；该行已注明待插件迁出（stoa-adapters）后删除
+    （测试 `test/auth.test.ts` 断言该别名存在）。
     **兼容冒烟两轮**（脚本 `/tmp/stoa-compat-smoke.sh`；数据目录 key 物理替换为旧前缀 vs init 新前缀）：
     `/healthz ok`、`/api/auth/status mode=auth`、登录换 token、`CLI who --as owner`（凭据文件 legacy
-    token 解析）——**13/13 PASS**；新增单测覆盖双读优先/回退（auth 4 例、DATA_DIR/PUBLIC_ROOTS、
-    hub `STOA_HUB_MAX_STREAM_MS`、FILEVIEWER_BASE）；`test/e2e-cli.sh` S11 改两轮（轮1 旧键、轮2 新键）。
+    token 解析）——**14/14 PASS**（含新账号文件保留旧键别名的断言）；新增单测覆盖双读优先/回退（auth 5 例、
+    DATA_DIR/PUBLIC_ROOTS、hub `STOA_HUB_MAX_STREAM_MS`、FILEVIEWER_BASE）；`test/e2e-cli.sh` S11 改两轮（轮1 旧键、轮2 新键）。
     发现 UA：`fde2e-report-link-preview/1.0` → `stoa-link-preview/1.0`（fixture/报告同步）。
 - [x] P1-4. 品牌面清扫：`src/ui/index.html` 标题、README 全面重写（英文定位 + 中文点睛；「X 式」仅副标题一次；
   删 FDE2E 内部链接）；`LICENSE`（Apache-2.0 原文）入库。
@@ -46,11 +50,12 @@
     与两处「认证」requirement 也字面引用本次改名的键，故一并立 delta（否则归档后 specs 与实现不符）。
 - [x] P1-6. 绿门与兼容回归：`bun test`、`check`、`typecheck:ui`、`build`；`thread-scope`（82/82）、
   `thread-nesting`（30/30）不回归；qa-serve 新旧前缀各起一轮冒烟。
-  - 判据证据（本 commit）：`bun test` **493 pass / 0 fail**（50 files、10710 expect；基线 489/0，
-    +4 双读新断言）；`bun run check` passed（tsc + 50 routes/20 commands + security lint 74 files +
+  - 判据证据（本 commit）：`bun test` **494 pass / 0 fail**（50 files、10713 expect；基线 489/0，
+    +5 双读/兼容桥新断言）；`bun run check` passed（tsc + 50 routes/20 commands + security lint 74 files +
     ui-lint 0 violations）；`bun run typecheck:ui` rc=0；`bun run build` ✓（dist `<title>Stoa</title>`）；
     `bun scripts/qa/thread-scope.mjs` **74/74**（mobile+desktop；live-append 的 P1/P4 零点击追加、
-    无幻影胶囊全过），`thread-nesting.mjs` **30/30**；qa-serve 新旧前缀冒烟终版树复跑 **13/13**。
+    无幻影胶囊全过），`thread-nesting.mjs` **30/30**；qa-serve 新旧前缀冒烟 **14/14**。
+    以上均在本 change **终版树**（含兼容桥修复）复跑。
     **数字勘误**：tasks/design 写的 `thread-scope 82/82` 与仓内证据不符——归档 change
     `2026-11-09-report-thread-live-append/tasks.md` 记录 before 66/66、after **74/74**（即 live-append
     上线后的唯一有据计数），本 change 未改 QA 脚本与线程逻辑；74/74 判定为不回归。
