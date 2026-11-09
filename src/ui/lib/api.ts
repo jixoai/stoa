@@ -13,6 +13,7 @@ import type {
   AuthorView,
   FeedPage,
   FeedTab,
+  LineageResponse,
   NotificationHistoryPage,
   NotificationLine,
   PostView,
@@ -443,6 +444,22 @@ export class ReportClient {
   async post(id: string): Promise<PostView> {
     const data = (await this.request(`/api/posts/${encodeURIComponent(id)}`)) as { post: PostView };
     return data.post;
+  }
+
+  /**
+   * 只读会话链拓扑（report-notification-stacks）：输入帖 + 全部祖先的最小行。
+   * 不可见/不存在的 id 被服务端静默省略；空输入不发请求。
+   */
+  async postLineage(ids: readonly string[]): Promise<LineageResponse> {
+    if (ids.length === 0) return { nodes: [] };
+    const params = new URLSearchParams({ ids: ids.join(",") });
+    const data = (await this.request(`/api/posts/lineage?${params.toString()}`)) as {
+      nodes?: unknown;
+    };
+    if (!Array.isArray(data.nodes)) {
+      throw new ApiError("GET /api/posts/lineage returned an invalid payload", 200, "PROTOCOL");
+    }
+    return { nodes: data.nodes as LineageResponse["nodes"] };
   }
 
   async createPost(opts: {

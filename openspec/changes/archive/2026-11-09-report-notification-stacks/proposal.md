@@ -76,6 +76,9 @@
 
 若 `report-thread-scope` 最终已提供等价的祖先读取接口（例如线程响应携带完整祖先链），本
 change 优先复用并删除 lineage 端点的 P1 任务；否则按 design §4 新增该只读端点。
+**落地判定（2026-11-09，见 tasks P0-3 / design D16）**：`GET /api/thread/:id` 携带 focal
+全祖先链但为 root 级全量水合且按 root 逐请求（10 roots → 10 次请求），不满足
+「一张通知页 1 次批量、100 通知 O(n)」→ 保留 lineage 端点（无等价替代）。
 
 ## 影响面
 

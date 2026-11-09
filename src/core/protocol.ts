@@ -12,6 +12,10 @@ export const READS_BATCH_LIMIT = 100;
 export const READS_QUERY_LIMIT = 200;
 export const READ_POST_ID_MAX_CHARS = 128;
 
+/** 只读拓扑接口输入上限与防御性深度上限（report-notification-stacks design §4.2）。 */
+export const LINEAGE_IDS_LIMIT = 200;
+export const LINEAGE_DEPTH_LIMIT = 64;
+
 export const CLI_COMMANDS = [
   "capabilities",
   "init",
@@ -57,6 +61,8 @@ export const API_ROUTES: ReadonlyArray<{ method: string; path: string }> = [
   { method: "POST", path: "/api/follow/:account" },
   { method: "DELETE", path: "/api/follow/:account" },
   { method: "GET", path: "/api/thread/:id" },
+  // 只读会话链拓扑（report-notification-stacks）；必须先于 `/api/posts/:id` 注册。
+  { method: "GET", path: "/api/posts/lineage" },
   { method: "GET", path: "/api/posts/:id" },
   { method: "POST", path: "/api/posts" },
   { method: "POST", path: "/api/posts/:id/replies" },
@@ -116,6 +122,8 @@ export interface Capabilities {
     preview_events: boolean;
     /** 服务端按帖已读（`post_reads` + /api/reads 三端点；PostView.read/read_at） */
     post_reads: boolean;
+    /** 只读会话链拓扑（`GET /api/posts/lineage`；通知叠放分组用） */
+    post_lineage: boolean;
   };
   limits: {
     body_chars: number;
@@ -128,6 +136,8 @@ export interface Capabilities {
     reads_batch: number;
     /** `GET /api/reads?ids=` 单次最大 id 数 */
     reads_query: number;
+    /** `GET /api/posts/lineage?ids=` 单次最大 id 数（去重后） */
+    lineage_ids: number;
   };
 }
 
@@ -155,6 +165,7 @@ export function capabilities(): Capabilities {
       preview_fields: true,
       preview_events: true,
       post_reads: true,
+      post_lineage: true,
     },
     limits: {
       body_chars: 200_000,
@@ -165,6 +176,7 @@ export function capabilities(): Capabilities {
       port_range: [PORT_MIN, PORT_MAX],
       reads_batch: READS_BATCH_LIMIT,
       reads_query: READS_QUERY_LIMIT,
+      lineage_ids: LINEAGE_IDS_LIMIT,
     },
   };
 }

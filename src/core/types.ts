@@ -333,6 +333,24 @@ export interface NotificationHistoryPage {
   next_before: number | null;
 }
 
+/**
+ * `GET /api/posts/lineage?ids=…` 的最小行（report-notification-stacks design §4.2）：
+ * 输入帖 + 全部祖先，无正文/媒体。`deleted_at` 非 null 的软删祖先照常返回
+ * （叠分组需要「穿过删除链路但不把删除节点当锚」）。
+ */
+export interface LineageNode {
+  id: string;
+  parent_id: string | null;
+  root_id: string;
+  deleted_at: number | null;
+  created_at: number;
+  seq: number;
+}
+
+export interface LineageResponse {
+  nodes: LineageNode[];
+}
+
 export interface WhoEntry extends AuthorView {
   online: boolean;
   last_seen: number | null;

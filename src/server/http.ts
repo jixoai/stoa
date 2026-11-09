@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { errorMessage, fail, ReportError } from "../core/errors.ts";
-import { capabilities, READ_POST_ID_MAX_CHARS, READS_BATCH_LIMIT, READS_QUERY_LIMIT } from "../core/protocol.ts";
+import { capabilities, LINEAGE_IDS_LIMIT, READ_POST_ID_MAX_CHARS, READS_BATCH_LIMIT, READS_QUERY_LIMIT } from "../core/protocol.ts";
 import { parseLimit, parseTime } from "../core/pagination.ts";
 import { validateWriteOp, assertBody, MAX_MEDIA_BYTES, MEDIA_TYPES, ALLOWED_EXTS, EXT_CONTENT_TYPE } from "../core/validation.ts";
 import type { Account, NotificationLine, Role, WriteOp } from "../core/types.ts";
@@ -643,6 +643,26 @@ export function createApp(deps: AppDeps): Hono {
     });
     if (!thread) fail("NOT_FOUND", "thread not found");
     return c.json({ ok: true, thread });
+  });
+
+  // 只读会话链拓扑（report-notification-stacks design §4.2）：输入帖 + 全部祖先的
+  // 最小行。必须先于 `/api/posts/:id` 注册（同前缀静态段优先）。纯读：不动游标。
+  app.get("/api/posts/lineage", (c) => {
+    const account = identity(c, deps);
+    const raw = c.req.query("ids");
+    if (raw === undefined || raw.trim() === "") return c.json({ ok: true, nodes: [] });
+    const parts = raw.split(",").map((part) => part.trim());
+    if (parts.some((id) => id === "")) fail("BAD_REQUEST", "ids must not contain empty segments");
+    if (parts.length > LINEAGE_IDS_LIMIT) {
+      fail("BAD_REQUEST", `ids exceeds ${LINEAGE_IDS_LIMIT} ids`);
+    }
+    for (const id of parts) readPostId(id, "ids[]");
+    const unique = [...new Set(parts)];
+    if (unique.length > LINEAGE_IDS_LIMIT) {
+      fail("BAD_REQUEST", `ids exceeds ${LINEAGE_IDS_LIMIT} unique ids`);
+    }
+    const nodes = deps.store.postLineage({ viewer: viewer(account), ids: unique });
+    return c.json({ ok: true, nodes });
   });
 
   app.get("/api/posts/:id", (c) => {

@@ -14,6 +14,7 @@ import type {
   AuthorView,
   FeedPage,
   FeedTab,
+  LineageResponse,
   MediaRef,
   NotificationHistoryPage,
   PostView,
@@ -715,6 +716,11 @@ export class StaticReportClient extends ReportClient {
     const post = this.postsById.get(id);
     if (!post) throw new ApiError(`post "${id}" not found`, 404, "NOT_FOUND");
     return this.hydrate(post);
+  }
+
+  /** 静态归档没有通知事件流（也就没有叠放）：恒返回空集合，且零 fetch。 */
+  override async postLineage(_ids: readonly string[]): Promise<LineageResponse> {
+    return { nodes: [] };
   }
 
   override async search(q: string, limit = 30): Promise<PostView[]> {

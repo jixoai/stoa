@@ -23,6 +23,7 @@ import {
   type PageDirection,
 } from "../core/pagination.ts";
 import { assembleThread } from "../core/thread.ts";
+import { LINEAGE_DEPTH_LIMIT } from "../core/protocol.ts";
 import { isGlobalRole, visibleRootsClause } from "../core/visibility.ts";
 import { NOTIFICATION_TYPES } from "../core/types.ts";
 import { builtinPlugin, LINK_PREVIEW } from "../core/plugins/builtin.ts";
@@ -56,6 +57,7 @@ import type {
   FeedPage,
   FeedTab,
   Follow,
+  LineageNode,
   MediaRef,
   MediaRow,
   NotificationEventLine,
@@ -1883,8 +1885,54 @@ export class Store {
     };
   }
 
-  search(opts: { viewer: Viewer; q: string; limit?: number }): PostView[] {
-    const q = opts.q.trim();
+  /**
+   * 只读会话链拓扑（report-notification-stacks design §4.2）：输入帖 + 全部祖先
+   * 的**最小行**（无正文/媒体）。分层批量 `id IN (…)` 沿 parent_id 向上走，禁止
+   * 逐 id 查询；深度上限 64 防御脏数据自环。
+   *
+   * - 可见性与 `/api/posts/:id` 同口径（`visibleRootsClause`）：不可见/不存在的
+   *   id 静默省略（不泄露存在性）；
+   * - 软删帖/祖先照常返回（带 `deleted_at`），链路可穿过删除节点；
+   * - 纯读：不写库、不推进游标、不影响 `MAX(seq)`/history/peek/CLI。
+   */
+  postLineage(opts: { viewer: Viewer; ids: readonly string[] }): LineageNode[] {
+    const targets = [...new Set(opts.ids)].filter((id) => id.length > 0);
+    if (targets.length === 0) return [];
+    const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);
+    const found = new Map<string, LineageNode>();
+    let frontier = targets;
+    for (let depth = 0; depth < LINEAGE_DEPTH_LIMIT && frontier.length > 0; depth += 1) {
+      const next: string[] = [];
+      for (const group of chunks(frontier)) {
+        const rows = all<LineageNode>(
+          this.db,
+          `SELECT id, parent_id, root_id, deleted_at, created_at, seq FROM posts
+           WHERE id IN (${placeholders(group.length)}) AND ${vis.sql}`,
+          ...(group as Bindings),
+          ...(vis.params as Bindings),
+        );
+        for (const row of rows) {
+          if (found.has(row.id)) continue;
+          found.set(row.id, row);
+          if (row.parent_id && !found.has(row.parent_id)) next.push(row.parent_id);
+        }
+      }
+      frontier = [...new Set(next)];
+    }
+    // 返回顺序：输入序优先（缺失/不可见的静默跳过），其余按发现序（近→远祖先）。
+    const targetSet = new Set(targets);
+    const ordered: LineageNode[] = [];
+    for (const id of targets) {
+      const node = found.get(id);
+      if (node) ordered.push(node);
+    }
+    for (const [id, node] of found) {
+      if (!targetSet.has(id)) ordered.push(node);
+    }
+    return ordered;
+  }
+
+  search(opts: { viewer: Viewer; q: string; limit?: number }): PostView[] {    const q = opts.q.trim();
     if (!q) fail("BAD_REQUEST", "search query must not be empty");
     const limit = Math.min(opts.limit ?? 30, 100);
     const vis = visibleRootsClause(opts.viewer.role, opts.viewer.id);

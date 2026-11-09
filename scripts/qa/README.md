@@ -85,6 +85,9 @@ All of these default to an isolated backend:
 
 ```bash
 bun scripts/qa/notifications-read.mjs     # read-state + unread/all filter
+bun scripts/qa/notification-stacks.mjs    # 通知按会话链叠放（A1–A11 + before/after 审计：
+                                          # `--before-dist <旧壳 dist>` 起回环静态服务，
+                                          # 同板同视口出成对截图；产出 results/steps/PNG）
 bun scripts/qa/read-dwell.mjs             # 视窗停留已读 + 未读高亮（A1/A2/A3/A5/A6/
                                           # A7/A8/A9/A11/A13 + P2；自动 build + 静态导出）
 bun scripts/qa/reply-composer.mjs         # immersive reply editor

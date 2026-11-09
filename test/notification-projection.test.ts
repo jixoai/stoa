@@ -1,8 +1,10 @@
 /**
  * 通知投影单测（design §4.7，P1-11 判据）：重复帧、删除多事件、read-set 缺口、
- * post_deleted 不计数、对账自愈、ack 唯一清空。
+ * post_deleted 不计数、对账自愈、ack 唯一清空；相邻追加 report-notification-stacks
+ * 的 `LineageCache` 用例（P1-5：合并批/去重/清空/墓碑/静态 0 请求）。
  */
 import { describe, expect, test } from "bun:test";
+import { LineageCache } from "../src/ui/state/lineage-cache.ts";
 import { NotificationProjection } from "../src/ui/state/hub/notification-projection.ts";
 import type { HubEventLine } from "../src/ui/state/hub/types.ts";
 
@@ -190,5 +192,166 @@ describe("NotificationProjection（每帖角标 + read-set）", () => {
     expect(projection.cursor).toBe(20);
     expect(projection.badge(new Set())).toBe(0);
     expect(projection.events.has(4)).toBe(true);
+  });
+});
+
+// ── 会话链拓扑缓存（report-notification-stacks P1-5）─────────────────────────
+//
+// `LineageCache` 是 provider 的接线内核（150ms 合并批、批内去重、账号切换清空、
+// 失败降级、post.deleted 就地墓碑）；provider 只做 React 状态映射。
+
+function lineageNode(id: string, over: Partial<{ parent_id: string | null; deleted_at: number | null }> = {}) {
+  return {
+    id,
+    parent_id: over.parent_id ?? null,
+    root_id: "r1",
+    deleted_at: over.deleted_at ?? null,
+    created_at: 1,
+    seq: 1,
+  };
+}
+
+function fakeLineageClient() {
+  const requests: string[][] = [];
+  return {
+    requests,
+    client: {
+      async postLineage(ids: readonly string[]) {
+        requests.push([...ids]);
+        return { nodes: ids.map((id) => lineageNode(id)) };
+      },
+    },
+  };
+}
+
+describe("LineageCache（ensureLineage 内核）", () => {
+  test("① 100 个目标一次 ensure 只发 1 个请求（150ms 合并批）", async () => {
+    const fake = fakeLineageClient();
+    const cache = new LineageCache({ client: () => fake.client, onChange: () => {} });
+    const ids = Array.from({ length: 100 }, (_, index) => `p-${index}`);
+    cache.ensure(ids);
+    expect(cache.pendingCount).toBe(100);
+    await cache.flush();
+    expect(fake.requests.length).toBe(1);
+    expect(fake.requests[0]!.length).toBe(100);
+    expect(cache.size).toBe(100);
+    expect(cache.requests).toBe(1);
+  });
+
+  test("①b 批间去重：多次 ensure 同批合并；重复 id 只请求一次", async () => {
+    const fake = fakeLineageClient();
+    const cache = new LineageCache({ client: () => fake.client, onChange: () => {}, debounceMs: 5 });
+    cache.ensure(["a", "b"]);
+    cache.ensure(["b", "c"]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(fake.requests.length).toBe(1);
+    expect([...fake.requests[0]!].sort()).toEqual(["a", "b", "c"]);
+  });
+
+  test("② 已在缓存的目标不再请求；失败不抛、下次 ensure 重试", async () => {
+    const fake = fakeLineageClient();
+    let failNext = false;
+    const cache = new LineageCache({
+      client: () => ({
+        async postLineage(ids: readonly string[]) {
+          fake.requests.push([...ids]);
+          if (failNext) throw new Error("network");
+          return { nodes: ids.map((id) => lineageNode(id)) };
+        },
+      }),
+      onChange: () => {},
+    });
+    cache.ensure(["a", "b"]);
+    await cache.flush();
+    cache.ensure(["a", "b", "c"]);
+    await cache.flush();
+    expect(fake.requests.length).toBe(2);
+    expect(fake.requests[1]).toEqual(["c"]);
+
+    failNext = true;
+    cache.ensure(["d"]);
+    await cache.flush();
+    expect(cache.failures).toBe(1);
+    expect(cache.has("d")).toBe(false);
+    failNext = false;
+    cache.ensure(["d"]);
+    await cache.flush();
+    expect(cache.has("d")).toBe(true);
+  });
+
+  test("③ 账号切换 clear()：缓存清空并在途响应被丢弃（不串号）", async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const cache = new LineageCache({
+      client: () => ({
+        async postLineage(ids: readonly string[]) {
+          await gate;
+          return { nodes: ids.map((id) => lineageNode(id, { parent_id: "old-root" })) };
+        },
+      }),
+      onChange: () => {},
+    });
+    cache.ensure(["a"]);
+    const flushing = cache.flush();
+    cache.clear();
+    release!();
+    await flushing;
+    expect(cache.size).toBe(0);
+    expect(cache.get("a")).toBeNull();
+    // 切换后重新请求（新账号/新后端）。
+    const fake = fakeLineageClient();
+    const cache2 = new LineageCache({ client: () => fake.client, onChange: () => {} });
+    cache2.ensure(["a"]);
+    await cache2.flush();
+    expect(fake.requests.length).toBe(1);
+    expect(cache2.get("a")?.id).toBe("a");
+  });
+
+  test("④ post.deleted：节点 deleted_at 就地置位（不改 parent），重复调用 no-op", async () => {
+    const fake = fakeLineageClient();
+    const changes: number[] = [];
+    const cache = new LineageCache({
+      client: () => fake.client,
+      onChange: () => changes.push(cache.size),
+    });
+    cache.ensure(["a"]);
+    await cache.flush();
+    changes.length = 0; // 只统计删除标记触发的变化
+    const before = cache.get("a")!;
+    expect(before.deleted_at).toBeNull();
+    expect(cache.markDeleted("a", 1234)).toBe(true);
+    const after = cache.get("a")!;
+    expect(after.deleted_at).toBe(1234);
+    expect(after.parent_id).toBe(before.parent_id);
+    expect(cache.markDeleted("a")).toBe(false);
+    // 未知节点 no-op（下次 lineage 会带墓碑）。
+    expect(cache.markDeleted("no-such")).toBe(false);
+    expect(changes.length).toBe(1);
+  });
+
+  test("⑤ 静态模式（client() 为 null）：ensure/flush 均 0 请求", async () => {
+    const cache = new LineageCache({ client: () => null, onChange: () => {} });
+    cache.ensure(["a", "b"]);
+    await cache.flush();
+    expect(cache.requests).toBe(0);
+    expect(cache.size).toBe(0);
+  });
+});
+
+describe("LineageCache 分片（>200 id 端点上限）", () => {
+  test("250 个目标 → ⌈250/200⌉=2 片请求；全部入缓存", async () => {
+    const fake = fakeLineageClient();
+    const cache = new LineageCache({ client: () => fake.client, onChange: () => {} });
+    const ids = Array.from({ length: 250 }, (_, index) => `p-${index}`);
+    cache.ensure(ids);
+    await cache.flush();
+    expect(fake.requests.length).toBe(2);
+    expect(fake.requests[0]!.length).toBe(200);
+    expect(fake.requests[1]!.length).toBe(50);
+    expect(cache.size).toBe(250);
+    expect(cache.requests).toBe(2);
+    expect(cache.failures).toBe(0);
   });
 });

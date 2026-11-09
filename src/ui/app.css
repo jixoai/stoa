@@ -271,4 +271,41 @@ html[data-vt="fade"]::view-transition-new(root) {
       animation: none;
     }
   }
+
+  /* ── 通知叠放（report-notification-stacks design §6）────────────────────
+   * 展开/收起 = grid-template-rows 0fr ↔ 1fr（180ms iOS ease-out）：只向下增长、
+   * 不改变前卡高度（CLS=0）；折叠态由组件置 inert/aria-hidden，读屏与键盘不可达。
+   */
+  .notification-stack-expand {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 180ms var(--ios-ease-out);
+  }
+  .notification-stack-expand[data-expanded="1"] {
+    grid-template-rows: 1fr;
+  }
+  .notification-stack-expand > div {
+    min-height: 0;
+    overflow: hidden;
+  }
+  /* reanchor/merge 的行 180ms 背景高亮过渡（P2-1/P2-2；主题令牌，无 box-shadow）。 */
+  @keyframes notification-stack-flash {
+    from {
+      background-color: var(--read-new-tint);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  .notification-stack-flash {
+    animation: notification-stack-flash 180ms var(--ios-ease-out);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .notification-stack-expand {
+      transition: none;
+    }
+    .notification-stack-flash {
+      animation: none;
+    }
+  }
 }

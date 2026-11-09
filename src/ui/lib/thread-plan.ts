@@ -332,3 +332,264 @@ export function countAddedInScope(
   }
   return addedReplies + addedHidden;
 }
+
+// ── 会话拓扑与通知叠锚点（report-notification-stacks；与 timeline planner 共用作用域语义）──
+//
+// 本段是 `report-notification-stacks` 在 thread-plan.ts 上的**扩展**（design §11.1）：
+// 通知分组与线程详情使用同一套「祖先 + focal + 后代」定义（proposal 口径 5），
+// 保证「被判同叠 ⇔ 从最早未读打开的 timeline 包含叠内全部未读成员」。
+// 禁止另建平行 planner / 复制 collectFocalDescendants。
+
+/** 拓扑节点最小形状：core `LineageNode` 结构上即满足（created_at/seq 缺失时退化 id 序）。 */
+export interface ThreadTopologyNode {
+  id: string;
+  parent_id: string | null;
+  root_id: string;
+  deleted_at: number | null;
+  created_at?: number;
+  seq?: number;
+}
+
+/**
+ * focal 的可见集合（report-thread-scope 语义）：`ancestors(f)`（root→parent）
+ * ＋ `{f}` ＋ `descendants(f)`（时间序）。打开 `f` 不含其兄弟分支。
+ */
+export interface ThreadScope {
+  rootId: string;
+  focalId: string;
+  /** root → parent（不含 focal） */
+  ancestorIds: readonly string[];
+  /** 全部后代（不含 focal，时间序先序） */
+  descendantIds: readonly string[];
+  /** id 是否在 scope 内（祖先 ∪ focal ∪ 后代） */
+  has(id: string): boolean;
+}
+
+export interface ThreadTopology {
+  byId: ReadonlyMap<string, ThreadTopologyNode>;
+  parentOf(id: string): ThreadTopologyNode | null;
+  /** root → … → parent（不含自身；缺失父指针即止） */
+  ancestorsOf(id: string): readonly ThreadTopologyNode[];
+  /** 先序（pre-order DFS，子节点时间升序），与 timeline planner 平铺顺序同源 */
+  descendantsOf(id: string): readonly ThreadTopologyNode[];
+  isAncestor(ancestorId: string, descendantId: string): boolean;
+  scopeOf(focalId: string): ThreadScope | null;
+}
+
+const EMPTY_NODES: readonly ThreadTopologyNode[] = Object.freeze([]);
+
+function compareTopologyNodes(a: ThreadTopologyNode, b: ThreadTopologyNode): number {
+  const at = a.created_at ?? 0;
+  const bt = b.created_at ?? 0;
+  if (at !== bt) return at - bt;
+  const as = a.seq ?? 0;
+  const bs = b.seq ?? 0;
+  if (as !== bs) return as - bs;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** 由拓扑行（lineage 节点 + 缺省祖先）构建只读视图；同 id 后到者覆盖（deleted_at 更新生效）。 */
+export function buildThreadTopology(nodes: Iterable<ThreadTopologyNode>): ThreadTopology {
+  const byId = new Map<string, ThreadTopologyNode>();
+  for (const node of nodes) byId.set(node.id, node);
+
+  const childrenByParent = new Map<string, ThreadTopologyNode[]>();
+  for (const node of byId.values()) {
+    if (!node.parent_id) continue;
+    const list = childrenByParent.get(node.parent_id);
+    if (list) list.push(node);
+    else childrenByParent.set(node.parent_id, [node]);
+  }
+  for (const list of childrenByParent.values()) list.sort(compareTopologyNodes);
+
+  const parentOf = (id: string): ThreadTopologyNode | null => {
+    const node = byId.get(id);
+    if (!node?.parent_id) return null;
+    return byId.get(node.parent_id) ?? null;
+  };
+
+  const ancestorCache = new Map<string, readonly ThreadTopologyNode[]>();
+  const ancestorsOf = (id: string): readonly ThreadTopologyNode[] => {
+    const cached = ancestorCache.get(id);
+    if (cached) return cached;
+    const chain: ThreadTopologyNode[] = [];
+    const seen = new Set<string>([id]);
+    let cursor = parentOf(id);
+    while (cursor && !seen.has(cursor.id)) {
+      chain.push(cursor);
+      seen.add(cursor.id);
+      cursor = parentOf(cursor.id);
+    }
+    chain.reverse(); // root → … → parent
+    ancestorCache.set(id, chain);
+    return chain;
+  };
+
+  const descendantCache = new Map<string, readonly ThreadTopologyNode[]>();
+  const descendantsOf = (id: string): readonly ThreadTopologyNode[] => {
+    const cached = descendantCache.get(id);
+    if (cached) return cached;
+    if (!byId.has(id)) {
+      descendantCache.set(id, EMPTY_NODES);
+      return EMPTY_NODES;
+    }
+    // 先序（pre-order）：先自身再子树、子树结束后继续同级——与 collectFocalDescendants 同序。
+    const out: ThreadTopologyNode[] = [];
+    const seen = new Set<string>([id]);
+    const stack: ThreadTopologyNode[] = [];
+    const pushChildren = (parentId: string) => {
+      const kids = childrenByParent.get(parentId);
+      if (!kids) return;
+      for (let index = kids.length - 1; index >= 0; index -= 1) stack.push(kids[index]!);
+    };
+    pushChildren(id);
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      out.push(node);
+      pushChildren(node.id);
+    }
+    descendantCache.set(id, out);
+    return out;
+  };
+
+  const ancestorSetCache = new Map<string, Set<string>>();
+  const ancestorIdSetOf = (id: string): Set<string> => {
+    const cached = ancestorSetCache.get(id);
+    if (cached) return cached;
+    const set = new Set<string>();
+    for (const node of ancestorsOf(id)) set.add(node.id);
+    ancestorSetCache.set(id, set);
+    return set;
+  };
+
+  return {
+    byId,
+    parentOf,
+    ancestorsOf,
+    descendantsOf,
+    isAncestor: (ancestorId, descendantId) =>
+      ancestorId !== descendantId && ancestorIdSetOf(descendantId).has(ancestorId),
+    scopeOf: (focalId) => {
+      const focal = byId.get(focalId);
+      if (!focal) return null;
+      const ancestorIds = ancestorsOf(focalId).map((node) => node.id);
+      const descendantIds = descendantsOf(focalId).map((node) => node.id);
+      const ids = new Set<string>([...ancestorIds, focalId, ...descendantIds]);
+      return {
+        rootId: focal.root_id,
+        focalId,
+        ancestorIds,
+        descendantIds,
+        has: (id: string) => ids.has(id),
+      };
+    },
+  };
+}
+
+/** 通知相关性（叠锚点 DP 的输入；软删由调用方排除或经 `isDeleted` 判定）。 */
+export interface NotificationRelevance {
+  /** 该帖有未读通知且未命中 read-set */
+  isUnread(id: string): boolean;
+  /** 该帖在通知集合（已加载事件 target ∪ 未读 target） */
+  isNotified(id: string): boolean;
+  /** 软删判定；缺省只认拓扑节点的 `deleted_at !== null`（provided 的是并集语义） */
+  isDeleted?(id: string): boolean;
+}
+
+interface AnchorPair {
+  u: string | null;
+  n: string | null;
+}
+
+interface AnchorResolver {
+  /** `U(p) ?? N(p) ?? p`（拓扑缺失的节点退化为自身） */
+  anchorOf(id: string): string;
+  /** 锚点候选 `U ?? N`（未退化到自身）；节点不在拓扑时 null */
+  pairOf(id: string): AnchorPair | null;
+}
+
+/**
+ * 锚点 DP（design §3.2，O(V)）：
+ * `anchor(p) = U(p) ?? N(p) ?? p`，`U/N` 都是「自身与祖先中**最靠根**的未读/已通知帖」
+ * （§2 定义；`resolveStackAnchors` 的判据：同链未读三帖全部 anchored 到根）。
+ *
+ * - 父链显式路径 + 记忆化，自根向下回填，每节点最多解析一次；
+ * - 软删节点不参与 `U/N` 候选，但**链路可穿过**（父指针继续走）；
+ * - 拓扑不存在的节点（lineage 未返回/不可见）退化为自身锚点，不抛异常。
+ */
+function createAnchorResolver(
+  topology: ThreadTopology,
+  relevance: NotificationRelevance,
+): AnchorResolver {
+  const memo = new Map<string, AnchorPair>();
+  const isDeleted = (id: string): boolean => {
+    if (relevance.isDeleted?.(id)) return true;
+    const node = topology.byId.get(id);
+    return node ? node.deleted_at !== null : false;
+  };
+
+  const resolve = (id: string): AnchorPair => {
+    const cached = memo.get(id);
+    if (cached) return cached;
+    const path: string[] = [];
+    const onPath = new Set<string>();
+    let cursor: string | null = id;
+    let base: AnchorPair = { u: null, n: null };
+    while (cursor !== null) {
+      const hit = memo.get(cursor);
+      if (hit) {
+        base = hit; // 祖先已解析：直接取（最靠根的结果已完成）
+        break;
+      }
+      if (onPath.has(cursor)) break; // 脏数据成环：停在此处，不递归
+      path.push(cursor);
+      onPath.add(cursor);
+      cursor = topology.parentOf(cursor)?.id ?? null;
+    }
+    // path 是「从当前节点向上」的顺序；倒序即父→子回填，父的 u/n 优先（最靠根）。
+    path.reverse();
+    for (const nodeId of path) {
+      const deleted = isDeleted(nodeId);
+      const u = base.u ?? (!deleted && relevance.isUnread(nodeId) ? nodeId : null);
+      const n = base.n ?? (!deleted && relevance.isNotified(nodeId) ? nodeId : null);
+      base = { u, n };
+      memo.set(nodeId, base);
+    }
+    return memo.get(id) ?? { u: null, n: null };
+  };
+
+  return {
+    anchorOf: (id: string) => {
+      if (!topology.byId.has(id)) return id;
+      const { u, n } = resolve(id);
+      return u ?? n ?? id;
+    },
+    pairOf: (id: string) => (topology.byId.has(id) ? resolve(id) : null),
+  };
+}
+
+/** 返回 nodeId → anchorId 的完整映射（拓扑内每个节点一项）；缺失拓扑退化为自身。 */
+export function resolveStackAnchors(
+  topology: ThreadTopology,
+  relevance: NotificationRelevance,
+): Map<string, string> {
+  const resolver = createAnchorResolver(topology, relevance);
+  const anchors = new Map<string, string>();
+  for (const id of topology.byId.keys()) anchors.set(id, resolver.anchorOf(id));
+  return anchors;
+}
+
+/**
+ * 便捷：单点查询「最靠根未读祖先」候选（内部走同一 DP/缓存；含 `N` 回退前的结果）。
+ * 返回 null = 该节点不在拓扑内（调用方按自身锚点处理）。
+ */
+export function highestUnreadAncestor(
+  topology: ThreadTopology,
+  id: string,
+  relevance: NotificationRelevance,
+): string | null {
+  const pair = createAnchorResolver(topology, relevance).pairOf(id);
+  return pair ? (pair.u ?? pair.n) : null;
+}

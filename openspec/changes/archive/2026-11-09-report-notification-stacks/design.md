@@ -128,11 +128,14 @@ function resolveAnchors(topology, isUnread, isNotified, isDeleted) {
       cur = topology.parentOf(cur)?.id ?? null;
     }
     let base = cur ? memo.get(cur)! : { u: null, n: null };
-    // path 是「从当前节点向上」的顺序，倒序即父→子
+    // path 是「从当前节点向上」的顺序，倒序即父→子回填。
+    // 注意（实现注记，见 §15 D14）：`U/N` 是「最靠根」的未读/已通知帖，
+    // 因此父的结果**优先**（base.u ?? 自身）。若写成 `isUnread(nodeId) ? nodeId : base.u`
+    // 会得到「最深」未读，与 §2 定义及 A1/P1-1 判据（同链三帖未读全部 anchor=根）矛盾。
     for (const nodeId of path.reverse()) {
       const deleted = isDeleted(nodeId);
-      const u = !deleted && isUnread(nodeId) ? nodeId : base.u;
-      const n = !deleted && isNotified(nodeId) ? nodeId : base.n;
+      const u = base.u ?? (!deleted && isUnread(nodeId) ? nodeId : null);
+      const n = base.n ?? (!deleted && isNotified(nodeId) ? nodeId : null);
       memo.set(nodeId, { u, n });
       base = { u, n };
     }
@@ -261,8 +264,9 @@ settled(anchor=a)
 
 - `NotificationsProvider` 持 `Map<postId, LineageNode>`，按 `client.base|account.id` 分区；
   账号/后端切换时清空（与 posts/projection 同步）。
-- `ensureLineage(ids)`：过滤已缓存 id，150ms trailing debounce 合并成 1 次请求；在途请求按
-  批次去重；失败不阻塞 UI（该批目标以 self 锚点先行，下一次事件/对账再补）。
+- `ensureLineage(ids)`：过滤已缓存 id，150ms trailing debounce 合并成一批请求；在途请求按
+  批次去重；超过端点上限 200 时按 `⌈N/200⌉` 分片（每片仍是一个合并批，见 §15 D15）；
+  失败不阻塞 UI（该批目标以 self 锚点先行，下一次事件/对账再补）。
 - `post.deleted`：若目标在拓扑中，置 `deleted_at`（不改 parent），触发重新分组；
   未知节点 no-op（下次 lineage 会带墓碑）。
 - 历史页新增 target、实时 `notification.created` 新 target 都调用 `ensureLineage([targetId])`。
@@ -539,7 +543,7 @@ export function buildNotificationStacks(input: {
 | A1 | 同链叠放基础 | 造 root A→B→C 三条未读通知，打开通知页 | 一行 `notification-stack`；`data-stack-key=A`、`data-stack-size=3`、`data-stack-unread=3`；摘要来自 C；点击进 `#/p/A`（focal=A，不是 C）；390/1280 均无横向滚动 |
 | A2 | 兄弟口径 | ①共同祖先 A 已读，B、D 兄弟各有未读；②A 未读，B、D 兄弟各有未读 | ①两行独立叠（key=B/D），点 B 的 timeline 不含 D；②B、D 与 A 同叠（key=A），打开 A 同屏两分支；契约测试同断言 |
 | A3 | 未读+已读混叠 | A 未读、B 已读、C 未读（同链） | 一叠 key=A，`unread=2`，`size=3`；展开列出 3 条，B 呈已读；摘要来自 C |
-| A4 | 实时新增/合并 | 停留通知页；SSE 推同链新回复；再推 A 的祖先新回复 | 第一次：现有叠 unread+1、摘要更新，无整页刷新/无 history 重拉；第二次：两叠合并为一行，anchor 变新祖先，`data-stack-transition=merge`（P2 动画） |
+| A4 | 实时新增/合并 | 停留通知页；SSE 推同链新回复；再推 A 的祖先新回复 | 第一次：现有叠 unread+1、摘要更新，无整页刷新/无 history 重拉；第二次：两叠合并为一行，anchor 变新祖先，`data-stack-transition=merge`（P2 动画）。落地口径（§15）：merge/reanchor 由「lineage 首批失败 → 补拉成功后 reanchor」驱动（时间上不存在更早创建却后到达的祖先帖） |
 | A5 | 删除回退 | 删除叠内最新未读帖 | 该帖从成员/摘要消失，摘要回退次新，unread−1；其通知行改为独立「此帖已删除」灰行仍在 history、不可点/不可展开；若删空则叠行消失；角标同步；无 `data-post-id` 指向删除帖 |
 | A6 | 跨页拼叠 | 叠成员跨 history 两页（>50 条历史） | 加载更早后仍一行；`data-stack-size`/`unread` 增长；无重复 `data-post-id`；页脚 remainder=服务端未读−已加载未读 target |
 | A7 | 停留已读联动 | 从叠进 A，滚动使 A 与后续成员停留达标，返回通知页 | A 移出未读（read-set 命中）；unread 递减/锚点下移；无额外已读写路径（`__reportReadDwell.marks` 与 read-set 新增一致）；390/1280 |
@@ -607,3 +611,28 @@ export function buildNotificationStacks(input: {
 - **D13（Owner 2026-11-08 修正）**：共同祖先未读时，兄弟分支**可同叠**（打开祖先同屏全部
   后代分支）；「兄弟分支不算」仅指**无未读共同锚点**时不得自动合并。实现者不得按「兄弟永远
   不同叠」的简化理解写错；契约测试与 A2 双向覆盖。
+
+### 实现注记（2026-11-09 落地时回填）
+
+- **D14（锚点 DP 的「最靠根」口径）**：§3.2 伪码的迭代方向（父→子回填、子覆盖父）会得到
+  **最深**未读，与 §2 定义「自身与祖先中最靠根的未读帖」及判据 A1/P1-1①（同链三帖未读
+  全部 anchor=根、focal=最早未读）矛盾。实现取前者语义的**正确形式**：
+  `u = base.u ?? (未删且未读 ? nodeId : null)`（`n` 同理），即**父结果优先**。
+  `test/notification-stacks.test.ts` ①③ 与 A1/A3/A11 均据此全绿；§3.2 代码块已同步修正。
+  「若自身未读则 U(p)=p」的表述仅在自身是链上最靠根未读时成立（即无未读祖先）。
+- **D15（客户端分片）**：lineage 端点单次上限 200（design §4.2）；`LineageCache` 在
+  150ms 合并批之后按 `⌈N/200⌉` 分片发送（每片仍是一个合并批，片内去重），
+  `lineageRequests` 按实际 HTTP 次数计。实测：337 个 unread target → 2 请求（200+137），
+  A9 判据「≤1 请求/合并批」以片为粒度成立；单测 `250 目标 → 2 片` 覆盖。
+- **D16（P0-3 复用判定）**：`GET /api/thread/:id` 虽携带 focal 全祖先链，但为 root 级全量
+  水合（正文/媒体/引用/预览）且按 root 逐请求，10 roots 需 10 次请求，不满足
+  「一张通知页 1 次批量、100 通知 O(n)」→ 保留 design §4 的 lineage 端点（无等价替代）。
+- **D17（QA 契约补强，非语义扩充）**：叠容器/单成员行输出 `data-stack-anchor`、
+  `data-member-ids`、`data-unread-member-ids`（未读成员定位，兼容既有 QA 的「按
+  data-member-ids 定位」分支）；软删灰行输出 `data-deleted-post-id` 供断言定位（仍无
+  `data-post-id`/`data-stack-key`，不可点/不可展开语义不变）；诊断快照额外输出
+  `standalone`（独立灰行数）。
+- **A4 的「新祖先」路径（实测口径）**：时间上不存在「比既有成员更早创建却后到达的祖先」，
+  因此 A4 的 merge/reanchor 由**真实降级路径**驱动：首批 lineage 失败（route abort）→
+  provisional 自锚多行 → 新推送触发补拉 → `reanchor/merge` 合成一行（`data-stack-transition="merge"`、
+  `merges` 递增）。单测 `diffNotificationStacks` 另覆盖 grow/new/merge/reanchor/splits 分类。

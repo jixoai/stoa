@@ -83,33 +83,92 @@ try {
     const badge = page.locator('[data-testid="notifications-unread-badge"]');
     return (await badge.count()) ? Number((await badge.innerText()).trim()) : 0;
   };
+  // report-notification-stacks：种子可能落进多成员叠（共同未读祖先）——未读集合要同时
+  // 读单成员行与叠的 data-unread-member-ids（叠内成员行始终在 DOM，`*` 标记兼容）。
   const unreadIds = async () =>
-    page.evaluate(() =>
-      [...document.querySelectorAll('[data-testid="notification-row"][data-read="0"]')].map((el) =>
-        el.getAttribute("data-post-id"),
-      ),
+    page.evaluate(() => {
+      const ids = [...document.querySelectorAll('[data-testid="notification-row"][data-read="0"]')]
+        .map((el) => el.getAttribute("data-post-id"))
+        .filter(Boolean);
+      for (const stack of document.querySelectorAll('[data-testid="notification-stack"]')) {
+        const raw = stack.getAttribute("data-unread-member-ids") ?? "";
+        for (const id of raw.split(",")) if (id) ids.push(id);
+      }
+      return ids;
+    });
+  /** 某帖的入口存在性（单成员行或叠成员）。 */
+  const entryCount = async (postId) =>
+    page.evaluate((id) => {
+      if (document.querySelector(`[data-testid="notification-row"][data-post-id="${CSS.escape(id)}"]`)) return 1;
+      const stacks = [...document.querySelectorAll('[data-testid="notification-stack"]')];
+      return stacks.filter((el) => (el.getAttribute("data-member-ids") ?? "").split(",").includes(id)).length;
+    }, postId);
+  /** 某帖的已读态：单成员行 data-read，或叠成员行 data-read（折叠也渲染，可直读）。 */
+  const readStateOf = async (postId) =>
+    page.evaluate((id) => {
+      const row = document.querySelector(`[data-testid="notification-row"][data-post-id="${CSS.escape(id)}"]`);
+      if (row) return row.getAttribute("data-read");
+      const member = document.querySelector(
+        `[data-testid="notification-stack-member"][data-post-id="${CSS.escape(id)}"]`,
+      );
+      return member ? member.getAttribute("data-read") : null;
+    }, postId);
+  /** 点击某帖的通知入口：单成员行直接点；多成员叠先展开再点成员行。 */
+  const openNotificationFor = async (postId) => {
+    const rowLoc = page.locator(`[data-testid="notification-row"][data-post-id="${postId}"]`);
+    if (await rowLoc.count()) {
+      await rowLoc.first().click();
+      return "row";
+    }
+    const stackIndex = await page.evaluate((id) => {
+      const stacks = [...document.querySelectorAll('[data-testid="notification-stack"]')];
+      return stacks.findIndex((el) => (el.getAttribute("data-member-ids") ?? "").split(",").includes(id));
+    }, postId);
+    if (stackIndex < 0) throw new Error(`no notification entry for ${postId}`);
+    const stack = page.locator('[data-testid="notification-stack"]').nth(stackIndex);
+    const toggle = stack.locator('[data-testid="notification-stack-toggle"]');
+    if ((await toggle.getAttribute("aria-expanded")) !== "true") {
+      await toggle.click();
+      await page.waitForTimeout(260); // 180ms 展开动画余量
+    }
+    await stack
+      .locator(`[data-testid="notification-stack-member"][data-post-id="${postId}"]`)
+      .first()
+      .click();
+    return "stack-member";
+  };
+  /** 点击后等 dwell 把该帖读掉（D11：点击本身不写已读）。 */
+  const waitThreadRead = (postId) =>
+    page.waitForFunction(
+      (id) =>
+        Boolean(
+          document.querySelector(
+            `[data-testid="thread-timeline"] article[data-post-id="${CSS.escape(id)}"][data-read="1"]`,
+          ),
+        ),
+      postId,
+      { timeout: 8000 },
     );
 
   const before = await badgeText();
   check("种子后角标 ≥1", before >= 1, `badge=${before}`);
   check("种子帖在未读列表里", (await unreadIds()).includes(seedA), `seed=${seedA}`);
 
-  // ① 从通知点进详情 → 返回：该帖离开未读、角标 -1
-  await page.locator(`[data-testid="notification-row"][data-post-id="${seedA}"]`).first().click();
-  await page.waitForTimeout(1200);
+  // ① 从通知点进详情 → 停留达标已读 → 返回：该帖离开未读、角标 -1
+  const entryKind = await openNotificationFor(seedA);
+  await waitThreadRead(seedA);
   check("点通知进入详情", (await page.evaluate(() => location.hash)).includes(seedA));
   await page.click('[data-testid="thread-back"]');
   await page.waitForTimeout(1200);
   const after1 = await badgeText();
-  check("返回后角标 -1", after1 === before - 1, `${before} → ${after1}`);
+  check("返回后角标 -1", after1 === before - 1, `${before} → ${after1}（entry=${entryKind}）`);
   check("该帖不在未读筛选里", !(await unreadIds()).includes(seedA));
 
   // 全部筛选里保留且标已读
   await page.click('[data-testid="notifications-scope-all"]');
   await page.waitForTimeout(600);
-  const rowAll = page.locator(`[data-testid="notification-row"][data-post-id="${seedA}"]`);
-  check("「全部」里保留该行", (await rowAll.count()) >= 1);
-  check("该行标为已读（降噪）", (await rowAll.first().getAttribute("data-read")) === "1");
+  check("「全部」里保留该行", (await entryCount(seedA)) >= 1);
+  check("该行标为已读（降噪）", (await readStateOf(seedA)) === "1");
   await page.click('[data-testid="notifications-scope-unread"]');
   await page.waitForTimeout(400);
 

@@ -19,6 +19,12 @@
  *   排一次服务端对账兜底。
  * - 心跳/60s 只做**漂移检测**：计数一致时零业务请求（空闲不轮询）。
  * - 启动只有 1 次 peek；逐帖 hydrate 只在通知页按需发生（`ensurePosts`）。
+ *
+ * 通知叠放（report-notification-stacks）：本 Provider 另持**会话链拓扑缓存**
+ * （`LineageCache`，`GET /api/posts/lineage`，150ms 合并批 + 200 id 分片），并派生
+ * `unreadTargets`/`notifiedTargets`/`topology`/`lineageStats` 供通知页分组；账号/后端切换时
+ * 与 posts/projection 同步清空（在途响应按 epoch 丢弃）；`post.deleted` 就地落墓碑
+ * （不改 parent）。叠的渲染与点击锚点在 NotificationsPage（点击不写已读——D11）。
  */
 import {
   createContext,
@@ -31,8 +37,10 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import type { NotificationEventLine, PostView } from "@core/types";
+import type { LineageNode, NotificationEventLine, PostView } from "@core/types";
+import { buildThreadTopology, type ThreadTopology } from "@/lib/thread-plan";
 import { useConnection } from "@/state/connection";
+import { LineageCache } from "@/state/lineage-cache";
 import { NotificationProjection } from "@/state/hub/notification-projection";
 import { useEventHub, useEventHubApi, useHubStatus } from "@/state/hub/provider";
 import type { HubEventLine } from "@/state/hub/types";
@@ -103,6 +111,20 @@ interface NotificationsValue {
   postOf: (postId: string) => PostView | null | undefined;
   /** 请求补拉一批帖子投影（历史列表用） */
   ensurePosts: (postIds: string[]) => void;
+  /** 权威未读 target 集合（server ∪ local，已扣 read-set；叠锚点/页脚按 target 计数） */
+  unreadTargets: ReadonlySet<string>;
+  /** 通知集合 target（已加载事件 target ∪ unreadTargets；`N(p)` 锚点候选） */
+  notifiedTargets: ReadonlySet<string>;
+  /** 会话链拓扑（lineage 缓存派生；账号/后端切换清空） */
+  topology: ThreadTopology;
+  /** 单帖拓扑行（未缓存为 null） */
+  lineageOf: (postId: string) => LineageNode | null;
+  /** 批量补拉拓扑：150ms 合并批、批内去重、失败降级（静态模式 0 请求） */
+  ensureLineage: (ids: readonly string[]) => void;
+  /** `post.deleted` 的拓扑侧落地（节点置 deleted_at，不进叠锚点候选） */
+  markLineageDeleted: (postId: string) => void;
+  /** 诊断数字（`window.__reportNotificationStacks` 消费） */
+  lineageStats: { requests: number; failures: number; nodes: number };
 }
 
 const NotificationsContext = createContext<NotificationsValue | null>(null);
@@ -219,6 +241,22 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const [version, setVersion] = useState(0);
   const bump = useCallback(() => setVersion((value) => value + 1), []);
 
+  // 会话链拓扑缓存（report-notification-stacks design §4.3）：client/account 组合级，
+  // 切换清空；静态归档 `client()` 返回 null → 0 请求（P1-10）。
+  const clientRef = useRef(client);
+  clientRef.current = client;
+  const staticModeRef = useRef(staticMode);
+  staticModeRef.current = staticMode;
+  const [lineageVersion, setLineageVersion] = useState(0);
+  const lineageRef = useRef<LineageCache | null>(null);
+  if (lineageRef.current === null) {
+    lineageRef.current = new LineageCache({
+      client: () => (staticModeRef.current ? null : clientRef.current),
+      onChange: () => setLineageVersion((value) => value + 1),
+    });
+  }
+  const lineage = lineageRef.current;
+
   const [posts, setPosts] = useState<Map<string, PostView | null>>(() => new Map());
   const accountRef = useRef(account?.id ?? null);
   accountRef.current = account?.id ?? null;
@@ -321,6 +359,9 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
     projectionRef.current = next;
     setProjection(next);
     setPosts(new Map());
+    // 拓扑与帖子投影同步清空：新账号/新后端的 lineage 重新拉（不串号）。
+    lineage.clear();
+    setLineageVersion((value) => value + 1);
     lastHeartbeat.current = null;
     bump();
     // 新投影由下面的 refresh effect（client 变化会重建 refresh）重新取一次快照。
@@ -550,10 +591,12 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
         case "notification.created": {
           const added = current.applyEvent(dispatch.event);
           if (!added) return;
+          const target = targetIdOf(dispatch.event);
           if (dispatch.event.post_deleted === true) {
-            const target = targetIdOf(dispatch.event);
             if (target) markPostDeleted(target);
           }
+          // 新 target 的祖先链按需补拉（150ms 合并批；不阻塞推送渲染）。
+          if (target) lineage.ensure([target]);
           bump();
           return;
         }
@@ -561,6 +604,8 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
           const result = current.applyDelete(dispatch.event.post_id, dispatch.event.root_id);
           const target = dispatch.event.post_id ?? dispatch.event.root_id;
           if (target) markPostDeleted(target);
+          // 拓扑侧就地落地墓碑（不改 parent）：锚点候选剔除但链路可穿过。
+          if (target) lineage.markDeleted(target);
           bump();
           if (result.needsReconcile) scheduleReconcile();
           return;
@@ -745,6 +790,63 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
   const unread = projection.badge(readIds);
   const deletedCount = useMemo(() => items.filter((item) => item.deleted).length, [items]);
 
+  // ── 通知叠放投影（report-notification-stacks P1-5）─────────────────────────
+  // 权威未读 = 服务端 unread_by_target ∪ 实时新 target，扣除本地/服务端 read-set
+  // （与 `badge(readIds)`、`isPostRead` 同口径；叠锚点与页脚 remainder 共用）。
+  const unreadTargets = useMemo<ReadonlySet<string>>(() => {
+    const ids = new Set<string>();
+    const isReadTarget = (target: string) => readIds.has(target) || serverReadIds.has(target);
+    for (const target of projection.serverTargets.keys()) {
+      if (!isReadTarget(target)) ids.add(target);
+    }
+    for (const target of projection.localTargets) {
+      if (isReadTarget(target)) continue;
+      if (projection.serverTargets.has(target)) continue;
+      ids.add(target);
+    }
+    return ids;
+  }, [projection, version, readIds, serverReadIds]);
+
+  /** 通知集合（已加载事件 target ∪ 未读 target）：`N(p)` 的候选域。 */
+  const notifiedTargets = useMemo<ReadonlySet<string>>(() => {
+    const ids = new Set<string>(unreadTargets);
+    for (const projected of projection.events.values()) {
+      const target = targetIdOf(projected.event);
+      if (target) ids.add(target);
+    }
+    return ids;
+  }, [unreadTargets, projection, version]);
+
+  const topology = useMemo<ThreadTopology>(
+    () => buildThreadTopology(lineage.values()),
+    // lineage 实例恒定；version 变化即缓存变化。
+    [lineageVersion],
+  );
+
+  const lineageOf = useCallback(
+    (postId: string) => lineage.get(postId),
+    [lineage],
+  );
+
+  const ensureLineage = useCallback(
+    (ids: readonly string[]) => {
+      lineage.ensure(ids);
+    },
+    [lineage],
+  );
+
+  const markLineageDeleted = useCallback(
+    (postId: string) => {
+      lineage.markDeleted(postId);
+    },
+    [lineage],
+  );
+
+  const lineageStats = useMemo(
+    () => ({ requests: lineage.requests, failures: lineage.failures, nodes: lineage.size }),
+    [lineage, lineageVersion],
+  );
+
   // 窄上下文：值恒定，卡片只经 per-id 外部订阅更新（D7）。
   const cursorRef = useRef(projection.cursor);
   cursorRef.current = projection.cursor;
@@ -785,6 +887,13 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       subscribePostRead: postReadApi.subscribePostRead,
       postOf,
       ensurePosts,
+      unreadTargets,
+      notifiedTargets,
+      topology,
+      lineageOf,
+      ensureLineage,
+      markLineageDeleted,
+      lineageStats,
     }),
     [
       items,
@@ -803,6 +912,13 @@ export function NotificationsProvider({ children }: { children: ReactNode }) {
       adoptServerReads,
       postOf,
       ensurePosts,
+      unreadTargets,
+      notifiedTargets,
+      topology,
+      lineageOf,
+      ensureLineage,
+      markLineageDeleted,
+      lineageStats,
     ],
   );
 
