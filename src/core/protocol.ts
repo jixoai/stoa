@@ -1,13 +1,9 @@
 /** Product/protocol constants. `scripts/check.mjs` cross-checks routes/commands. */
 
-<<<<<<< HEAD
-export const PRODUCT = "stoa";
-=======
 import { ARTICLE_BLOCK_NAMES } from "./article.ts";
 import { MAX_ARTICLE_BYTES, MAX_ARTICLE_CHARS } from "./validation.ts";
 
-export const PRODUCT = "fde2e-report-worker";
->>>>>>> 737e621 (wip(longform): 长文章 P1 部分实现存档（两次子代理 502 中断；解析/渲染/编辑/测试初稿）)
+export const PRODUCT = "stoa";
 export const VERSION = "0.1.0";
 export const PROTOCOL_VERSION = 1;
 

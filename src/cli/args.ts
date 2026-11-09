@@ -170,27 +170,16 @@ Usage:
   stoa init --data-dir D
   stoa serve --data-dir D [--port N] [--idle-timeout SEC]
                             [--daemon|--stop|--status]
-<<<<<<< HEAD
   stoa open --as <acct> --data-dir D
   stoa who --data-dir D
   stoa accounts create <id> [--role agent] [--display S] [--profile S]
   stoa accounts ls|rotate <id>|rotate --all|rm <id>
-  stoa post --as A [-m TEXT] [--attach F]... [--quote P] [--tag T]...
-                            [--batch [--draft ID] [--eof-commit]]
-  stoa reply <postId> --as A [-m TEXT] [--attach F]... [--tag T]...
-  stoa read --as A [--feed following|recommended] [--tag T] [--thread P]
-=======
-  fde2e-report-worker open --as <acct> --data-dir D
-  fde2e-report-worker who --data-dir D
-  fde2e-report-worker accounts create <id> [--role agent] [--display S] [--profile S]
-  fde2e-report-worker accounts ls|rotate <id>|rotate --all|rm <id>
-  fde2e-report-worker post --as A [-m TEXT | --file F | --stdin] [--format note|article]
+  stoa post --as A [-m TEXT | --file F | --stdin] [--format note|article]
                             [--attach F]... [--quote P] [--tag T]...
                             [--batch [--draft ID] [--eof-commit]]
-  fde2e-report-worker reply <postId> --as A [-m TEXT | --file F | --stdin]
+  stoa reply <postId> --as A [-m TEXT | --file F | --stdin]
                             [--format note|article] [--attach F]... [--tag T]...
-  fde2e-report-worker read --as A [--feed following|recommended] [--tag T] [--thread P]
->>>>>>> 737e621 (wip(longform): 长文章 P1 部分实现存档（两次子代理 502 中断；解析/渲染/编辑/测试初稿）)
+  stoa read --as A [--feed following|recommended] [--tag T] [--thread P]
                             [--author X] [--since T] [--until T]
                             [--limit N] [--order asc|desc] [--after C]
   stoa search <q> --as A [--limit N] [--accounts]
