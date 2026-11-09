@@ -1,14 +1,17 @@
 /**
  * `stoa mcp`：stdio MCP server（新行分隔 JSON-RPC 2.0）。
  * 来源＝现 ZCode 插件 `plugins/report-channel/scripts/mcp-server.mjs` 的 TS 移植；
- * 方法面：initialize / tools/list / tools/call / ping（design §2）。
+ * 方法面：initialize / tools/list / tools/call / ping / resources/list / resources/read
+ * （design §2/§3：工具面 + 侧栏面板资源 `ui://stoa/board.html`）。
  *
  * 纪律：stdout 只跑 JSON-RPC（任何日志都不许写 stdout）；错误收敛为 tools/call 的
- * `isError` 文本（`{ok:false, tool, error}`，与现插件语义一致）；凭据绝不回显。
+ * `isError` 文本（`{ok:false, tool, error}`，与现插件语义一致）；凭据绝不回显
+ * （面板注入只有 baseUrl/publicUrl/account）。
  */
 import { createInterface } from "node:readline";
 import { PRODUCT, VERSION } from "../core/protocol.ts";
 import type { McpConfig } from "./config.ts";
+import { PANEL_MIME, PANEL_RESOURCE, PANEL_URI, renderPanelHtml } from "./panel.ts";
 import { TOOLS, callTool } from "./tools.ts";
 
 const SERVER_INFO = { name: PRODUCT, version: VERSION };
@@ -20,6 +23,7 @@ interface JsonRpcMessage {
     protocolVersion?: unknown;
     name?: unknown;
     arguments?: unknown;
+    uri?: unknown;
   };
 }
 
@@ -89,6 +93,17 @@ export async function runMcpServer(
             },
           ],
           isError: true,
+        });
+      }
+    } else if (method === "resources/list") {
+      reply(id, { resources: [PANEL_RESOURCE] });
+    } else if (method === "resources/read") {
+      const uri = message.params?.uri;
+      if (uri !== PANEL_URI) {
+        replyError(id, -32602, `unknown resource: ${String(uri)}`);
+      } else {
+        reply(id, {
+          contents: [{ uri: PANEL_URI, mimeType: PANEL_MIME, text: renderPanelHtml(cfg) }],
         });
       }
     } else if (method === "ping") {

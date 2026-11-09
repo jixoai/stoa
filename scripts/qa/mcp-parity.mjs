@@ -1,12 +1,16 @@
 #!/usr/bin/env bun
 /**
- * mcp-parity — `stoa mcp`（新核心）与旧 ZCode 插件 `mcp-server.mjs` 的工具面 parity 证据。
+ * mcp-parity — `stoa mcp`（新核心）与旧 ZCode 插件 `mcp-server.mjs` 的接入面 parity 证据。
  *
  * 同一隔离后端（qa-serve，固定端口 13687，绝不动生产板）下：
  *   1. 旧服务 `node <主仓插件>/scripts/mcp-server.mjs`（REPORT_CHANNEL_* 旧 env）
- *      与新服务 `bun src/cli/main.ts mcp`（STOA_* env）各发 initialize / tools/list；
+ *      与新服务 `bun src/cli/main.ts mcp`（STOA_* env）各发 initialize / tools/list /
+ *      resources/list / resources/read；
  *   2. 工具定义规范化（key 排序）后 deep-diff：name/description/inputSchema 必须逐字一致；
- *   3. 两侧各发一次 `tools/call board_status`，均须 ok。
+ *   3. resources 面：清单除 URI 更名外逐字一致；`resources/read` 的 HTML（含配置注入）
+ *      新旧逐字一致（`ui://report-channel/board.html` → `ui://stoa/board.html`）；
+ *      未知 URI 的错误语义一致；
+ *   4. 两侧各发一次 `tools/call board_status`，均须 ok。
  *
  * 凭据只从隔离实例的 accounts env 文件读，绝不打印；收尾回收所有起过的进程。
  *
@@ -14,6 +18,7 @@
  *   bun scripts/qa/mcp-parity.mjs            # 起隔离后端 → 跑平权 → 全部回收
  *   OLD_PLUGIN_DIR=/path/to/plugins/report-channel bun scripts/qa/mcp-parity.mjs
  */
+import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -213,10 +218,16 @@ async function main() {
     return 1;
   }
 
-  const requests = [
+  const OLD_PANEL_URI = "ui://report-channel/board.html";
+  const NEW_PANEL_URI = "ui://stoa/board.html";
+  const BOGUS_URI = "ui://stoa/nope.html";
+  const requestsFor = (panelUri) => [
     { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } },
     { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
     { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "board_status", arguments: {} } },
+    { jsonrpc: "2.0", id: 4, method: "resources/list", params: {} },
+    { jsonrpc: "2.0", id: 5, method: "resources/read", params: { uri: panelUri } },
+    { jsonrpc: "2.0", id: 6, method: "resources/read", params: { uri: BOGUS_URI } },
   ];
 
   // 隔离 HOME：绝不读写真实 ~/.config/{stoa,fde2e}。
@@ -239,7 +250,7 @@ async function main() {
         REPORT_CHANNEL_DATA_DIR: DATA_DIR,
         REPORT_CHANNEL_FORCE_ACCOUNT: "",
       },
-      requests,
+      requestsFor(OLD_PANEL_URI),
     );
     sessions.new = await runMcpSession(
       "新核心",
@@ -252,7 +263,7 @@ async function main() {
         STOA_ACCOUNT: "manager",
         STOA_DATA_DIR: DATA_DIR,
       },
-      requests,
+      requestsFor(NEW_PANEL_URI),
     );
   } catch (err) {
     bad("stdio 会话", err.message);
@@ -309,6 +320,89 @@ async function main() {
       );
     } else {
       bad(`tools/list parity（${mismatches.length} 处不一致）`, `\n    ${mismatches.join("\n    ")}`);
+    }
+  }
+
+  // 2b. resources/list：除 URI 更名外逐字一致。
+  {
+    const oldResources = oldRes.get(4)?.result?.resources;
+    const newResources = newRes.get(4)?.result?.resources;
+    if (!Array.isArray(oldResources) || !Array.isArray(newResources)) {
+      bad("resources/list 载荷", "任一侧缺少 resources 数组");
+    } else {
+      const strip = (entries) => canon(entries.map((entry) => ({ ...entry, uri: "<uri>" })));
+      const oldUri = oldResources[0]?.uri;
+      const newUri = newResources[0]?.uri;
+      if (oldUri !== OLD_PANEL_URI || newUri !== NEW_PANEL_URI) {
+        bad("resources/list URI 更名", `old=${oldUri} new=${newUri}`);
+      } else if (
+        oldResources.length !== 1 ||
+        JSON.stringify(strip(oldResources)) !== JSON.stringify(strip(newResources))
+      ) {
+        bad(
+          "resources/list parity（除 URI 外字段）",
+          `\n    old: ${JSON.stringify(canon(oldResources)).slice(0, 400)}\n    new: ${JSON.stringify(canon(newResources)).slice(0, 400)}`,
+        );
+      } else {
+        ok(
+          "resources/list parity（仅 URI 更名）",
+          `${oldUri} → ${newUri}；name/title/mimeType 逐字一致`,
+        );
+      }
+    }
+  }
+
+  // 2c. resources/read：面板 HTML（含配置注入）新旧逐字一致，且不带凭据。
+  {
+    const oldContent = oldRes.get(5)?.result?.contents?.[0];
+    const newContent = newRes.get(5)?.result?.contents?.[0];
+    if (!oldContent || !newContent) {
+      bad("resources/read 载荷", "任一侧缺少 contents[0]");
+    } else {
+      const oldHtml = String(oldContent.text ?? "");
+      const newHtml = String(newContent.text ?? "");
+      const bootNeedles = [
+        `"baseUrl":"${backend.url}"`,
+        '"account":"manager"',
+        '"publicUrl":"http',
+      ];
+      const missingInjection = bootNeedles.filter((needle) => !newHtml.includes(needle));
+      if (oldContent.mimeType !== "text/html;profile=mcp-app" || newContent.mimeType !== "text/html;profile=mcp-app") {
+        bad("resources/read mimeType", `old=${oldContent.mimeType} new=${newContent.mimeType}`);
+      } else if (newContent.uri !== NEW_PANEL_URI || oldContent.uri !== OLD_PANEL_URI) {
+        bad("resources/read URI", `old=${oldContent.uri} new=${newContent.uri}`);
+      } else if (missingInjection.length > 0) {
+        bad("resources/read 配置注入", `缺 ${missingInjection.join(", ")}`);
+      } else if (newHtml.includes(token)) {
+        bad("resources/read 凭据不回显", "HTML 中出现 token");
+      } else if (oldHtml !== newHtml) {
+        const sha = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
+        bad(
+          "resources/read HTML 逐字一致",
+          `old sha=${sha(oldHtml)} len=${oldHtml.length} / new sha=${sha(newHtml)} len=${newHtml.length}`,
+        );
+      } else {
+        const sha = createHash("sha256").update(newHtml).digest("hex").slice(0, 16);
+        ok(
+          "resources/read HTML 逐字一致（注入 baseUrl/publicUrl/account，无凭据）",
+          `sha256=${sha}… len=${newHtml.length}`,
+        );
+      }
+    }
+  }
+
+  // 2d. 未知资源 URI：错误语义一致（-32602）。
+  {
+    const oldErr = oldRes.get(6)?.error;
+    const newErr = newRes.get(6)?.error;
+    const expected = `unknown resource: ${BOGUS_URI}`;
+    if (oldErr?.code === -32602 && newErr?.code === -32602 && oldErr.message === expected && newErr.message === expected) {
+      ok("未知资源错误语义一致", `-32602 ${expected}`);
+    } else {
+      bad(
+        "未知资源错误语义",
+        `old=${JSON.stringify(oldErr ?? null).slice(0, 120)} new=${JSON.stringify(newErr ?? null).slice(0, 120)}`,
+      );
     }
   }
 

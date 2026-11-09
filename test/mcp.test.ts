@@ -2,8 +2,9 @@
  * `stoa mcp` 单测（stoa-adapters P1-2/P1-3）：
  *  1. 工具清单与 JSON schema 完整性（八工具；post/reply 的 body|file 与 kind|format|article 同义组）；
  *  2. 配置解析顺序：flags > STOA_* > REPORT_CHANNEL_* / FDE2E_REPORT_* > 配置文件 > 旧配置回退 > 默认；
- *  3. 错误语义：tools/call 一律 isError 文本 `{ok:false, tool, error}`；
- *  4. 凭据不回显：stdout/stderr/错误文本都不含 token（401 / 网络错误 / 成功路径）。
+ *  3. 错误语义：tools/call 一律 isError 文本 `{ok:false, tool, error}`；未知资源 -32602；
+ *  4. 凭据不回显：stdout/stderr/错误文本/面板 HTML 都不含 token（401 / 网络错误 / 成功路径）；
+ *  5. 面板资源：resources/list（ui://stoa/board.html）与 resources/read 的 HTML 配置注入。
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -19,6 +20,7 @@ import {
   resolveMcpConfig,
 } from "../src/mcp/config.ts";
 import { TOOLS, callTool, cfgFor, resolveKind } from "../src/mcp/tools.ts";
+import { PANEL_MIME, PANEL_RESOURCE, PANEL_URI, renderPanelHtml } from "../src/mcp/panel.ts";
 import {
   initWorkspace,
   runCli,
@@ -150,6 +152,51 @@ describe("tools/list 工具面", () => {
     expect(resolveKind({ kind: "article", article: true })).toBe("article");
     expect(() => resolveKind({ kind: "article", format: "note" })).toThrow(/conflicting kind\/format\/article/);
     expect(() => resolveKind({ kind: "nope" })).toThrow(/kind must be "note" or "article"/);
+  });
+});
+
+// ── 面板资源（侧栏面板移植，UI 资源 ui://stoa/board.html）────────────────────
+describe("面板资源", () => {
+  test("清单条目：URI 更名 ui://stoa/board.html，其余字段不变", () => {
+    expect(PANEL_URI).toBe("ui://stoa/board.html");
+    expect(PANEL_MIME).toBe("text/html;profile=mcp-app");
+    expect(PANEL_RESOURCE).toEqual({
+      uri: "ui://stoa/board.html",
+      name: "公示板",
+      title: "公示板（侧栏面板）",
+      mimeType: "text/html;profile=mcp-app",
+    });
+  });
+
+  test("HTML 注入 baseUrl/publicUrl/account；桥与降级行为保留；无凭据", () => {
+    const cfg = resolveMcpConfig({
+      flags: {
+        baseUrl: "http://127.0.0.1:13687/",
+        account: "manager",
+        publicUrl: "https://board.example/",
+      },
+      env: {},
+      home: "/nonexistent-home",
+    });
+    const html = renderPanelHtml(cfg);
+    expect(html.startsWith("<!doctype html>")).toBe(true);
+    expect(html.endsWith("</html>")).toBe(true);
+    const boot = JSON.stringify({
+      baseUrl: "http://127.0.0.1:13687",
+      publicUrl: "https://board.example",
+      account: "manager",
+    });
+    expect(html.includes(`const BOOT = ${boot};`)).toBe(true);
+    // MCP Apps 桥（ui/initialize → initialized → tools/call / ui/open-link）保留。
+    expect(html.includes("ui/initialize")).toBe(true);
+    expect(html.includes("ui/notifications/initialized")).toBe(true);
+    expect(html.includes("ui/open-link")).toBe(true);
+    // 桥不通时的降级说明 + 直链（绝不留白屏）。
+    expect(html.includes("面板桥未就绪")).toBe(true);
+    expect(html.includes("board_peek")).toBe(true);
+    // 面板与凭据无关：HTML 里没有任何 token 字段或值。
+    expect(html.includes("token")).toBe(false);
+    expect(html.includes("Bearer")).toBe(false);
   });
 });
 
@@ -407,6 +454,43 @@ describe("stoa mcp stdio 集成（隔离后端）", () => {
     expect(run.stdout.includes(ownerToken)).toBe(false);
     expect(run.stderr.includes(managerToken)).toBe(false);
     expect(run.stderr.includes(ownerToken)).toBe(false);
+  });
+
+  test("resources/list + resources/read：面板清单 / HTML 注入 / 未知 URI 错误", async () => {
+    const run = await runMcpSession(
+      {
+        HOME: ws.root,
+        STOA_BASE_URL: server.url,
+        STOA_ACCOUNT: "owner",
+        STOA_DATA_DIR: ws.dataDir,
+      },
+      [
+        { jsonrpc: "2.0", id: 1, method: "resources/list", params: {} },
+        { jsonrpc: "2.0", id: 2, method: "resources/read", params: { uri: PANEL_URI } },
+        { jsonrpc: "2.0", id: 3, method: "resources/read", params: { uri: "ui://stoa/nope.html" } },
+      ],
+    );
+    const resources = run.responses.get(1)?.result?.resources as Array<Record<string, unknown>>;
+    expect(resources).toEqual([PANEL_RESOURCE]);
+    const contents = run.responses.get(2)?.result?.contents as Array<Record<string, unknown>>;
+    expect(contents).toHaveLength(1);
+    expect(contents[0]!.uri).toBe(PANEL_URI);
+    expect(contents[0]!.mimeType).toBe("text/html;profile=mcp-app");
+    const html = String(contents[0]!.text ?? "");
+    const boot = JSON.stringify({
+      baseUrl: server.url,
+      publicUrl: DEFAULT_PUBLIC_URL,
+      account: "owner",
+    });
+    expect(html.includes(`const BOOT = ${boot};`)).toBe(true);
+    expect(html.includes(ownerToken)).toBe(false);
+    expect(html.includes(managerToken)).toBe(false);
+    expect(run.stdout.includes(ownerToken)).toBe(false);
+    // 未知资源：-32602 + 固定文案（与旧插件逐字一致）。
+    expect(run.responses.get(3)?.error).toEqual({
+      code: -32602,
+      message: "unknown resource: ui://stoa/nope.html",
+    });
   });
 
   test("未知工具：isError 文本（{ok:false, tool, error} 语义）", async () => {
