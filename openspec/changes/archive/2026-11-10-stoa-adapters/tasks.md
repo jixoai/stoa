@@ -45,7 +45,7 @@
 - [x] P1-9. 旧插件去向登记（Owner 2026-11-10 指令）：FDE2E 不接插件模式（走 CLI 模式），本轮**不改**
   主仓 `.zcode/config.json`、不删 `plugins/report-channel`（当前会话依赖）；退役/删除归 §8 的
   FDE2E 对接 change。本任务只交付适配器侧 + 在 adapters/README 与 change 报告里写明该决定。
-- [ ] P1-10. 绿门：`bun test`、`check`、`typecheck(:ui)`、`build`、`openspec validate --strict`；回归
+- [x] P1-10. 绿门：`bun test`、`check`、`typecheck(:ui)`、`build`、`openspec validate --strict`；回归
   `thread-scope` 82/82、`thread-nesting` 30/30；报告（含各 harness 模式/验证状态与未覆盖登记）；
   归档 + 推送。
 
