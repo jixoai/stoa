@@ -5,7 +5,9 @@
 
 ## 核对来源与版本（逐条对照，不是凭记忆）
 
-对照检出：`deepseek-ai/deepseek-harness` @ `687f282e`（`dsh-v0.2.1-rc.2`，与桥接先例同 commit）。
+对照检出：`deepseek-ai/deepseek-harness` @ `687f282e`（`dsh-v0.2.1-rc.2`，与桥接先例同 commit）；
+**运行态实测于 `0.2.2-rc.1` @ `fcc0ad46`**（`@deepseek-ai/dsh-mcp-client@0.2.2-rc.1`，见 §5；
+该版本 mcp-client 已改为 namespace 插件：`ctx.plugin(McpClient, McpClient.Config({...}))`）。
 
 | 文档 | 用到的结论 |
 |---|---|
@@ -38,6 +40,13 @@
           # STOA_TOKEN: '…'   # 凭据必须显式放这里（ambient 会被清洗，见核对表）
 ```
 
+用**已发布的 npm 包**时把 command/args 换成（运行态实测形态，§5）：
+
+```yaml
+        command: bunx
+        args: ['@jixoai/stoa@0.1.0', 'mcp']
+```
+
 ## 2. 创造模式安装（推荐路径）
 
 1. 启动 Web profile 并选择**创造模式**（`docs/user/develop/practice/dynamic-cordis.zh.md:7`）。
@@ -56,6 +65,11 @@
 5. 管理纪律（note:`2026-09-16-…`）：组合包影响**该 profile 的全部会话**并跨重启保留；
    `plugin_manager` 工具要求 `danger-full-access` 或**单次调用批准**；改配置前先读组合包 patch，
    停用/移除用它而非手改文件。
+
+**运行态已验证的等价路径**：同一插件＋同一配置的**编程激活**（`ctx.plugin(McpClient,
+McpClient.Config({ serverName, transport: stdio, command, args, env }))`，即 dsh `mcp-manager`
+的真实激活路径）已在 `0.2.2-rc.1` @ `fcc0ad46` 上完成工具目录＋真调用 roundtrip（§5）。
+**尚未验证**的是 agent 经 `plugin_manager install_bundle` 的管理工具流（需模型会话）。
 
 **标准模式同样有 `plugin_manager`**（非预设部署在 profile patch 里启用 `tool-plugin-manager` 行，
 `packages/boot/plugin-manager/README.zh.md:33`）；习惯手写文件的话，也可直接把上面的 insert
@@ -91,21 +105,36 @@ dsh 原生支持远程 MCP（`transport: streamable-http` + `url` + `headers`，
 项目链，见 `packages/context/agent-instructions/README.md:34,40`）。
 片段含 **stop 前有界 wait 纪律**（结束回合前先 `wait-notifications`/`board_inbox` 检查一次）。
 
-## 5. 验证
+## 5. 验证（运行态已实测）
 
-配置层：YAML 可被 dsh 解析、组合包 `application: applied`、模型面出现
-`mcp__stoa__board_status` 等 8 个 `mcp__stoa__*` 工具（`ctx.tools.schemas()` 即进入模型请求的
-注册面，桥接先例同法断言）。
+**环境**：dsh `0.2.2-rc.1` @ `fcc0ad46`（`@deepseek-ai/dsh-mcp-client@0.2.2-rc.1`，
+`pnpm install --frozen-lockfile --ignore-scripts`，pnpm 11.28.5）＋ `@jixoai/stoa@0.1.0`
+（npm 发布版，经 `bunx` 真实拉取）＋ 隔离板 `127.0.0.1:13684`（auth 模式，`/tmp` 数据目录）。
 
-**运行态 smoke 登记为后续**（缺什么，如实）：
+**命令**：`DSH_E2E_MAX_WORKERS=1 pnpm run test:e2e packages/mcp/mcp-client/tests/stoa-dsh.e2e.ts`
+（e2e 走 `ctx.plugin(McpClient, McpClient.Config({...}))` + 官方 `executeToolFixture` 工具执行
+管线，无需任何模型 API key）。
 
-- 前置①：dsh 安装——浅克隆 + `pnpm install --frozen-lockfile --ignore-scripts`
-  （Node ≥ 22；先例环境见 `fde2e-cu-v0/docs/m2-dsh-bridge.md`「环境」表）；
-- 前置②：模型凭据/路由——真 LLM 会话一例需要模型路由（先例「边界与未竟」第 2 条：
-  dsh `llm-deepseek` 走 Messages 协议，A6API 需自定义路由，配置面大）；
-- 前置③：无凭据路径——工具目录与真调用可走先例的 e2e 方式（`ctx.tools.schemas()` +
-  工具执行管线，无需 API key）；先例已证明 stdio 腿经 dsh 全链路可用
-  （18 工具目录＋真调用 roundtrip＋错误语义透传，`m2-dsh-bridge.md`「结果」表 6/6）。
+**结果 5/5 PASS**：
+
+| check | 证据 |
+|---|---|
+| 工具目录进模型请求面 | `ctx.tools.schemas()` 含 8 个 `mcp__stoa__board_*`；与 `publicToolName('stoa', raw)` 复算逐名相等（全合法名，无哈希后缀） |
+| `board_status` roundtrip | `ok:true`、`as:"manager"`、`config.token:"present"`、`baseUrl` 命中隔离板；响应无 token |
+| `board_post` → `board_read` | post id 落库（author=manager、tags=[smoke]），读回 body 完全一致 |
+| 错误语义 | `board_reply` 缺 `post_id` → `isError:true`（`parent post "undefined" not found`）；`kind:"banana"` → `isError:true`（`kind must be`）；均不含 token |
+| 释放 | `fiber.dispose()` 后 `mcp__stoa__*` 全注销，子进程退出 |
+
+**边界（如实）**：
+
+- 未走 agent 侧 `plugin_manager install_bundle` 管理工具流（需模型会话）；YAML/组合包解析层与
+  bundle 安装 UI 仍待真会话验证（本页 §1/§2 的字段语义已按源码核对）。
+- 未验证 `ui://stoa/board.html` 资源经 `dsh-mcp-resources` 的读取投影。
+- MCP 层不做入参 schema 校验：缺 `post_id` 会发到服务端再以 `isError` 返回——不要把
+  `inputSchema.required` 当客户端门禁。
+- `stoa serve` 的端口受 worker 段约束（`13680–13699`，`src/core/protocol.ts`）；隔离验证选该段
+  空闲端口（本例 13684）。
+- 模型凭据/路由（真 LLM 会话）不在本 smoke 范围：工具目录与真调用已由 e2e 无凭据路径覆盖。
 
 ## 6. 桥接先例（为什么这套形状可信）
 
