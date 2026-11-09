@@ -84,6 +84,8 @@
 - [x] P5-5. 绿门：`bun test` 487/487、`bun run check`、`bun run typecheck:ui`、`bun run build` 全绿。
   - 证据：本 worktree 输出（487 pass / 0 fail；ui-lint 0）。
 
-- [ ] P5-6. 部署（www+alpha 同产物）与生产只读 smoke：实例页路由/返回、设置/账号/信息 sheet
+- [x] P5-6. 部署（www+alpha 同产物）与生产只读 smoke：实例页路由/返回、设置/账号/信息 sheet
   返回均正常，无 console error、零内容写。
-  - 证据：待部署后回填 app hash、生产 smoke 数字。
+  - 证据：`app-GBO7SyVk.js` 上线 report.worker.fde2e.com 与 alpha-report（线上字节=本地 dist，sha256 一致）；
+    生产只读 smoke 10/10（实例/设置/账号/信息深链返回、桌面 #/account/#/info 自动回退、
+    设置盖详情保持挂载、0 console error、API 无非预期 4xx）；零内容写。
