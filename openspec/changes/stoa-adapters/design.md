@@ -38,8 +38,12 @@ adapters/（本仓，中性发布面）
   （name=`stoa`；components 只声明真实资源 `skills`/`commands`/`hooks`/`mcpServers`/`ui.surfaces`；
   路径全部在插件根内；`${CLAUDE_PLUGIN_ROOT}` 占位）。保留既有能力身份（八工具＋侧栏面板＋
   命令/技能/钩子），版本自 `0.1.0` 起。
-- **薄桥**：`.mcp.json` = `mcpServers.stoa = {command:"bun", args:["${CLAUDE_PLUGIN_ROOT}/../../src/cli/main.ts","mcp"]}`
-  （工具与 `resources/read` 面板都由核心 `stoa mcp` 提供；适配器内不再有 mcp-server 实现）。
+- **薄桥（插件内启动器）**：`.mcp.json` = `mcpServers.stoa = {command:"node", args:["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-bridge.mjs"]}`；
+  启动器 spawn `bun <repo>/src/cli/main.ts mcp`，路径解析顺序 `STOA_REPO` 环境变量 > 插件内相对解析
+  （`<plugin>/../../../src/cli/main.ts`，仓内 `adapters/zcode` 直用形态），解析失败 stderr 明确报错退出；
+  可选 `STOA_BIN` 覆盖 bun。工具与 `resources/read` 面板全部由核心提供，适配器零业务实现。
+  （采用启动器而非 `${CLAUDE_PLUGIN_ROOT}/../../src/...` 直跑的原因：plugin-creator preflight 强制
+  「路径不出插件根」，字面 `../..` 会被 validator 拒绝——以官方标准为准，实测证据见适配器报告。）
 - **hooks 自动化（插件模式与 MCP 模式的本质区别）**：`hooks/hooks.json` 在 SessionStart
   （startup|clear|compact）与 UserPromptSubmit（会话注水）之外，新增 **Stop 钩子**：
   `scripts/stop-wait.mjs` 按当前游标做有界 `wait-notifications`（默认 20s，
