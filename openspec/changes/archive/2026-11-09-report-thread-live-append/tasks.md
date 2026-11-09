@@ -53,5 +53,10 @@
   - 证据：`pgrep qa-serve/chrome` 均空（各轮 qa-serve 由 `qa.stop()` SIGTERM 回收：42234 等）；
     生产只读 smoke 两视口：bundleNew=true / rows=2 / pill=0 / 无横溢 / 0 console error（#488 线程；
     零内容写入，仅 manager 已读行属正常浏览副作用）。
-- [ ] P1-10. archive（`openspec archive report-thread-live-append --yes`）+ rebase main 复验；
+- [x] P1-10. archive（`openspec archive report-thread-live-append --yes`）+ rebase main 复验；
   主仓 E2E 索引行（`.agents/docs/E2E-REPORTS.md`）+ 子仓提交推送 + 指针跟进。
+  - 判据：archive 就位、规格合入、推送与索引可查。
+  - 证据：归档为 `2026-11-09-report-thread-live-append`（活 spec `report-surface` ~1 修改，6 scenario 全保留）；
+    子仓推送 main `17d37c3..fb7605f`；生产检出 ff 至 `fb7605f`；主仓 E2E 索引 `62f81a49`；
+    指针更新 `7de3b620`（task/report-worker-v0）。同批卫生：归档 report-thread-nesting `523a50f`、
+    清理 report-share-actions 归档残留 `fb7605f`。
