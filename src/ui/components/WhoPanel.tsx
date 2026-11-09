@@ -24,15 +24,8 @@ const HUB_LABEL: Record<HubState, string> = {
  * 连接信息 + 成员列表的唯一实现（design report-ux-r2 §1）。
  * 桌面常驻右栏（WhoPanel）与移动端「信息」sheet 共用本组件，禁止写两份。
  */
-export function WhoPanelContent({
-  className,
-  onNavigate,
-}: {
-  className?: string;
-  /** 移动端 sheet 用：点成员/连接动作前先收起面板。 */
-  onNavigate?: () => void;
-}) {
-  const { who, account, ep, auth, sameOrigin, staticMode, snapshot, refreshWho, switchBackend, client } =
+export function WhoPanelContent({ className }: { className?: string }) {
+  const { who, account, ep, auth, sameOrigin, staticMode, snapshot, refreshWho, client } =
     useConnection();
   const hubStatus = useHubStatus();
   const hubLabel =
@@ -209,7 +202,7 @@ export function WhoPanelContent({
             size="sm"
             className="mt-1 w-full"
             data-testid="switch-backend"
-            onClick={switchBackend}
+            onClick={() => navigate("/instances")}
           >
             <ServerIcon data-icon="inline-start" />
             连接其它实例
@@ -245,7 +238,6 @@ export function WhoPanelContent({
                 onPointerEnter={() => prefetchProfile(client, member.id)}
                 onPointerDown={() => prefetchProfile(client, member.id)}
                 onClick={() => {
-                  onNavigate?.();
                   navigate(`/u/${encodeURIComponent(member.id)}`);
                 }}
               >

@@ -12,6 +12,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -27,6 +28,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { useConnection } from "@/state/connection";
+import { goBack, navigate, useRoute } from "@/lib/router";
 import { usePlugins } from "@/state/plugins";
 import { LINK_PREVIEW_PLUGIN_ID } from "@/lib/link-preview";
 import { staticLinkPreviewPlugin } from "@/lib/plugin-state";
@@ -224,11 +226,23 @@ function SettingsSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 }
 
 export function SettingsSheetProvider({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
+  const route = useRoute();
+  const open = route.name === "settings";
+  const closing = useRef(false);
+  useEffect(() => {
+    closing.current = false;
+  }, [route.name]);
   return (
-    <SettingsSheetContext.Provider value={{ open: () => setOpen(true) }}>
+    <SettingsSheetContext.Provider value={{ open: () => navigate("/settings") }}>
       {children}
-      <SettingsSheet open={open} onOpenChange={setOpen} />
+      <SettingsSheet
+        open={open}
+        onOpenChange={(next) => {
+          if (next || !open || closing.current) return;
+          closing.current = true;
+          goBack();
+        }}
+      />
     </SettingsSheetContext.Provider>
   );
 }

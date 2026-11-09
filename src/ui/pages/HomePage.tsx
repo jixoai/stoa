@@ -6,14 +6,12 @@
  * tab 状态写在 URL（`#/?tab=following`），刷新后保持；切换 tab 只换面板，
  * 两个 FeedController 常驻在 HomeFeedsProvider 里，游标互不复用。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import type { FeedTab } from "@core/types";
 import { InfoIcon } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
-import { InfoSheet } from "@/components/InfoSheet";
-import { AccountSheet } from "@/components/AccountSheet";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { TimelineFeed } from "@/components/TimelineFeed";
 import { useHomeFeeds } from "@/state/feed";
@@ -56,8 +54,6 @@ export function HomePage() {
   };
 
   const empty = useMemo(() => EMPTY[tab], [tab]);
-  const [infoOpen, setInfoOpen] = useState(false);
-  const [accountOpen, setAccountOpen] = useState(false);
   const { account, who, accounts } = useConnection();
   const meRow = who.find((row) => row.id === account?.id) ?? accounts.find((row) => row.id === account?.id) ?? null;
 
@@ -73,7 +69,7 @@ export function HomePage() {
             aria-label="账号菜单"
             title={`@${account?.id ?? "unknown"} · 账号菜单`}
             data-testid="home-account-button"
-            onClick={() => setAccountOpen(true)}
+            onClick={() => navigate("/account")}
           >
             <AuthorAvatar account={meRow} fallbackId={account?.id ?? "?"} size="small" />
           </Button>
@@ -84,7 +80,7 @@ export function HomePage() {
             size="icon"
             aria-label="信息"
             data-testid="home-info-button"
-            onClick={() => setInfoOpen(true)}
+            onClick={() => navigate("/info")}
           >
             <InfoIcon />
           </Button>
@@ -112,12 +108,6 @@ export function HomePage() {
         emptyDescription={empty.description}
       />
 
-      <InfoSheet open={infoOpen} onOpenChange={setInfoOpen} />
-      <AccountSheet
-        open={accountOpen}
-        onOpenChange={setAccountOpen}
-        onOpenInfo={() => setInfoOpen(true)}
-      />
     </div>
   );
 }

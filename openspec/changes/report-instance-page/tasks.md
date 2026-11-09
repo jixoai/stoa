@@ -59,3 +59,31 @@
 - [x] P4-4. `bun run build` 成功（vite 8.3.6，3044 modules）；`ep-input`/`ep-connect`
   testid 保留，既有 QA 引用不回归。
 - [x] P4-5. 本 tasks.md 已按实际完成项勾选；未 commit（按子代理纪律交给编排者）。
+
+## P5. 路由与返回补齐（Owner 2026-11-09 追加）
+
+- [x] P5-1. `src/ui/lib/router.tsx`：新增 `#/instances`、`#/account`、`#/settings`、
+  `#/info` 四个 depth=1 路由（parse/path/key/label）；深链合成「主页→子页」历史栈。
+  - 证据：`route-back.mjs` A1/A2——应用内进入 push、返回回原页；深链返回落主页（无离站确认弹窗）。
+
+- [x] P5-2. 路由接线：AppShell 以路由渲染实例页/账号抽屉/信息面板（保留底层根页与当前连接）；
+  SettingsSheetProvider 以 `#/settings` 驱动；HomePage/Nav/AccountSheet/WhoPanel 入口改
+  `navigate`；实例页增加「返回」按钮；LandingPage 连接成功后 `navigate("/")`。
+  - 证据：`route-back.mjs` A1/A4/A5/A6/A7；实例页截图 `a1-1280-instance-route.png`。
+
+- [x] P5-3. 浮层返回修复：撤掉账号/设置/信息 sheet 的 `useBackClose()` 合成条目方案
+  （history.back 与 Base UI 退场动画同帧会留下 `data-open` inert overlay），改由路由 pop
+  关闭；浮层内动作导航直接 replace/push 目标路由，无死条目。
+  - 证据：A3/A5/A7 关闭后无遮罩残留且后续点击正常；A6 一次返回回原页。
+
+- [x] P5-4. 新增 `scripts/qa/route-back.mjs`：A1–A14（桌面菜单/深链/设置/返回按钮/移动抽屉/
+  抽屉→实例/信息 sheet/两视口无横滚/无 runtime error/桌面直开 #/info 自动回主页/
+  设置盖详情不卸载/实例层暂停停留已读/Esc 关闭/landing 深链连接不改 URL）；产出 results/steps/PNG。
+  - 证据：14/14 PASS，报告 [report-instance-route-back](https://local-gaubee-report-instance-route-back.fde2e.com/report.html)。
+
+- [x] P5-5. 绿门：`bun test` 487/487、`bun run check`、`bun run typecheck:ui`、`bun run build` 全绿。
+  - 证据：本 worktree 输出（487 pass / 0 fail；ui-lint 0）。
+
+- [ ] P5-6. 部署（www+alpha 同产物）与生产只读 smoke：实例页路由/返回、设置/账号/信息 sheet
+  返回均正常，无 console error、零内容写。
+  - 证据：待部署后回填 app hash、生产 smoke 数字。

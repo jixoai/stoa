@@ -12,11 +12,11 @@ import { PageHeader } from "@/components/PageHeader";
 import { useConnection } from "@/state/connection";
 import { usePostFeed } from "@/state/feed";
 import { getCachedTagPosts } from "@/state/cache";
-import { goBack, routeSource, useRoute } from "@/lib/router";
+import { goBack, routeSource, usePageRoute } from "@/lib/router";
 import { tagDescription } from "@/lib/tags";
 
 export function TagPage() {
-  const route = useRoute();
+  const route = usePageRoute();
   const tag = route.name === "tag" ? route.tag : "";
   const source = routeSource(route);
   const { client } = useConnection();

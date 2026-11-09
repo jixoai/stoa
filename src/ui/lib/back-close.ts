@@ -1,10 +1,10 @@
 /**
- * 浮层的「返回即关闭」（图片预览 / 账号抽屉 / 信息 sheet）。
+ * 浮层的「返回即关闭」（图片预览 / 回复编辑器）。
  *
  * 官方实现口径（node_modules/@base-ui/react 实证）：
  * - Base UI 只在 **Drawer** 里接 `CloseWatcher`（仅 Android、监听 `cancel`），
  *   Dialog/Sheet 本身只有 Esc 与点遮罩；桌面浏览器的返回键是**历史导航**，CloseWatcher
- *   根本收不到。
+ *   根本收不到。账号抽屉/设置/信息面板已改为独立路由（#/account 等），不再用本 hook。
  * - 因此这里用**合成历史条目 + popstate**：打开浮层时压一层同 URL 条目，返回（按钮/手势/
  *   iOS 侧滑）先弹这层 → 关闭浮层，路由不变；用 X/Esc 关闭时把合成条目弹回，避免死条目。
  *   与 `LeaveGuard` 的根页关闭守卫同一套机制，CloseWatcher 不再重复接线。

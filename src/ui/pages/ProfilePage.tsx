@@ -35,7 +35,7 @@ import {
   getCachedProfile,
   rememberProfile,
 } from "@/state/cache";
-import { goBack, routeSource, useRoute } from "@/lib/router";
+import { goBack, routeSource, usePageRoute } from "@/lib/router";
 import { toastReadOnly } from "@/lib/readonly";
 import { dateTimeShort, roleLabel, timeShort } from "@/lib/format";
 
@@ -48,7 +48,7 @@ const STREAM_LABEL: Record<HubStatus["state"], string> = {
 };
 
 export function ProfilePage() {
-  const route = useRoute();
+  const route = usePageRoute();
   const account = route.name === "profile" ? route.account : "";
   const source = routeSource(route);
   const { client, account: me, staticMode, who, accounts } = useConnection();

@@ -6,10 +6,10 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { PostComposer } from "@/components/PostComposer";
 import { PageHeader } from "@/components/PageHeader";
 import { useConnection } from "@/state/connection";
-import { goBack, navigate, routeSource, useRoute } from "@/lib/router";
+import { goBack, navigate, routeSource, usePageRoute } from "@/lib/router";
 
 export function ComposePage() {
-  const route = useRoute();
+  const route = usePageRoute();
   const quoteId = route.name === "compose" ? route.quote : null;
   const source = routeSource(route);
   const { client, staticMode } = useConnection();

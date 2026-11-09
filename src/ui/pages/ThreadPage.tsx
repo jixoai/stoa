@@ -27,7 +27,7 @@ import {
   isViewTransitionRunning,
   navigate,
   routeSource,
-  useRoute,
+  usePageRoute,
   useTransitionDirection,
   useTransitionEpoch,
 } from "@/lib/router";
@@ -376,7 +376,7 @@ function ThreadAnchoring({
 }
 
 export function ThreadPage() {
-  const route = useRoute();
+  const route = usePageRoute();
   const postId = route.name === "post" ? route.id : "";
   const source = routeSource(route);
   const wantReply = route.name === "post" && route.reply === true;

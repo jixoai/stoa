@@ -59,7 +59,7 @@ function useActiveKey(): NavItem["key"] {
 
 export function DesktopNav() {
   const active = useActiveKey();
-  const { account, accounts, logout, switchBackend, staticMode } = useConnection();
+  const { account, accounts, logout, staticMode } = useConnection();
   const { unread } = useNotifications();
   const { dark, toggle } = useTheme();
   const settings = useSettingsSheet();
@@ -154,7 +154,7 @@ export function DesktopNav() {
                 </DropdownMenuItem>
               ) : (
                 <>
-                  <DropdownMenuItem onClick={switchBackend}>
+                  <DropdownMenuItem onClick={() => navigate("/instances")}>
                     <ServerIcon className="size-4" /> 连接其它实例
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />

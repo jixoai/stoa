@@ -23,10 +23,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { AuthorAvatar } from "@/components/AuthorAvatar";
 import { useConnection } from "@/state/connection";
 import { getCachedIdentity, getCachedProfile, rememberProfile } from "@/state/cache";
-import { navigate } from "@/lib/router";
+import { goBack, navigate } from "@/lib/router";
 import { roleLabel } from "@/lib/format";
 import { useTheme } from "@/lib/theme";
-import { useSettingsSheet } from "@/components/SettingsSheet";
 
 interface AccountSheetProps {
   open: boolean;
@@ -36,9 +35,8 @@ interface AccountSheetProps {
 }
 
 export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetProps) {
-  const { account, accounts, staticMode, client, logout, switchBackend } = useConnection();
+  const { account, accounts, staticMode, client, logout } = useConnection();
   const { dark, toggle } = useTheme();
-  const settings = useSettingsSheet();
   const [profile, setProfile] = useState<ProfileAccountView | null>(() =>
     account ? getCachedProfile(account.id) : null,
   );
@@ -65,9 +63,9 @@ export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetPro
     };
   }, [open, client, me, staticMode]);
 
+  // 抽屉是 #/account 路由：动作直接 replace 到目标页，返回时不会再弹回抽屉。
   const go = (path: string) => {
-    onOpenChange(false);
-    navigate(path);
+    navigate(path, true);
   };
 
   return (
@@ -133,10 +131,7 @@ export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetPro
               variant="ghost"
               className="h-11 justify-start gap-3 px-2 text-[0.95rem] font-normal"
               data-testid="account-menu-info"
-              onClick={() => {
-                onOpenChange(false);
-                onOpenInfo();
-              }}
+              onClick={() => onOpenInfo()}
             >
               <UsersRoundIcon className="size-5" />
               连接与成员
@@ -148,10 +143,7 @@ export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetPro
               variant="ghost"
               className="h-11 justify-start gap-3 px-2 text-[0.95rem] font-normal"
               data-testid="account-menu-settings"
-              onClick={() => {
-                onOpenChange(false);
-                settings.open();
-              }}
+              onClick={() => navigate("/settings", true)}
             >
               <SettingsIcon className="size-5" />
               设置
@@ -176,10 +168,7 @@ export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetPro
                   variant="ghost"
                   className="h-11 justify-start gap-3 px-2 text-[0.95rem] font-normal"
                   data-testid="account-menu-switch"
-                  onClick={() => {
-                    onOpenChange(false);
-                    switchBackend();
-                  }}
+                  onClick={() => navigate("/instances", true)}
                 >
                   <ServerIcon className="size-5" />
                   连接其它实例
@@ -189,8 +178,8 @@ export function AccountSheet({ open, onOpenChange, onOpenInfo }: AccountSheetPro
                   className="h-11 justify-start gap-3 px-2 text-[0.95rem] font-normal text-destructive hover:bg-destructive/10 hover:text-destructive"
                   data-testid="account-menu-logout"
                   onClick={() => {
-                    onOpenChange(false);
                     logout();
+                    goBack();
                   }}
                 >
                   <LogOutIcon className="size-5" />

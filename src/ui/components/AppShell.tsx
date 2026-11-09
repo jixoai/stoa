@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { LockIcon } from "lucide-react";
 import { DesktopNav, MobileNav } from "@/components/Nav";
 import { WhoPanel } from "@/components/WhoPanel";
@@ -13,8 +13,13 @@ import { NotificationsPage } from "@/pages/NotificationsPage";
 import { BookmarksPage } from "@/pages/BookmarksPage";
 import { ComposePage } from "@/pages/ComposePage";
 import { SettingsSheetProvider } from "@/components/SettingsSheet";
+import { LandingPage } from "@/pages/LandingPage";
+import { AccountSheet } from "@/components/AccountSheet";
+import { InfoSheet } from "@/components/InfoSheet";
 import {
+  goBack,
   historyDepth,
+  navigate,
   isRootRoute,
   RouteScopeProvider,
   routeKey,
@@ -60,13 +65,48 @@ export function AppShell() {
   const readDwell = useReadDwell();
   const detailLayerRef = useRef<HTMLDivElement | null>(null);
 
-  // 详情/成员/标签/发帖箱以覆盖层出现；底层根页保持挂载（列表节点与滚动位置不丢）。
-  const lastRoot = useRef<Route>(
+  // 覆盖层（详情/实例/账号/设置/信息）不替换底层页面：打开期间底层根页与详情页
+  // 都保持挂载（滚动/草稿/附件/节点状态不丢），关闭后原样返回。
+  const overlayRoute =
+    route.name === "instances" ||
+    route.name === "account" ||
+    route.name === "settings" ||
+    route.name === "info";
+  const lastBase = useRef<Route>(
     isRootRoute(route) ? route : { name: "home", tab: "recommended" },
   );
-  if (isRootRoute(route)) lastRoot.current = route;
-  const rootRoute = isRootRoute(route) ? route : lastRoot.current;
-  const detail = !isRootRoute(route);
+  if (!overlayRoute) lastBase.current = route;
+  const baseRoute = overlayRoute ? lastBase.current : route;
+  const lastRoot = useRef<Route>(
+    isRootRoute(baseRoute) ? baseRoute : { name: "home", tab: "recommended" },
+  );
+  if (isRootRoute(baseRoute)) lastRoot.current = baseRoute;
+  const rootRoute = isRootRoute(baseRoute) ? baseRoute : lastRoot.current;
+  const detail = !isRootRoute(baseRoute);
+  // 一次打开只允许一次回退：双击 Esc/返回不能吃掉 LeaveGuard 的合成条目。
+  const closingFor = useRef<string | null>(null);
+  useEffect(() => {
+    closingFor.current = null;
+  }, [route.name]);
+  const closeOverlayRoute = () => {
+    if (!overlayRoute || closingFor.current === route.name) return;
+    closingFor.current = route.name;
+    goBack();
+  };
+
+  // 信息/账号面板是移动端形态（内容 xl:hidden）：桌面直开会留下不可见 sheet/遮罩，
+  // 回退一层（窄屏保持正常打开）。
+  useEffect(() => {
+    if (route.name !== "info" && route.name !== "account") return;
+    if (window.matchMedia("(min-width: 1280px)").matches) goBack();
+  }, [route.name]);
+
+  // 实例管理是全屏层：被完全遮挡的 feed 不得继续停留计时（否则静默标已读）。
+  useLayoutEffect(() => {
+    if (route.name !== "instances") return;
+    readDwell.hold("route-instances");
+    return () => readDwell.release("route-instances");
+  }, [route.name, readDwell]);
 
   // 覆盖层只做视觉覆盖（IO 不能感知遮挡）：详情打开时暂停「覆盖层之外」的
   // 停留计时，覆盖层内部的卡片继续正常计时。layout effect 在首帧 IO 回调前生效。
@@ -112,16 +152,18 @@ export function AppShell() {
           {detail ? (
             <div ref={detailLayerRef} data-testid="app-detail-layer" className="contents">
               <RouteTransition
-                routeKey={routeKey(route)}
+                routeKey={routeKey(baseRoute)}
                 kind="detail"
                 testId="app-detail-view"
                 className="absolute inset-0 z-30 bg-background"
               >
-                <SharedNamesProvider active>
-                  {/* 子页按路由键重建：A→B 的第二次导航必须是全新实例，
-                      否则转场快照会拍到上一页的 state（数据要等 effect 才换）。 */}
-                  <DetailView key={routeKey(route)} route={route} />
-                </SharedNamesProvider>
+                <RouteScopeProvider route={baseRoute}>
+                  <SharedNamesProvider active>
+                    {/* 子页按路由键重建：A→B 的第二次导航必须是全新实例，
+                        否则转场快照会拍到上一页的 state（数据要等 effect 才换）。 */}
+                    <DetailView key={routeKey(baseRoute)} route={baseRoute} />
+                  </SharedNamesProvider>
+                </RouteScopeProvider>
               </RouteTransition>
             </div>
           ) : null}
@@ -133,6 +175,27 @@ export function AppShell() {
       <MobileNav />
       <LeaveGuard active={!detail && historyDepth() === 0} routeKey={routeKey(route)} />
       </div>
+      <AccountSheet
+        open={route.name === "account"}
+        onOpenChange={(open) => {
+          if (!open) closeOverlayRoute();
+        }}
+        onOpenInfo={() => navigate("/info", true)}
+      />
+      <InfoSheet
+        open={route.name === "info"}
+        onOpenChange={(open) => {
+          if (!open) closeOverlayRoute();
+        }}
+      />
+      {route.name === "instances" ? (
+        <div
+          className="fixed inset-0 z-50 bg-background"
+          data-testid="instance-route-layer"
+        >
+          <LandingPage onBack={closeOverlayRoute} />
+        </div>
+      ) : null}
     </SettingsSheetProvider>
   );
 }

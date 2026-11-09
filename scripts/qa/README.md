@@ -101,6 +101,10 @@ bun scripts/qa/event-hub-client.mjs       # EventHub client P1: two-context live
 bun scripts/qa/instance-page.mjs          # 实例管理页 A1-A9（静态壳 + mock /healthz + 真实
                                           # 隔离板连接）+ 回复原帖完整显示 A10（80 行长帖，
                                           # 390 全屏 / 1280 Dialog）
+bun scripts/qa/route-back.mjs             # 路由/返回 A1-A14：#/instances/#/account/#/settings/
+                                          # #/info 绑定与 pop、深链合成栈、抽屉内 replace 无死条目、
+                                          # 设置盖详情不卸载、实例层暂停停留已读、Esc 关闭、
+                                          # landing 深链连接不改 URL（静态壳 13724 + 隔离板）
 ```
 
 Behaviour:
@@ -111,6 +115,9 @@ Behaviour:
   回复上下文用一条 80 行长帖，结束时在隔离库硬清除；截图与 `results.json` /
   `steps.json` 落 `<主仓>/.agents/reports/manager/report-instance-page/`。
   `--no-build` 复用现有 dist，`--report-dir <dir>` 覆盖证据目录。
+- `route-back.mjs` 默认先 `bun run build`；额外起一个纯静态壳（13724）模拟 landing
+  深链，连接流程用 `qa-serve` 隔离板；证据默认落
+  `<主仓>/.agents/reports/manager/report-instance-route-back/`。
 - `read-dwell.mjs` 默认先 `bun run build`（qa-serve 托管 dist/），再用 CLI
   `export` 生成 `file://` 静态归档做 A5；`--no-build` 复用现有 dist。
   证据默认落 `<主仓>/.agents/reports/manager/report-read-dwell/`

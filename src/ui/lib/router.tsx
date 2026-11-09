@@ -10,7 +10,8 @@
  * - `prefers-reduced-motion` 时全部瞬时（不调用 View Transitions）。
  *
  * 路由表：`#/`、`#/?tab=following`、`#/p/<id>`、`#/u/<account>`、`#/tag/<tag>`、
- *         `#/search[?q=]`、`#/notifications`、`#/bookmarks`、`#/compose[?quote=]`
+ *         `#/search[?q=]`、`#/notifications`、`#/bookmarks`、`#/compose[?quote=]`、
+ *         `#/instances`（实例管理；从应用内进入保留当前连接，返回正常退回原页）
  */
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import { flushSync } from "react-dom";
@@ -25,7 +26,11 @@ export type Route =
   | { name: "search"; q: string }
   | { name: "notifications" }
   | { name: "bookmarks" }
-  | { name: "compose"; quote: string | null };
+  | { name: "compose"; quote: string | null }
+  | { name: "instances" }
+  | { name: "account" }
+  | { name: "settings" }
+  | { name: "info" };
 
 export type TransitionDirection = "forward" | "back" | "fade";
 
@@ -46,6 +51,10 @@ function parseHash(hash: string): Route {
   if (segments[0] === "search") return { name: "search", q: params.get("q") ?? "" };
   if (segments[0] === "notifications") return { name: "notifications" };
   if (segments[0] === "bookmarks") return { name: "bookmarks" };
+  if (segments[0] === "instances") return { name: "instances" };
+  if (segments[0] === "account") return { name: "account" };
+  if (segments[0] === "settings") return { name: "settings" };
+  if (segments[0] === "info") return { name: "info" };
   if (segments[0] === "compose") return { name: "compose", quote: params.get("quote") };
   return { name: "home", tab: params.get("tab") === "following" ? "following" : "recommended" };
 }
@@ -66,6 +75,14 @@ export function routePath(route: Route): string {
       return "/bookmarks";
     case "compose":
       return route.quote ? `/compose?quote=${encodeURIComponent(route.quote)}` : "/compose";
+    case "instances":
+      return "/instances";
+    case "account":
+      return "/account";
+    case "settings":
+      return "/settings";
+    case "info":
+      return "/info";
     default:
       return route.tab === "following" ? "/?tab=following" : "/";
   }
@@ -88,6 +105,14 @@ export function routeKey(route: Route): string {
       return "bookmarks";
     case "compose":
       return `compose:${route.quote ?? ""}`;
+    case "instances":
+      return "instances";
+    case "account":
+      return "account";
+    case "settings":
+      return "settings";
+    case "info":
+      return "info";
     default:
       return `home:${route.tab}`;
   }
@@ -109,12 +134,20 @@ export function routeLabel(route: Route): string {
       return "收藏";
     case "compose":
       return "发帖";
+    case "instances":
+      return "实例";
+    case "account":
+      return "账号";
+    case "settings":
+      return "设置";
+    case "info":
+      return "信息";
     default:
       return "主页";
   }
 }
 
-/** 0 = 根页（底部四导航）；1 = 详情/成员/标签/发帖箱（push 一层）。 */
+/** 0 = 根页（底部四导航）；1 = 详情/成员/标签/发帖箱/实例管理（push 一层）。 */
 export function routeDepth(route: Route): number {
   return route.name === "home" ||
     route.name === "search" ||
@@ -337,8 +370,13 @@ if (typeof window !== "undefined") {
     // 否则同一次返回会启动两次 View Transition（第一次被第二次 skip）。
     suppressHashChangeUntil = performance.now() + 300;
     const next = parseHash(window.location.hash);
-    if (routeKey(next) === routeKey(currentRoute)) return;
     const nextIdx = isReportState(event.state) ? event.state.idx : 0;
+    if (routeKey(next) === routeKey(currentRoute)) {
+      // 同路由的合成条目（guard/overlay）被弹出时也要同步深度，否则 historyDepth
+      // 会停在旧值，LeaveGuard 静默失效（report-instance-page P5 复核）。
+      currentIdx = nextIdx;
+      return;
+    }
     const direction: TransitionDirection =
       nextIdx < currentIdx ? "back" : nextIdx > currentIdx ? "forward" : "fade";
     const from = currentRoute;

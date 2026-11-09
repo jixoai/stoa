@@ -74,7 +74,7 @@ export interface ConnectionValue {
   snapshot: { asOfSeq: number; viewer: string } | null;
   error: string | null;
   loginError: string | null;
-  connect: (url: string) => Promise<void>;
+  connect: (url: string) => Promise<ConnectionPhase>;
   login: (secret: string) => Promise<void>;
   logout: () => void;
   switchBackend: () => void;
@@ -203,7 +203,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   );
 
   const startConnect = useCallback(
-    async (url: string) => {
+    async (url: string): Promise<ConnectionPhase> => {
       setPhase("connecting");
       setError(null);
       setLoginError(null);
@@ -225,7 +225,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         if (authStatus.mode === "auth") {
           if (!token) {
             setPhase("login");
-            return;
+            return "login";
           }
           try {
             await finishReady(nextClient, authStatus);
@@ -233,30 +233,32 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
             if (err instanceof AuthError) {
               clearToken(url);
               setPhase("login");
-              return;
+              return "login";
             }
             throw err;
           }
         } else {
           await finishReady(nextClient, authStatus);
         }
+        return "ready";
       } catch (err) {
         setError((err as Error).message);
         setPhase("error");
+        return "error";
       }
     },
     [finishReady],
   );
 
   const connect = useCallback(
-    async (rawUrl: string) => {
+    async (rawUrl: string): Promise<ConnectionPhase> => {
       const checked = checkEp(rawUrl);
       if (!checked.ok) {
         setError(checked.error ?? "后端地址不合法");
         setPhase("landing");
-        return;
+        return "landing";
       }
-      await startConnect(checked.url!);
+      return await startConnect(checked.url!);
     },
     [startConnect],
   );

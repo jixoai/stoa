@@ -62,7 +62,7 @@ export function InfoSheet({ open, onOpenChange }: InfoSheetProps) {
           <SheetDescription>实例连接与成员列表；点成员进入成员页。</SheetDescription>
         </SheetHeader>
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          <WhoPanelContent className="pt-1" onNavigate={() => onOpenChange(false)} />
+          <WhoPanelContent className="pt-1" />
         </div>
       </SheetContent>
     </Sheet>

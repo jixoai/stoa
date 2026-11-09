@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  ArrowLeftIcon,
   ArrowRightIcon,
   BookOpenIcon,
   ChevronDownIcon,
@@ -53,6 +54,7 @@ import {
   type EpHistoryEntry,
 } from "@/lib/ep";
 import { copyText } from "@/lib/copy";
+import { goBack } from "@/lib/router";
 import { fullTime, roleLabel, timeShort } from "@/lib/format";
 import { useConnection } from "@/state/connection";
 
@@ -97,7 +99,7 @@ function ProbeBadge({ state }: { state: ProbeState | undefined }) {
  *   品牌 + 一句用途 → 当前连接 → 添加实例 → 我的实例 → 如何启动实例（折叠）。
  * 历史只存本机 localStorage；在线探测走目标既有 GET /healthz；不新增后端接口。
  */
-export function LandingPage() {
+export function LandingPage({ onBack }: { onBack?: () => void } = {}) {
   const { connect, error: connectError, lastConnection } = useConnection();
   const [value, setValue] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -128,6 +130,19 @@ export function LandingPage() {
     for (const entry of loadEpHistoryEntries()) void probeOne(entry.url);
   }, [probeOne]);
 
+  /**
+   * 连接实例：只有「从路由层实例页进入且终态为 ready/login」才回退一层；
+   * landing 阶段（无 onBack）与失败态完全不改 URL（深链目标不丢）。
+   */
+  const activate = useCallback(
+    async (url: string) => {
+      const outcome = await connect(url);
+      if (!onBack || window.location.hash !== "#/instances") return;
+      if (outcome === "ready" || outcome === "login") goBack();
+    },
+    [connect, onBack],
+  );
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (submitting) return;
@@ -144,7 +159,7 @@ export function LandingPage() {
         setError(health.error ?? "无法连接该实例");
         return;
       }
-      await connect(checked.url!);
+      await activate(checked.url!);
     } finally {
       setSubmitting(false);
     }
@@ -209,6 +224,19 @@ export function LandingPage() {
             </div>
             <p className="text-sm text-muted-foreground">人机公示板 · 管理你连接的实例</p>
           </div>
+          {onBack ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="ml-auto shrink-0 max-sm:size-11"
+              data-testid="instance-back"
+              onClick={onBack}
+            >
+              <ArrowLeftIcon data-icon="inline-start" />
+              返回
+            </Button>
+          ) : null}
         </header>
 
         <div className="grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:items-start">
@@ -453,7 +481,7 @@ export function LandingPage() {
                             size="sm"
                             className="max-sm:min-h-11"
                             data-testid="ep-history-connect"
-                            onClick={() => void connect(entry.url)}
+                            onClick={() => void activate(entry.url)}
                           >
                             连接
                           </Button>
