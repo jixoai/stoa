@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { daemonRequest, probeDaemon } from "../src/daemon/client.ts";
 import { readDaemonInfo, readServices, type ServiceRecord } from "../src/daemon/state.ts";
 import { BUN, CLI, initWorkspace, runCli, type TestWorkspace } from "./helpers.ts";
+import { portIsListening } from "../src/server/ports.ts";
 
 /** 其它会话/生产占用的端口（qa-serve 的 RESERVED_PORTS 同表）。 */
 const RESERVED = new Set([13689, 13690, 13696, 13697]);
@@ -42,13 +43,9 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs: number, label: 
 async function pickFreePort(min: number, max: number, exclude: Set<number>): Promise<number> {
   for (let port = max; port >= min; port--) {
     if (exclude.has(port)) continue;
-    try {
-      const server = Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("x") });
-      await server.stop(true);
-      return port;
-    } catch {
-      // busy
-    }
+    // Bun 对已占用端口不抛错（会静默共享），所以用 TCP 探测判定空闲。
+    if (await portIsListening("127.0.0.1", port)) continue;
+    return port;
   }
   throw new Error(`no free port in ${min}-${max}`);
 }
@@ -137,13 +134,23 @@ test(
     expect(list.services.filter((s) => s.status === "running")).toHaveLength(1);
     expect(readServices(stateDir).filter((s) => s.status === "running")).toHaveLength(1);
 
-    // 未初始化目录拒绝
-    await expect(
-      daemonRequest(url, "/api/daemon/services", {
-        method: "POST",
-        body: { dataDir: join(ws.root, "not-initialized") },
-      }),
-    ).rejects.toThrow("not initialized");
+    // 临时会话（stoa-session-ux）：无 dataDir、自动初始化、默认开口令；停止后目录删除
+    const temp = await daemonRequest<{ service: ServiceRecord }>(url, "/api/daemon/services", {
+      method: "POST",
+      body: { location: "temp", name: "it-temp" },
+    });
+    expect(temp.service.ephemeral).toBe(true);
+    expect(existsSync(join(temp.service.dataDir, "report.sqlite"))).toBe(true);
+    const tempSecret = await daemonRequest<{ mode: string; key: string | null; key_link: string | null }>(
+      url,
+      `/api/daemon/services/${temp.service.id}/secret`,
+    );
+    expect(tempSecret.mode).toBe("auth");
+    expect(typeof tempSecret.key).toBe("string");
+    expect(tempSecret.key_link).toContain("/#key=");
+    await daemonRequest(url, `/api/daemon/services/${temp.service.id}/stop`, { method: "POST" });
+    expect(existsSync(temp.service.dataDir)).toBe(false);
+    expect(readServices(stateDir).some((s) => s.id === temp.service.id)).toBe(false);
 
     // stop（含登记降级为 stopped）。时限断言＝回归守卫：stop 子进程若回调 daemon 会重入死锁
     // （实测悬挂到 20s HTTP 超时才回落），正常应在数秒内完成。
@@ -275,7 +282,11 @@ test(
     for (const service of readServices(stateDir)) {
       expect(pidAlive(service.pid)).toBe(false);
     }
-    await expect(fetch(`${out.service_url}/healthz`, { signal: AbortSignal.timeout(400) })).rejects.toThrow();
+    // 端口可能被其它进程复用：断言「不再返回我们那个实例」而不是盲测 reject。
+    const leftover = await fetch(`${out.service_url}/healthz`, { signal: AbortSignal.timeout(400) })
+      .then((res) => res.json())
+      .catch(() => null);
+    expect((leftover as { dataDir?: string } | null)?.dataDir).not.toBe(ws.dataDir);
   },
   180_000,
 );

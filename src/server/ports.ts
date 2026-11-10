@@ -1,4 +1,5 @@
 import type { Server } from "bun";
+import { connect } from "node:net";
 import { fail } from "../core/errors.ts";
 import { PORT_MAX, PORT_MIN } from "../core/protocol.ts";
 
@@ -41,6 +42,30 @@ export function shuffledPorts(): number[] {
   return ports;
 }
 
+/**
+ * 端口占用探测（TCP 连接）：本机实测 Bun 允许两个进程 bind 同一回环端口（后 bind 者接走连接），
+ * 所以「绑定抛错」不能当作占用判定；随机挑端口前必须先 connect 探一下。
+ * 连接成功或超时都按「占用」处理（保守）；ECONNREFUSED 才是空闲。
+ */
+export async function portIsListening(host: string, port: number, timeoutMs = 300): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = connect({ host, port });
+    let settled = false;
+    const finish = (value: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs, () => finish(true));
+    socket.once("connect", () => finish(true));
+    socket.once("error", (err) => {
+      const code = (err as NodeJS.ErrnoException).code;
+      finish(code !== "ECONNREFUSED" && code !== "ECONNRESET" ? true : false);
+    });
+  });
+}
+
 export interface ListenOptions {
   host: string;
   port?: number | null;
@@ -67,6 +92,14 @@ export async function listenInRange(opts: ListenOptions): Promise<ListenResult> 
   const candidates = opts.port ? [assertPortInRange(opts.port)] : shuffledPorts();
   let lastError: unknown = null;
   for (const port of candidates) {
+    if (await portIsListening(opts.host, port)) {
+      // 本机 Bun 对已占用端口不抛错（会静默共享）——必须先探测，别抢别人的端口。
+      if (opts.port) {
+        fail("CONFLICT", `port ${opts.port} is already in use`);
+      }
+      lastError = new Error(`port ${port} is already in use`);
+      continue;
+    }
     try {
       const server = Bun.serve({
         hostname: opts.host,

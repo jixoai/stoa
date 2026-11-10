@@ -54,6 +54,16 @@ export interface ServiceRecord {
   startedAt: number;
   status: ServiceStatus;
   stoppedAt?: number;
+  /** 挂载时显式传给子服务的 env 文件（口令读写定位用；adopt 实例为空）。 */
+  envFiles?: string[] | null;
+  /** 临时会话：停止/移除登记时整目录删除（stoa-session-ux design §1）。 */
+  ephemeral?: boolean;
+  /** 公网入口（隧道域名）：口令链接优先用它；由 PATCH 写入。 */
+  publicUrl?: string | null;
+  /** 口令所在的 env 文件（首次发现/写入后记录）。 */
+  secretFile?: string | null;
+  /** 会话位置（stoa-session-ux）：auto=~/.stoa/sessions / temp=临时 / path=自定义。 */
+  location?: "auto" | "temp" | "path";
 }
 
 export function defaultDaemonStateDir(home = process.env.HOME ?? homedir()): string {

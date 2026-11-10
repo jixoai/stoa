@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 /**
- * stoa-daemon E2E 验收（D1/D2/D3）：daemon 模式（CLI 默认挂载、终端释放、幂等）、
- * `--standalone` 前台契约、daemon-webui（390/1280 真实操作：空态/挂载/停止/移除/关闭）。
+ * stoa-daemon E2E 验收（daemon＋session-ux）：daemon 模式（CLI 默认挂载、终端释放、幂等）、
+ * `--standalone` 前台契约、daemon-webui（390/1280 真实操作：空态/位置三态/目录选择器/口令中心/
+ * 口令链接自动登录/临时会话即删/停止/移除/关闭）。
  *
  * Isolation: 全部状态在 mkdtemp 的 state-dir（STOA_DAEMON_STATE_DIR）与临时 data-dir；
  * 生产板 127.0.0.1:13689 与本机真实 daemon 零接触（显式 --state-dir / env）。
@@ -19,6 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { REPO_ROOT, argValue } from "./lib/qa-env.mjs";
+import { portIsListening } from "../../src/server/ports.ts";
 
 const NO_BUILD = process.argv.includes("--no-build");
 const REPORT_DIR = resolve(
@@ -107,13 +109,9 @@ async function waitFor(checkFn, timeoutMs, label) {
 async function pickFreePort(min, max, exclude) {
   for (let port = max; port >= min; port--) {
     if (exclude.has(port)) continue;
-    try {
-      const server = await Bun.serve({ hostname: "127.0.0.1", port, fetch: () => new Response("x") });
-      await server.stop(true);
-      return port;
-    } catch {
-      // busy
-    }
+    // Bun 对已占用端口不抛错（会静默共享），必须 TCP 探测后再认领。
+    if (await portIsListening("127.0.0.1", port)) continue;
+    return port;
   }
   throw new Error(`no free port in ${min}-${max}`);
 }
@@ -148,6 +146,11 @@ async function fetchJson(url, timeoutMs = 2000) {
 // ── sandbox ─────────────────────────────────────────────────────────────────
 const sandbox = mkdtempSync(join(tmpdir(), "stoa-daemon-qa-"));
 const stateDir = join(sandbox, "state");
+// 自动会话落在 $HOME/.stoa/sessions：HOME 必须隔离，别污染真实主目录。
+const sandboxHome = join(sandbox, "home");
+const pickedDir = join(sandbox, "picked-dir");
+mkdirSync(sandboxHome, { recursive: true, mode: 0o700 });
+mkdirSync(pickedDir, { recursive: true, mode: 0o700 });
 const dirs = {
   a: join(sandbox, "board-a"),
   b: join(sandbox, "board-b"),
@@ -198,7 +201,10 @@ try {
   daemonUrl = `http://127.0.0.1:${daemonPort}`;
 
   // ── S1: daemon start（CLI） ────────────────────────────────────────────────
-  const start1 = cliJson(["daemon", "start", "--state-dir", stateDir, "--port", String(daemonPort)]);
+  const start1 = cliJson(["daemon", "start", "--state-dir", stateDir, "--port", String(daemonPort)], {
+    HOME: sandboxHome,
+    STOA_DIR_PICKER_RESULT: pickedDir,
+  });
   pids.daemon = Number(start1.json.pid) || null;
   const health1 = await fetchJson(`${daemonUrl}/healthz`);
   check(
@@ -222,7 +228,13 @@ try {
   // ── S4a: daemon-webui 空态（先于任何 CLI 挂载） ───────────────────────────
   browser = await chromium.launch({ channel: "chrome", headless: true });
   const consoleErrors = [];
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true });
+  // 口令对话框的「复制」走 clipboard API：headless 下需要显式授权（否则走 execCommand 兜底可能失败）。
+  const mainContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+  const page = await mainContext.newPage();
   page.on("console", (msg) => {
     if (msg.type() === "error") consoleErrors.push(msg.text());
   });
@@ -299,6 +311,19 @@ try {
     imageWidth: "1280×900",
   });
 
+  // ── S2-4 端口独占：显式端口被占 → CONFLICT（绝不静默共享）─────────────────
+  const conflict = cliRun(
+    ["serve", "--data-dir", dirs.b, "--port", String(portA)],
+    { STOA_DAEMON_STATE_DIR: stateDir },
+  );
+  const conflictText = `${conflict.stdout}\n${conflict.stderr}`;
+  check(
+    "S2-4 显式端口被占用 → CONFLICT（不静默共享端口）",
+    conflict.code !== 0 && /CONFLICT|already in use/i.test(conflictText),
+    `port=${portA} exit=${conflict.code} ${conflictText.trim().slice(0, 120)}`,
+    { id: "S2-4", expect: "端口被 A 板占用时 serve 失败并报 CONFLICT（不静默共享）" },
+  );
+
   // ── S3: --standalone 前台契约 ─────────────────────────────────────────────
   const standalone = spawn(BUN, [CLI, "serve", "--standalone", "--data-dir", dirs.b, "--port", String(portB)], {
     cwd: REPO_ROOT,
@@ -333,7 +358,8 @@ try {
   check("S3-3 `--standalone` Ctrl-C（SIGINT）即退，端口释放", standaloneExited, `exitCode=${standalone.exitCode}`,
     { id: "S3-3", expect: "SIGINT 后进程退出（exitCode 0）" });
 
-  // 表单校验：空 dataDir 提交 → 内联错误（不发请求）
+  // ── S4-3 表单校验（自定义位置空路径）──────────────────────────────────────
+  await page.getByTestId("daemon-location-path").click();
   await page.getByTestId("daemon-mount-submit").click();
   const formErrorVisible = await page
     .getByTestId("daemon-mount-error")
@@ -341,39 +367,53 @@ try {
     .catch(() => false);
   const imgFormError = await shot(page, "daemon-form-error-390.png");
   check(
-    "S4-3 表单校验：空 dataDir 提交给出内联错误（不发起挂载请求）",
+    "S4-3 表单校验：自定义位置空路径提交给出内联错误（不发起挂载请求）",
     formErrorVisible,
     "inline error shown",
-    { id: "S4-3", expect: "Alert 内联提示；服务列表无新增", image: imgFormError, imageWidth: "390×844" },
+    { id: "S4-3", expect: "内联提示；服务列表无新增", image: imgFormError, imageWidth: "390×844" },
   );
 
-  // UI 挂载 C 板（表单）
-  await page.getByTestId("daemon-mount-data-dir").fill(dirs.c);
+  // ── S4-4 目录选择器（daemon 宿主侧对话框；验收用测试钩子返回固定目录）──────
+  await page.getByTestId("daemon-pick-dir").click();
+  const picked = await waitFor(
+    () => page.getByTestId("daemon-mount-data-dir").inputValue().then((value) => value === pickedDir),
+    15_000,
+    "picker fill",
+  );
+  check(
+    "S4-4 「选择文件夹」把所选目录回填到路径输入框",
+    picked,
+    `picked=${pickedDir}`,
+    { id: "S4-4", expect: "POST /api/daemon/pick-directory → 路径回填（真实对话框为人工项）" },
+  );
+
+  // ── S4-5 自定义位置挂载（路径来自选择器；空目录自动初始化＋默认开口令）──────
   await page.getByTestId("daemon-mount-port").fill(String(portC));
   await page.getByTestId("daemon-mount-name").fill("ui-board");
   await page.getByTestId("daemon-mount-submit").click();
   const uiMounted = await waitFor(
     () => page.locator("text=ui-board").count().then((n) => n > 0),
-    20_000,
+    25_000,
     "ui mount row",
   );
   const listAfterMount = cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? [];
   const uiRecord = listAfterMount.find((s) => s.name === "ui-board");
   if (uiRecord?.pid) pids.services.push(Number(uiRecord.pid));
+  const pickedHealth = await fetchJson(`http://127.0.0.1:${portC}/healthz`);
   await waitToastsGone(page);
   const imgMount390 = await shot(page, "daemon-mounted-390.png");
   check(
-    "S4-4 控制台表单挂载 C 板：UI 行出现 + daemon 登记 running + healthz 200",
+    "S4-5 控制台挂载自定义目录：UI 行出现 + 目录已自动初始化（report.sqlite）+ healthz 200",
     uiMounted &&
       uiRecord?.status === "running" &&
-      (await fetchJson(`http://127.0.0.1:${portC}/healthz`))?.ok === true,
+      existsSync(join(pickedDir, "report.sqlite")) &&
+      pickedHealth?.ok === true,
     `name=ui-board port=${portC} pid=${uiRecord?.pid}`,
-    { id: "S4-4", expect: "表单交互真实打到 POST /api/daemon/services", image: imgMount390, imageWidth: "390×844" },
+    { id: "S4-5", expect: "表单交互真实打到 POST /api/daemon/services；空目录自动 init", image: imgMount390, imageWidth: "390×844" },
   );
 
-  // UI 停止 C 板
-  const stopBtn = page.locator(`[data-testid="daemon-stop-${uiRecord?.id ?? ""}"]`);
-  await stopBtn.click();
+  // ── S4-6 控制台「停止」────────────────────────────────────────────────────
+  await page.locator(`[data-testid="daemon-stop-${uiRecord?.id ?? ""}"]`).click();
   const uiStopped = await waitFor(
     async () =>
       (cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? []).find(
@@ -385,13 +425,13 @@ try {
   await waitToastsGone(page);
   const imgStopped = await shot(page, "daemon-stopped-390.png");
   check(
-    "S4-5 控制台「停止」按钮：服务真停（进程死 + 登记降级 stopped）",
+    "S4-6 控制台「停止」按钮：服务真停（进程死 + 登记降级 stopped）",
     uiStopped && !pidAlive(uiRecord?.pid),
     `pid ${uiRecord?.pid} alive=${pidAlive(uiRecord?.pid)}`,
-    { id: "S4-5", expect: "POST /:id/stop 生效；登记 status=stopped", image: imgStopped, imageWidth: "390×844" },
+    { id: "S4-6", expect: "POST /:id/stop 生效；登记 status=stopped", image: imgStopped, imageWidth: "390×844" },
   );
 
-  // UI 移除登记 C 板
+  // ── S4-7 控制台「移除登记」────────────────────────────────────────────────
   await page.locator(`[data-testid="daemon-remove-${uiRecord?.id ?? ""}"]`).click();
   const uiRemoved = await waitFor(
     () => page.locator("text=ui-board").count().then((n) => n === 0),
@@ -400,10 +440,116 @@ try {
   );
   const registryAfterRemove = cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? [];
   check(
-    "S4-6 控制台「移除登记」：DELETE 生效，登记消失",
+    "S4-7 控制台「移除登记」：DELETE 生效，登记消失",
     uiRemoved && !registryAfterRemove.some((s) => s.id === uiRecord?.id),
     `remaining=${registryAfterRemove.length}`,
-    { id: "S4-6", expect: "已停服务可移除登记（409 不再出现）" },
+    { id: "S4-7", expect: "已停服务可移除登记（409 不再出现）" },
+  );
+
+  // ── S4-8 自动位置挂载（无 data-dir）───────────────────────────────────────
+  await page.getByTestId("daemon-location-auto").click();
+  await page.getByTestId("daemon-mount-name").fill("ui-auto");
+  await page.getByTestId("daemon-mount-submit").click();
+  const autoRowVisible = await waitFor(
+    () => page.locator("text=ui-auto").count().then((n) => n > 0),
+    25_000,
+    "auto row",
+  );
+  const autoList = cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? [];
+  const autoRecord = autoList.find((s) => s.name === "ui-auto");
+  if (autoRecord?.pid) pids.services.push(Number(autoRecord.pid));
+  const autoHealth = autoRecord?.url ? await fetchJson(`${autoRecord.url}/healthz`) : null;
+  await waitToastsGone(page);
+  const imgAuto = await shot(page, "daemon-auto-session-390.png");
+  check(
+    "S4-8 「自动」位置挂载：无需 data-dir，会话落在 $HOME/.stoa/sessions 且自动初始化/开口令",
+    autoRowVisible &&
+      autoRecord?.status === "running" &&
+      typeof autoRecord?.dataDir === "string" &&
+      autoRecord.dataDir.startsWith(join(sandboxHome, ".stoa", "sessions")) &&
+      existsSync(join(autoRecord.dataDir, "report.sqlite")) &&
+      autoHealth?.ok === true,
+    `dataDir=${autoRecord?.dataDir}`,
+    { id: "S4-8", expect: "dataDir 自动生成；init 与 STOA_AUTH 自动完成", image: imgAuto, imageWidth: "390×844" },
+  );
+
+  // ── S4-9 口令对话框：掩码、链接、复制 ─────────────────────────────────────
+  const autoSecret = await fetchJson(`${daemonUrl}/api/daemon/services/${autoRecord?.id}/secret`);
+  await page.getByTestId(`daemon-secret-${autoRecord?.id ?? ""}`).click();
+  await page.waitForSelector('[data-testid="daemon-secret-dialog"]', { timeout: 10_000 });
+  const secretType = await page.getByTestId("daemon-secret-value").getAttribute("type");
+  const linkDisplay = await page.getByTestId("daemon-secret-link").inputValue();
+  const imgSecret = await shot(page, "daemon-secret-dialog-390.png");
+  await page.getByTestId("daemon-secret-copy-link").click();
+  await sleep(300);
+  const copiedLink = await page
+    .evaluate(() => navigator.clipboard.readText())
+    .catch(() => "");
+  await page
+    .locator('[data-testid="daemon-secret-dialog"]')
+    .getByRole("button", { name: "关闭" })
+    .click()
+    .catch(() => undefined);
+  check(
+    "S4-9 口令对话框：口令掩码、链接展示打码、复制得到完整链接",
+    secretType !== "text" &&
+      typeof autoSecret?.key === "string" &&
+      linkDisplay.includes("#key=") &&
+      !linkDisplay.includes(String(autoSecret?.key)) &&
+      copiedLink === autoSecret?.key_link,
+    `mode=${autoSecret?.mode} masked=${secretType !== "text"} displayRedacted=${!linkDisplay.includes(String(autoSecret?.key))} copyMatch=${copiedLink === autoSecret?.key_link}`,
+    { id: "S4-9", expect: "掩码/打码展示；复制按钮带完整口令；复制提示出现", image: imgSecret, imageWidth: "390×844" },
+  );
+
+  // ── S4-10 口令链接：新浏览器上下文打开即自动登录 ──────────────────────────
+  const linkContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const pageLink = await linkContext.newPage();
+  const linkErrors = [];
+  pageLink.on("pageerror", (err) => linkErrors.push(String(err)));
+  await pageLink.goto(String(autoSecret?.key_link ?? ""), { waitUntil: "domcontentloaded" });
+  const boardReady = await pageLink
+    .waitForSelector('[data-testid="app-root-view"]', { timeout: 20_000 })
+    .then(() => true)
+    .catch(() => false);
+  const loginVisible = await pageLink.getByTestId("login-secret").count();
+  const hashAfter = new URL(pageLink.url()).hash;
+  const imgLink = await shot(pageLink, "daemon-keylink-board-390.png");
+  await linkContext.close();
+  check(
+    "S4-10 口令链接即点即用：新上下文自动登录进入版，地址栏已抹除 #key=",
+    boardReady && loginVisible === 0 && !hashAfter.includes("key=") && linkErrors.length === 0,
+    `board=${boardReady} login=${loginVisible} hash=${hashAfter || "(none)"}`,
+    { id: "S4-10", expect: "口令链接零手输进入版；hash 不残留", image: imgLink, imageWidth: "390×844" },
+  );
+
+  // ── S4-11 临时会话：停止即删 ──────────────────────────────────────────────
+  await page.getByTestId("daemon-location-temp").click();
+  await page.getByTestId("daemon-mount-name").fill("ui-temp");
+  await page.getByTestId("daemon-mount-submit").click();
+  const tempRow = await waitFor(
+    () => page.locator("text=ui-temp").count().then((n) => n > 0),
+    25_000,
+    "temp row",
+  );
+  const tempList = cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? [];
+  const tempRecord = tempList.find((s) => s.name === "ui-temp");
+  if (tempRecord?.pid) pids.services.push(Number(tempRecord.pid));
+  const tempDataDir = tempRecord?.dataDir ?? "";
+  await page.locator(`[data-testid="daemon-stop-${tempRecord?.id ?? ""}"]`).click();
+  const tempCleaned = await waitFor(
+    async () => {
+      const rows = cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? [];
+      return !rows.some((s) => s.id === tempRecord?.id) && tempDataDir !== "" && !existsSync(tempDataDir);
+    },
+    25_000,
+    "temp session removed",
+  );
+  const imgTemp = await shot(page, "daemon-temp-after-stop-390.png");
+  check(
+    "S4-11 临时会话：停止后登记移除 + 目录删除（零残留）",
+    tempRow && tempCleaned,
+    `dataDir=${tempDataDir}`,
+    { id: "S4-11", expect: "ephemeral 会话停止即删；登记同步消失", image: imgTemp, imageWidth: "390×844" },
   );
 
   // ── S5: serve --stop（daemon 感知）与 daemon stop 全回收 ───────────────────
@@ -485,10 +631,10 @@ try {
     join(REPORT_DIR, "steps.json"),
     JSON.stringify(
       {
-        title: "stoa-daemon — daemon 服务 + daemon-webui E2E 验收",
+        title: "stoa-daemon＋session-ux — daemon 服务 / 口令中心 / 口令链接 E2E 验收",
         brand: "Stoa（人机公示板）· stoa-daemon 交付报告",
         subtitle:
-          "daemon 模式默认启用：`stoa serve` 按需拉起本机 daemon、挂载实例、打印服务+daemon 链接并释放终端；`--standalone` 解耦（前台占用）；daemon-webui 统一管理（挂载/停止/移除/关闭）并作为插件可视化入口。",
+          "daemon 模式默认启用；webui 不再要求 data-dir：位置可选自动（~/.stoa/sessions）/临时（停止即删）/自定义（原生目录选择器），口令成为一等公民（挂载可指定、服务行可读/复制口令与口令链接/重新生成，链接 #fragment 即点即用自动登录）。",
         meta: `2026-11-10 · ${checks.length} 断言 / ${failedChecks.length} FAIL · 390×844 + 1280×900 · 隔离 stateDir=${stateDir} · 临时 data-dir ×3 · 真实 daemon/服务进程全程回收`,
         thesis:
           failedChecks.length === 0
@@ -497,6 +643,8 @@ try {
         env: [
           ["隔离沙箱", sandbox],
           ["daemon", `state-dir=${stateDir}（STOA_DAEMON_STATE_DIR；默认 13679 段自选）`],
+          ["HOME（会话根）", `${sandboxHome}（自动会话 → $HOME/.stoa/sessions；与真实主目录隔离）`],
+          ["目录选择器", `测试钩子 STOA_DIR_PICKER_RESULT=${pickedDir}（真实原生对话框为人工验收项）`],
           ["data-dir", `${dirs.a} / ${dirs.b} / ${dirs.c}（init 真实 CLI）`],
           ["视口", "390×844（移动，hasTouch）／1280×900（桌面）；Chrome"],
           ["生产板/真实 daemon", "127.0.0.1:13689 与默认 state-dir 零接触"],
@@ -515,8 +663,8 @@ try {
             steps: steps.filter((step) => /^S3/.test(step.id ?? "")),
           },
           {
-            title: "3 · daemon-webui（S4，390/1280 真操作）",
-            note: "注入开关、列表、表单挂载、停止、移除登记；截图同目录。",
+            title: "3 · daemon-webui：位置/目录选择器/口令中心/口令链接（S4，390/1280 真操作）",
+            note: "空态→表单校验→选择文件夹→自定义/自动/临时三种位置→口令对话框（掩码/链接/复制）→口令链接新上下文自动登录。",
             steps: steps.filter((step) => /^(S4|S6)/.test(step.id ?? "")),
           },
           {

@@ -159,14 +159,53 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
   };
   const app = createApp(deps);
 
+  /**
+   * 绑定成功 ≠ 端口归我们：本机实测（macOS/Bun 1.4）两个进程可以同时 bind 同一回环端口，
+   * 后 bind 者接走全部连接。用 `/healthz` 自证归属（instanceId），不通过就换端口；
+   * 显式 `--port` 被他人占用时直接 CONFLICT，绝不静默共享端口。
+   */
+  const verifyOwnership = async (port: number): Promise<boolean> => {
+    if (!isLoopbackHost(host)) return true; // 非回环地址无法用 127.0.0.1 自证
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/healthz`, {
+        signal: AbortSignal.timeout(1200),
+        headers: { accept: "application/json" },
+      });
+      if (!res.ok) return false;
+      const body = (await res.json()) as { instanceId?: unknown };
+      return body.instanceId === instanceId;
+    } catch {
+      return false;
+    }
+  };
+
   let listening;
   try {
-    listening = await listenInRange({
-      host,
-      port: opts.port ?? null,
-      fetch: (req) => app.fetch(req),
-      idleTimeout: 60,
-    });
+    for (let attempt = 0; ; attempt++) {
+      listening = await listenInRange({
+        host,
+        port: opts.port ?? null,
+        fetch: (req) => app.fetch(req),
+        idleTimeout: 60,
+      });
+      if (await verifyOwnership(listening.port)) break;
+      try {
+        listening.server.stop(true);
+      } catch {
+        // already stopped
+      }
+      listening = undefined;
+      if (opts.port !== undefined && opts.port !== null) {
+        fail(
+          "CONFLICT",
+          `port ${opts.port} is served by another process on this machine ` +
+            `(bind succeeded but /healthz answered a different instance)`,
+        );
+      }
+      if (attempt >= 8) {
+        fail("UNAVAILABLE", "could not find a port owned by this instance (ports appear shared)");
+      }
+    }
   } catch (err) {
     lock.release();
     db.close();

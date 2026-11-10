@@ -74,6 +74,8 @@ export interface ConnectionValue {
   snapshot: { asOfSeq: number; viewer: string } | null;
   error: string | null;
   loginError: string | null;
+  /** `#key=` 口令链接带来的初始口令（自动登录失败时回填登录框；成功后仍保留以便重试）。 */
+  loginPrefill: string | null;
   connect: (url: string) => Promise<ConnectionPhase>;
   login: (secret: string) => Promise<void>;
   logout: () => void;
@@ -83,6 +85,28 @@ export interface ConnectionValue {
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null);
+
+/**
+ * 口令链接（stoa-session-ux design §5）：`<url>/#key=<口令>`。
+ * 只在模块加载时读取一次并立即从地址栏抹除（fragment 本就不经网络，抹除避免被历史记录留存）。
+ */
+function takeKeyFromHash(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.location.hash.replace(/^#/, "");
+    if (!raw.startsWith("key=")) return null;
+    const key = decodeURIComponent(raw.slice(4)).trim();
+    const url = new URL(window.location.href);
+    url.hash = "";
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+    return key || null;
+  } catch {
+    return null;
+  }
+}
+
+/** 页面加载时的一次性口令（StrictMode 双执行不会重复取值：模块只执行一次）。 */
+const BOOT_KEY = takeKeyFromHash();
 
 function stripEpFromLocation(): void {
   try {
@@ -131,6 +155,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const pendingClient = useRef<ReportClient | null>(null);
   const autoStarted = useRef(false);
+  const [loginPrefill, setLoginPrefill] = useState<string | null>(BOOT_KEY);
+  const autoLoginTried = useRef(false);
   const whoTimer = useRef<number | null>(null);
   /** 上一次已就绪的 base：换实例时清空实体缓存（私域帖/线程/身份不得跨实例泄漏）。 */
   const cacheBaseRef = useRef<string | null>(null);
@@ -284,6 +310,16 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     [finishReady],
   );
 
+  // 口令链接：进入登录门时自动提交一次（失败则登录框回填并停手，绝不循环重试）。
+  useEffect(() => {
+    if (autoLoginTried.current) return;
+    if (phase !== "login") return;
+    const key = loginPrefill;
+    if (!key) return;
+    autoLoginTried.current = true;
+    void login(key);
+  }, [phase, loginPrefill, login]);
+
   const logout = useCallback(() => {
     if (ep) clearToken(ep);
     clearCurrentEp();
@@ -304,6 +340,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   }, [ep]);
 
   const switchBackend = useCallback(() => {
+    setLoginPrefill(null);
     clearCurrentEp();
     clearMediaCache();
     clearEntityCache();
@@ -408,6 +445,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       snapshot: boot?.snapshot ?? null,
       error,
       loginError,
+      loginPrefill,
       connect,
       login,
       logout,
@@ -431,6 +469,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       boot,
       error,
       loginError,
+      loginPrefill,
       connect,
       login,
       logout,

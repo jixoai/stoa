@@ -111,6 +111,27 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
     fail("CONFLICT", `cannot bind ${host}:${port}: ${(err as Error).message}`);
   }
 
+  // 绑定成功 ≠ 端口归我们（本机 Bun 可静默共享回环端口）：用 /healthz 的 pid 自证。
+  try {
+    if (host === "127.0.0.1" || host === "localhost") {
+      const res = await fetch(`${url}/healthz`, {
+        signal: AbortSignal.timeout(1500),
+        headers: { accept: "application/json" },
+      });
+      const body = (await res.json()) as { pid?: unknown };
+      if (!res.ok || body.pid !== process.pid) {
+        try {
+          server.stop(true);
+        } catch {
+          // already stopped
+        }
+        fail("CONFLICT", `port ${port} is served by another process on this machine`);
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("served by another")) throw err;
+  }
+
   writeDaemonInfo(stateDir, {
     pid: process.pid,
     port,

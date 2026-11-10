@@ -22,8 +22,8 @@ import { useConnection } from "@/state/connection";
  * 只把 token 存 localStorage；退出登录清 token 并停在落地页。
  */
 export function LoginGate() {
-  const { ep, login, loginError, switchBackend } = useConnection();
-  const [secret, setSecret] = useState("");
+  const { ep, login, loginError, loginPrefill, switchBackend } = useConnection();
+  const [secret, setSecret] = useState(() => loginPrefill ?? "");
   const [busy, setBusy] = useState(false);
 
   const submit = async (event: FormEvent) => {

@@ -15,7 +15,7 @@ import {
 } from "../server/discovery.ts";
 import { initDataDir, describeAuthProvision } from "../server/init.ts";
 import { serverStatus, startServer, type ServeStatus } from "../server/serve.ts";
-import { assertPortInRange } from "../server/ports.ts";
+import { assertPortInRange, portIsListening } from "../server/ports.ts";
 import { garbageCollect } from "../server/gc.ts";
 import { runExport, setPendingExportFlag } from "../server/export.ts";
 import { daemonRequest, probeDaemon } from "../daemon/client.ts";
@@ -384,6 +384,12 @@ async function ensureDaemon(opts: {
       if (opts.port !== null) fail("CONFLICT", lastDetail);
       continue;
     }
+    // 非 stoa 监听者：Bun 对本机已占用端口不抛错（会静默共享），必须显式探测后跳过。
+    if (await portIsListening("127.0.0.1", port)) {
+      lastDetail = `port ${port} is already in use by another process`;
+      if (opts.port !== null) fail("CONFLICT", lastDetail);
+      continue;
+    }
     const fd = openDaemonLogFd(opts.stateDir);
     const child = spawn(
       entry.bin,
@@ -631,9 +637,8 @@ async function stopViaDaemon(ctx: CliContext): Promise<ServiceRecord | null> {
     const list = (
       await daemonRequest<{ services: ServiceRecord[] }>(info.url, "/api/daemon/services")
     ).services;
-    const record = list.find(
-      (service) => service.status === "running" && sameDataDir(service.dataDir, ctx.dataDir),
-    );
+    // 任何登记（running 或已被探测降级但进程仍在）都交给 daemon 收口——stop 是幂等的。
+    const record = list.find((service) => sameDataDir(service.dataDir, ctx.dataDir));
     if (!record) return null;
     const out = await daemonRequest<{ service: ServiceRecord }>(
       info.url,
