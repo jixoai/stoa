@@ -1,15 +1,29 @@
 /**
- * daemon-webui（stoa-daemon design §4；stoa-session-ux design §4/§5）：
- * daemon 进程在 `/` 注入的 `window.__STOA_DAEMON__` 是渲染开关——有它时渲染本控制台，
- * 没有时渲染公示板壳（App）。数据全部走同源 `/api/daemon/*`；组件只用官方收编件。
+ * daemon-webui（stoa-daemon design §4；stoa-session-ux design §4/§5；
+ * stoa-daemon-console-layout design §2–§6）：daemon 进程在 `/` 注入的
+ * `window.__STOA_DAEMON__` 是渲染开关——有它时渲染本控制台，没有时渲染公示板壳（App）。
+ * 数据全部走同源 `/api/daemon/*`；组件只用官方收编件。
  *
- * 本版重点（Owner 2026-11-10 反馈）：
- *   - dataDir 不是必填：位置可选「自动（~/.stoa/sessions）／临时（停止即删）／自定义（原生目录选择器）」；
- *   - 口令是一等公民：挂载可指定口令（留空自动生成），服务行「口令」可读取/复制/复制密钥链接/重新生成。
+ * 本版重点（Owner 2026-11-10 / 2026-11-11 反馈）：
+ *   - 挂载入口 Sheet 化：常驻表单 Card 移除，header 主按钮与空态 CTA 打开同一官方 Sheet；
+ *   - 服务列表成为首屏主角：身份+状态 → 入口 → 元信息 → 操作 分层；
+ *     「打开」唯一主操作，口令次级，停止/移除收进菜单 + 二次确认；
+ *   - stopped 行去饱和（不是整体降透明），不提供失效的「打开」；
+ *   - 表单错误就地显示，端口校验错误在重新输入时清除。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
+import {
+  ChevronDownIcon,
   CircleAlertIcon,
+  ClockIcon,
   CopyIcon,
   ExternalLinkIcon,
   EyeIcon,
@@ -17,26 +31,22 @@ import {
   FolderIcon,
   GlobeIcon,
   KeyRoundIcon,
+  MapPinIcon,
+  MoreHorizontalIcon,
+  PlugIcon,
   PlusIcon,
   PowerIcon,
   RefreshCwIcon,
   RotateCwIcon,
   ServerIcon,
   SquareIcon,
+  TerminalIcon,
   Trash2Icon,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardAction,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogClose,
@@ -45,8 +55,14 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Empty,
   EmptyDescription,
@@ -57,6 +73,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Toaster, toast } from "@/components/ui/toast";
@@ -97,6 +121,11 @@ interface SecretView {
   source: string | null;
 }
 
+type ConfirmTarget =
+  | { kind: "stop"; service: DaemonService }
+  | { kind: "remove"; service: DaemonService }
+  | { kind: "shutdown" };
+
 /** 注入开关（main.tsx 用它决定渲染本页还是公示板壳）。 */
 export function readDaemonBoot(): DaemonBoot | null {
   const boot = (window as Window & { __STOA_DAEMON__?: DaemonBoot }).__STOA_DAEMON__;
@@ -130,11 +159,20 @@ async function daemonApi<T>(
 }
 
 const POLL_MS = 5000;
+const PORT_MIN = 13680;
+const PORT_MAX = 13699;
+const CLI_HINT = "stoa serve --data-dir <目录>";
 
 const LOCATION_LABEL: Record<Location, string> = {
   auto: "自动",
-  temp: "临时",
+  temp: "临时目录",
   path: "自定义",
+};
+
+const LOCATION_HINT: Record<Location, string> = {
+  auto: "建在 ~/.stoa/sessions/：自动初始化并生成口令，长期保留。",
+  temp: "系统临时目录：服务停止后整目录删除，适合一次性演示。",
+  path: "填一个已有目录（未初始化会自动初始化），或用「选择文件夹」挑一个。",
 };
 
 /** 目录尾部两段（`…/sessions/<id>`）——列表里只用尾部区分，全路径放 title。 */
@@ -152,146 +190,271 @@ function redactKeyLink(link: string | null): string {
   return `${link.slice(0, marker)}#key=••••••`;
 }
 
-function StatusBadge({ status }: { status: DaemonService["status"] }) {
-  return status === "running" ? (
-    <Badge className="gap-1">
-      <span className="size-1.5 rounded-full bg-current" aria-hidden="true" />
-      运行中
-    </Badge>
-  ) : (
-    <Badge variant="outline" className="gap-1 text-muted-foreground">
-      <span className="size-1.5 rounded-full bg-current opacity-60" aria-hidden="true" />
-      已停止
-    </Badge>
+/** 行内口令链接恒短形态：`口令 ••••••`（6 圆点，永不被列宽截断；全链接只在复制/口令面板）。 */
+const KEY_MASK = "••••••";
+
+function LocationIcon({ location }: { location?: Location }) {
+  const Icon = location === "path" ? MapPinIcon : location === "temp" ? ClockIcon : FolderIcon;
+  return <Icon className="size-3.5 shrink-0" aria-hidden="true" />;
+}
+
+/** 入口行前的弱化标签（本地/公网/口令）；非交互、非徽标语义，纯文字引导。 */
+function EntryTag({ children }: { children: string }) {
+  return (
+    <span className="w-[34px] shrink-0 rounded-sm border text-center text-[10px] leading-4 text-muted-foreground">
+      {children}
+    </span>
   );
 }
 
+/**
+ * 挂载入口 Sheet 的形态：<640px 底部抽屉（max-h 85dvh），≥640px 右侧约 440px。
+ * 官方 Sheet 的 side 是 prop，无法用媒体查询切换，这里用 matchMedia 同步。
+ */
+function useWideSheet(): boolean {
+  const [wide, setWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 640px)").matches,
+  );
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 640px)");
+    const sync = () => setWide(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+  return wide;
+}
+
+/**
+ * 服务行（design §2.3）：身份+状态 → 入口 → 元信息 → 操作。
+ * 使用容器查询（≥720px）切四列横排；<720px 纵向堆叠且操作与身份同一行。
+ */
 function ServiceRow({
   service,
   busy,
   onSecret,
   onStop,
   onRemove,
+  onCopyPath,
 }: {
   service: DaemonService;
   busy: boolean;
   onSecret: (service: DaemonService) => void;
   onStop: (service: DaemonService) => void;
   onRemove: (service: DaemonService) => void;
+  onCopyPath: (path: string) => void;
 }) {
   const running = service.status === "running";
+  const stoppedAt = service.stoppedAt;
+  const entryBase = (service.publicUrl ?? service.url ?? "").replace(/\/$/, "");
+  const locationLabel = service.location ? LOCATION_LABEL[service.location] : null;
+  const timeTitle = `pid ${service.pid ?? "—"} · 启动于 ${fullTime(service.startedAt)}${
+    stoppedAt ? ` · 停止于 ${fullTime(stoppedAt)}` : ""
+  }`;
+
   return (
-    <div
-      className="flex flex-col gap-2 rounded-lg border p-3 data-[status=stopped]:opacity-70 sm:flex-row sm:items-center sm:gap-3"
+    <Card
+      size="sm"
       data-status={service.status}
       data-testid={`daemon-service-${service.id}`}
+      className="group-data-[refreshing=true]:opacity-60 flex flex-row flex-wrap items-center gap-x-3 gap-y-2.5 rounded-xl p-3.5 transition-[opacity,box-shadow] hover:ring-foreground/20 @min-[720px]:flex-nowrap @min-[720px]:gap-x-5 @min-[720px]:gap-y-0"
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{service.name}</span>
-          <StatusBadge status={service.status} />
-          {service.location ? (
-            <Badge variant="outline" className="text-muted-foreground">
-              {LOCATION_LABEL[service.location] ?? "自定义"}
-            </Badge>
-          ) : null}
+      {/* 身份 + 状态 */}
+      <div className="order-1 flex min-w-0 flex-1 items-center gap-2 @min-[720px]:order-none @min-[720px]:w-[200px] @min-[720px]:flex-none">
+        <span
+          className={
+            running
+              ? "size-2 shrink-0 rounded-full bg-foreground ring-[3px] ring-foreground/10"
+              : "size-2 shrink-0 rounded-full bg-muted-foreground"
+          }
+          aria-hidden="true"
+        />
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span
+              className={
+                running
+                  ? "truncate text-sm font-medium"
+                  : "truncate text-sm font-medium text-muted-foreground"
+              }
+              title={service.name}
+            >
+              {service.name}
+            </span>
+            {service.ephemeral ? (
+              <span className="shrink-0 rounded-sm border px-1 text-[10px] leading-4 text-muted-foreground">
+                会话临时
+              </span>
+            ) : null}
+          </div>
+          <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            <LocationIcon location={service.location} />
+            <span className="truncate">
+              {locationLabel ? `${locationLabel} · ` : ""}
+              {running ? "运行中" : "已停止"}
+            </span>
+          </div>
         </div>
-        <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-          <ServerIcon className="size-3.5 shrink-0" />
+      </div>
+
+      {/* 入口 */}
+      <div className="order-3 flex w-full min-w-0 flex-col gap-1 @min-[720px]:order-none @min-[720px]:w-auto @min-[720px]:flex-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <EntryTag>本地</EntryTag>
           {service.url ? (
             running ? (
               <a
-                className="truncate font-mono hover:text-foreground hover:underline"
+                className="truncate font-mono text-xs hover:text-foreground hover:underline"
                 href={service.url}
                 target="_blank"
                 rel="noreferrer"
+                title={service.url}
               >
                 {service.url}
               </a>
             ) : (
-              // 已停止：端口不再监听，保持纯文本（避免误导性可点击观感）。
-              <span className="truncate font-mono line-through decoration-muted-foreground/40">
+              <span
+                className="truncate font-mono text-xs text-muted-foreground line-through decoration-muted-foreground/40"
+                title={service.url}
+              >
                 {service.url}
               </span>
             )
           ) : (
-            <span className="truncate font-mono">（无监听地址）</span>
+            <span className="truncate font-mono text-xs text-muted-foreground">（无监听地址）</span>
           )}
         </div>
         {service.publicUrl ? (
-          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-            <GlobeIcon className="size-3.5 shrink-0" />
-            <a
-              className="truncate font-mono hover:text-foreground hover:underline"
-              href={service.publicUrl}
-              target="_blank"
-              rel="noreferrer"
-            >
-              {service.publicUrl}
-            </a>
+          <div className="flex min-w-0 items-center gap-2">
+            <EntryTag>公网</EntryTag>
+            <GlobeIcon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            {running ? (
+              <a
+                className="truncate font-mono text-xs hover:text-foreground hover:underline"
+                href={service.publicUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={service.publicUrl}
+              >
+                {service.publicUrl}
+              </a>
+            ) : (
+              <span
+                className="truncate font-mono text-xs text-muted-foreground line-through decoration-muted-foreground/40"
+                title={service.publicUrl}
+              >
+                {service.publicUrl}
+              </span>
+            )}
           </div>
         ) : null}
-        <div className="text-xs text-muted-foreground">
-          端口 {service.port}
-          {running
-            ? ` · 启动于 ${timeShort(service.startedAt)}`
-            : service.stoppedAt
-              ? ` · 停止于 ${timeShort(service.stoppedAt)}`
-              : ""}
-        </div>
-        <div className="truncate font-mono text-xs text-muted-foreground/80" title={service.dataDir}>
-          {shortPath(service.dataDir)}
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => onSecret(service)}
-          data-testid={`daemon-secret-${service.id}`}
-        >
-          <KeyRoundIcon />
-          口令
-        </Button>
-        {running ? (
-          <>
-            {service.url ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => window.open(service.url ?? "", "_blank")}
-              >
-                <ExternalLinkIcon />
-                打开
-              </Button>
-            ) : null}
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-destructive hover:text-destructive"
-              disabled={busy}
-              onClick={() => onStop(service)}
-              data-testid={`daemon-stop-${service.id}`}
-            >
-              {busy ? <Spinner /> : <SquareIcon />}
-              停止
-            </Button>
-          </>
-        ) : (
+        <div className="flex min-w-0 items-center gap-2">
+          <EntryTag>口令</EntryTag>
           <Button
             variant="ghost"
             size="sm"
-            className="text-muted-foreground hover:text-destructive"
-            disabled={busy}
-            onClick={() => onRemove(service)}
-            data-testid={`daemon-remove-${service.id}`}
+            className="h-auto min-w-0 justify-start gap-1 px-0 py-0 font-mono text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground"
+            title={
+              entryBase ? `口令链接 ${entryBase}/#key=••••••（完整链接在口令面板复制）` : "查看口令"
+            }
+            onClick={() => onSecret(service)}
           >
-            {busy ? <Spinner /> : <Trash2Icon />}
-            移除登记
+            <KeyRoundIcon className="size-3 shrink-0" aria-hidden="true" />
+            <span className="whitespace-nowrap">{KEY_MASK}</span>
           </Button>
-        )}
+        </div>
       </div>
-    </div>
+
+      {/* 元信息 */}
+      <div className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground @min-[720px]:order-none @min-[720px]:w-[230px] @min-[720px]:flex-none">
+        <span className="inline-flex items-center gap-1 whitespace-nowrap">
+          <PlugIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          端口 <span className="font-mono">{service.port}</span>
+        </span>
+        <span className="inline-flex items-center gap-1" title={timeTitle}>
+          <ClockIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="whitespace-nowrap">
+            {timeShort(running ? service.startedAt : (stoppedAt ?? service.startedAt))}
+            {running ? " 启动" : " 停止"}
+          </span>
+        </span>
+        <span className="flex w-full min-w-0 items-center gap-1" title={service.dataDir}>
+          <FolderIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate font-mono">{shortPath(service.dataDir)}</span>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="复制目录路径"
+            title="复制目录路径"
+            onClick={() => onCopyPath(service.dataDir)}
+          >
+            <CopyIcon />
+          </Button>
+        </span>
+      </div>
+
+      {/* 操作：打开（唯一主操作）→ 口令（次级）→ 菜单（停止/移除） */}
+      <div className="order-2 flex shrink-0 items-center justify-end gap-1.5 @min-[720px]:order-none @min-[720px]:ml-auto">
+        {running && service.url ? (
+          <Button
+            render={<a href={service.url} target="_blank" rel="noreferrer" />}
+            data-testid={`daemon-open-${service.id}`}
+            title={`打开 ${service.url}`}
+          >
+            <ExternalLinkIcon data-icon="inline-start" />
+            打开
+          </Button>
+        ) : null}
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() => onSecret(service)}
+          data-testid={`daemon-secret-${service.id}`}
+        >
+          <KeyRoundIcon data-icon="inline-start" />
+          口令
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="更多操作"
+                disabled={busy}
+                data-testid={`daemon-menu-${service.id}`}
+              />
+            }
+          >
+            {busy ? <Spinner /> : <MoreHorizontalIcon />}
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            {running ? (
+              <>
+                <DropdownMenuItem
+                  disabled={busy}
+                  onClick={() => onStop(service)}
+                  data-testid={`daemon-stop-${service.id}`}
+                >
+                  <SquareIcon />
+                  停止服务
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            ) : null}
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={busy}
+              onClick={() => onRemove(service)}
+              data-testid={`daemon-remove-${service.id}`}
+            >
+              <Trash2Icon />
+              移除登记
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </Card>
   );
 }
 
@@ -510,6 +673,7 @@ function SecretDialog({
                   variant="outline"
                   size="icon"
                   aria-label={reveal ? "隐藏口令" : "显示口令"}
+                  aria-pressed={reveal}
                   disabled={!key}
                   onClick={() => setReveal((value) => !value)}
                   data-testid="daemon-secret-reveal"
@@ -591,28 +755,45 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [lastRefreshAt, setLastRefreshAt] = useState(() => Date.now());
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const [daemonDown, setDaemonDown] = useState(false);
+  const [secretFor, setSecretFor] = useState<DaemonService | null>(null);
+  const [confirm, setConfirm] = useState<ConfirmTarget | null>(null);
+
+  const [mountOpen, setMountOpen] = useState(false);
   const [location, setLocation] = useState<Location>("auto");
   const [dataDir, setDataDir] = useState("");
   const [port, setPort] = useState("");
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
+  const [revealKey, setRevealKey] = useState(false);
   const [picking, setPicking] = useState(false);
   const [canPick, setCanPick] = useState(true);
-  const [secretFor, setSecretFor] = useState<DaemonService | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [dirError, setDirError] = useState<string | null>(null);
+  const [portError, setPortError] = useState<string | null>(null);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+
   const mounted = useRef(true);
+  /** daemon 已知退出（shutdown 成功）后停止轮询，避免每 5s 的无谓失败请求与 console 噪声。 */
+  const daemonDownRef = useRef(false);
+  const mountTriggerRef = useRef<HTMLElement | null>(null);
+  const wideSheet = useWideSheet();
 
   const refresh = useCallback(async (silent: boolean) => {
     if (!silent) setRefreshing(true);
     try {
       const out = await daemonApi<{ services: DaemonService[] }>("/api/daemon/services");
-      if (!mounted.current) return;
+      // daemon 已关闭后到达的响应一律丢弃：关闭前发出的 5s 轮询可能晚到，
+      // 旧数据会把已降级的 stopped 行回填成 running（并复活失效的「打开」）。
+      if (!mounted.current || daemonDownRef.current) return;
       setServices(out.services);
       setLoadError(null);
+      setLastRefreshAt(Date.now());
     } catch (err) {
-      if (!mounted.current) return;
+      if (!mounted.current || daemonDownRef.current) return;
       setLoadError((err as Error).message);
     } finally {
       if (!mounted.current) return;
@@ -629,36 +810,121 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
         if (mounted.current) setCanPick(info.capabilities?.pickDirectory !== false);
       })
       .catch(() => undefined);
-    const timer = setInterval(() => void refresh(true), POLL_MS);
+    const timer = setInterval(() => {
+      if (daemonDownRef.current) return;
+      void refresh(true);
+    }, POLL_MS);
     return () => {
       mounted.current = false;
       clearInterval(timer);
     };
   }, [refresh]);
 
+  // 「上次刷新 Ns 前」的时钟（5s 轮询只刷新文本，不打断操作）。
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), POLL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
   const runningCount = useMemo(
     () => services.filter((service) => service.status === "running").length,
     [services],
   );
+  const stoppedCount = services.length - runningCount;
+  const refreshSeconds = Math.max(0, Math.round((nowTick - lastRefreshAt) / 1000));
+  /** 空态时 header 的「添加服务」降级为 ghost，让空态卡内 CTA 成为唯一实心主按钮。 */
+  const emptyState = !loading && !loadError && !daemonDown && services.length === 0;
+  /** 列表不可用（daemon 已停/首屏加载失败且无在册数据）时，挂载入口必然失败，直接禁用。 */
+  const mountDisabled = daemonDown || (Boolean(loadError) && services.length === 0);
+  const mountDisabledReason = daemonDown
+    ? "daemon 未运行：先重新执行 stoa serve"
+    : "服务列表加载失败：请先重试";
+
+  const copy = useCallback(async (text: string, label: string) => {
+    const ok = await copyText(text);
+    toast.add({
+      type: ok ? "success" : "error",
+      title: ok ? `已复制${label}` : `复制${label}失败`,
+      description: ok ? undefined : "请手动选择文本复制",
+      timeout: 2200,
+    });
+  }, []);
+
+  const resetMountForm = useCallback(() => {
+    setLocation("auto");
+    setDataDir("");
+    setPort("");
+    setName("");
+    setKey("");
+    setRevealKey(false);
+    setDirError(null);
+    setPortError(null);
+    setGlobalError(null);
+  }, []);
+
+  const openMount = useCallback(
+    (event: ReactMouseEvent<HTMLElement>) => {
+      mountTriggerRef.current = event.currentTarget;
+      resetMountForm();
+      setMountOpen(true);
+    },
+    [resetMountForm],
+  );
+
+  /** 关闭面板并重置表单（不处理焦点，供成功挂载路径先关面板再刷新列表）。 */
+  const dismissMount = useCallback(() => {
+    setMountOpen(false);
+    resetMountForm();
+  }, [resetMountForm]);
+
+  const closeMount = useCallback(() => {
+    dismissMount();
+    const trigger = mountTriggerRef.current;
+    window.requestAnimationFrame(() => {
+      if (trigger?.isConnected) trigger.focus();
+      // 触发钮若已随空态卸载，退回 header 主入口。
+      else document.querySelector<HTMLElement>('[data-testid="daemon-mount-open"]')?.focus();
+    });
+  }, [dismissMount]);
+
+  /** 挂载成功后的焦点：触发钮仍在→回它；空态 CTA 已卸载→新行「打开」，再退 header。 */
+  const focusMountResult = useCallback((serviceId: string) => {
+    window.requestAnimationFrame(() => {
+      const trigger = mountTriggerRef.current;
+      if (trigger?.isConnected) {
+        trigger.focus();
+        return;
+      }
+      const rowOpen = document.querySelector<HTMLElement>(
+        `[data-testid="daemon-open-${serviceId}"]`,
+      );
+      (rowOpen ?? document.querySelector<HTMLElement>('[data-testid="daemon-mount-open"]'))?.focus();
+    });
+  }, []);
 
   const onMount = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       const path = dataDir.trim();
+      let nextDirError: string | null = null;
+      let nextPortError: string | null = null;
       if (location === "path" && !path) {
-        setFormError("自定义位置需要填目录路径（可用「选择文件夹」）。");
-        return;
+        nextDirError = "自定义位置需要填目录路径（可用「选择文件夹」）。";
       }
       let portValue: number | null = null;
       if (port.trim() !== "") {
         const parsed = Number(port.trim());
-        if (!Number.isInteger(parsed) || parsed < 13680 || parsed > 13699) {
-          setFormError("端口必须是 13680–13699 的整数（留空则自动挑一个空闲端口）。");
-          return;
+        if (!/^\d+$/.test(port.trim()) || !Number.isInteger(parsed) || parsed < PORT_MIN || parsed > PORT_MAX) {
+          nextPortError = `端口需为 ${PORT_MIN}–${PORT_MAX} 的整数（留空自动分配）。`;
+        } else {
+          portValue = parsed;
         }
-        portValue = parsed;
       }
-      setFormError(null);
+      setDirError(nextDirError);
+      setPortError(nextPortError);
+      if (nextDirError || nextPortError) return;
+
+      setGlobalError(null);
       setSubmitting(true);
       try {
         const out = await daemonApi<{ service: DaemonService; warnings?: string[] }>(
@@ -683,19 +949,16 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
         for (const warning of out.warnings ?? []) {
           toast.add({ type: "warning", title: "提示", description: warning, timeout: 4200 });
         }
-        setDataDir("");
-        setPort("");
-        setName("");
-        setKey("");
-        setLocation("auto");
+        dismissMount();
         await refresh(true);
+        focusMountResult(out.service.id);
       } catch (err) {
-        setFormError((err as Error).message);
+        setGlobalError((err as Error).message);
       } finally {
         setSubmitting(false);
       }
     },
-    [dataDir, key, location, name, port, refresh],
+    [dataDir, dismissMount, focusMountResult, key, location, name, port, refresh],
   );
 
   const pickDirectory = useCallback(async () => {
@@ -709,6 +972,7 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
         toast.add({ type: "error", title: "无法打开目录选择器", description: out.error, timeout: 4200 });
       } else if (out.path) {
         setDataDir(out.path);
+        setDirError(null);
       }
     } catch (err) {
       toast.add({ type: "error", title: "目录选择失败", description: (err as Error).message, timeout: 4200 });
@@ -768,6 +1032,16 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
         description: "挂载的服务会一并停止；此页面随后失联属正常。",
         timeout: 4000,
       });
+      // 概览即时降级：daemon 已停止 + 在册服务全置 stopped（进程随后消失，轮询停表）。
+      daemonDownRef.current = true;
+      setDaemonDown(true);
+      setServices((prev) =>
+        prev.map((service) =>
+          service.status === "running"
+            ? { ...service, status: "stopped" as const, stoppedAt: Date.now(), pid: null }
+            : service,
+        ),
+      );
     } catch (err) {
       toast.add({
         type: "error",
@@ -778,44 +1052,161 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
     }
   }, []);
 
-  const locationHelper =
-    location === "auto"
-      ? "会建在 ~/.stoa/sessions/（自动初始化并生成口令，长期保留）。"
-      : location === "temp"
-        ? "系统临时目录：服务停止后整目录删除，适合一次性演示。"
-        : "填一个已有目录（未初始化会自动初始化），或用「选择文件夹」挑一个。";
+  const runConfirm = useCallback(async () => {
+    const target = confirm;
+    setConfirm(null);
+    if (!target) return;
+    if (target.kind === "shutdown") {
+      await onShutdown();
+      return;
+    }
+    if (target.kind === "stop") await onStop(target.service);
+    else await onRemove(target.service);
+  }, [confirm, onRemove, onShutdown, onStop]);
+
+  const confirmCopy =
+    confirm?.kind === "stop"
+      ? {
+          title: "停止服务？",
+          description: `停止「${confirm.service.name}」后该服务将不可访问；登记与口令仍保留，可随时重新挂载。`,
+          action: "停止服务",
+          testid: "daemon-stop-confirm",
+        }
+      : confirm?.kind === "remove"
+        ? {
+            title: "移除登记？",
+            description: `移除「${confirm.service.name}」的登记不会删除数据目录；之后可用 CLI 或本面板重新挂载。`,
+            action: "移除登记",
+            testid: "daemon-remove-confirm",
+          }
+        : confirm?.kind === "shutdown"
+          ? {
+              title: "关闭 daemon？",
+              description:
+                "挂载中的服务会被一并停止（登记保留），daemon 进程退出。之后重新执行 stoa serve 后再打开本页。",
+              action: "关闭",
+              testid: "daemon-shutdown-confirm",
+            }
+          : null;
+
+  const formBusy = submitting || picking;
 
   return (
     <Toaster>
-      <div className="min-h-dvh bg-background text-foreground">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-6 sm:py-10">
-          <header className="flex flex-wrap items-center gap-2">
-            <PowerIcon className="size-5 text-muted-foreground" />
-            <h1 className="text-lg font-semibold">Stoa Daemon</h1>
-            <Badge variant="outline" className="font-mono">
-              v{boot.version}
-            </Badge>
-            <span className="ml-auto flex items-center gap-2">
-              <span className="hidden text-xs text-muted-foreground sm:inline">
-                pid {boot.pid} · 启动于 {timeShort(boot.startedAt)}
+      <div className="h-dvh overflow-y-auto overscroll-contain bg-background text-foreground">
+        <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-5 sm:px-6 lg:py-8">
+          <header className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div
+              className="flex min-w-0 items-center gap-2.5"
+              title={`pid ${boot.pid} · 启动于 ${fullTime(boot.startedAt)}`}
+            >
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-card text-muted-foreground ring-1 ring-foreground/10">
+                <ServerIcon className="size-4" aria-hidden="true" />
+              </span>
+              <h1 className="truncate text-base font-semibold">Stoa Daemon</h1>
+              <span className="shrink-0 font-mono text-xs text-muted-foreground">v{boot.version}</span>
+            </div>
+            <div className="order-3 flex w-full items-center gap-3 text-xs text-muted-foreground sm:order-none sm:w-auto">
+              {daemonDown ? (
+                <span className="inline-flex items-center gap-1.5" data-testid="daemon-stopped-overview">
+                  <span className="size-2 shrink-0 rounded-full bg-muted-foreground" aria-hidden="true" />
+                  daemon 已停止
+                </span>
+              ) : (
+                <>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span
+                      className="size-2 shrink-0 rounded-full bg-foreground ring-[3px] ring-foreground/10"
+                      aria-hidden="true"
+                    />
+                    {runningCount} 运行中
+                  </span>
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className="size-2 shrink-0 rounded-full bg-muted-foreground" aria-hidden="true" />
+                    {stoppedCount} 已停止
+                  </span>
+                </>
+              )}
+            </div>
+            <div className="ml-auto flex items-center gap-1.5">
+              <span
+                className="hidden text-right text-xs text-muted-foreground md:inline-block md:w-[104px]"
+                aria-live="polite"
+              >
+                {refreshing ? "刷新中…" : `上次刷新 ${refreshSeconds}s 前`}
               </span>
               <Button
-                variant="outline"
-                size="sm"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="刷新"
+                title="刷新"
                 disabled={refreshing}
                 onClick={() => void refresh(false)}
                 data-testid="daemon-refresh"
               >
                 {refreshing ? <Spinner /> : <RefreshCwIcon />}
-                刷新
               </Button>
-            </span>
+              <Button
+                variant={emptyState ? "ghost" : "default"}
+                disabled={mountDisabled}
+                title={mountDisabled ? mountDisabledReason : undefined}
+                onClick={openMount}
+                data-testid="daemon-mount-open"
+              >
+                <PlusIcon data-icon="inline-start" />
+                添加服务
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="更多操作"
+                      data-testid="daemon-shutdown-open"
+                    />
+                  }
+                >
+                  <MoreHorizontalIcon />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => setConfirm({ kind: "shutdown" })}
+                  >
+                    <PowerIcon />
+                    关闭 daemon
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </header>
-          <p className="truncate text-xs text-muted-foreground" title={boot.stateDir}>
-            状态目录：<span className="font-mono">{shortPath(boot.stateDir)}</span>
-          </p>
 
-          {loadError ? (
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="shrink-0">状态目录</span>
+            <span className="truncate font-mono" title={boot.stateDir}>
+              {shortPath(boot.stateDir)}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="复制状态目录"
+              title="复制状态目录"
+              onClick={() => void copy(boot.stateDir, "状态目录")}
+            >
+              <CopyIcon />
+            </Button>
+          </div>
+
+          {daemonDown ? (
+            <Alert data-testid="daemon-stopped">
+              <PowerIcon />
+              <AlertTitle>daemon 已停止</AlertTitle>
+              <AlertDescription>
+                进程已退出，挂载中的服务已一并停止（登记保留）。重新执行 stoa serve 后再打开本页。
+              </AlertDescription>
+            </Alert>
+          ) : loadError && services.length > 0 ? (
             <Alert variant="destructive">
               <CircleAlertIcon />
               <AlertTitle>daemon 面连接失败</AlertTitle>
@@ -823,214 +1214,313 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
             </Alert>
           ) : null}
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <PlusIcon className="size-4 text-muted-foreground" />
-                挂载服务
-              </CardTitle>
-              <CardDescription>
-                把一块公示板挂到 daemon 上：服务在后台常驻（不随终端退出而停），口令与入口在这里统一管理。
-              </CardDescription>
-            </CardHeader>
-            <form onSubmit={(event) => void onMount(event)} className="flex flex-col gap-(--card-spacing)">
-              <CardContent className="flex flex-col gap-3">
-                <Tabs value={location} onValueChange={(value) => setLocation(value as Location)}>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>位置</Label>
-                    <TabsList aria-label="会话位置" data-testid="daemon-location-tabs">
-                      <TabsTrigger value="auto" data-testid="daemon-location-auto">
-                        自动
-                      </TabsTrigger>
-                      <TabsTrigger value="temp" data-testid="daemon-location-temp">
-                        临时
-                      </TabsTrigger>
-                      <TabsTrigger value="path" data-testid="daemon-location-path">
-                        自定义
-                      </TabsTrigger>
-                    </TabsList>
-                    <p className="text-xs text-muted-foreground">{locationHelper}</p>
-                  </div>
-                </Tabs>
-
-                {location === "path" ? (
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="daemon-mount-data-dir">目录路径（必填）</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        id="daemon-mount-data-dir"
-                        value={dataDir}
-                        onChange={(event) => setDataDir(event.target.value)}
-                        placeholder="/path/to/data-dir"
-                        aria-invalid={
-                          formError?.includes("目录路径") ? true : undefined
-                        }
-                        className="font-mono text-xs sm:text-sm"
-                        data-testid="daemon-mount-data-dir"
-                      />
+          <div
+            className="group @container flex flex-col gap-2"
+            data-testid="daemon-services"
+            data-refreshing={refreshing ? "true" : "false"}
+            aria-busy={refreshing}
+          >
+            <h2 className="sr-only">服务列表</h2>
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 rounded-xl border border-dashed py-10 text-sm text-muted-foreground">
+                <Spinner />
+                正在读取服务列表…
+              </div>
+            ) : loadError && services.length === 0 ? (
+              <Alert variant="destructive">
+                <CircleAlertIcon />
+                <AlertTitle>服务列表加载失败</AlertTitle>
+                <AlertDescription className="break-all">{loadError}</AlertDescription>
+                <div className="mt-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={refreshing}
+                    onClick={() => void refresh(false)}
+                    data-testid="daemon-retry"
+                  >
+                    {refreshing ? <Spinner /> : <RefreshCwIcon />}
+                    重试
+                  </Button>
+                </div>
+              </Alert>
+            ) : daemonDown && services.length === 0 ? (
+              <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+                daemon 未运行，暂无在册服务。
+              </p>
+            ) : services.length === 0 ? (
+              <Empty className="rounded-xl border border-dashed bg-card/40 py-10">
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <ServerIcon />
+                  </EmptyMedia>
+                  <EmptyTitle>还没有挂载的服务</EmptyTitle>
+                  <EmptyDescription>
+                    把一块 Stoa 公示板挂到本机 daemon：服务在后台常驻，入口与口令在这里统一管理。
+                  </EmptyDescription>
+                </EmptyHeader>
+                <Button onClick={openMount} data-testid="daemon-mount-empty-cta">
+                  <PlusIcon data-icon="inline-start" />
+                  挂载第一个服务
+                </Button>
+                <Collapsible className="flex w-full max-w-sm flex-col items-center">
+                  <CollapsibleTrigger
+                    render={
                       <Button
-                        type="button"
-                        variant="outline"
-                        disabled={!canPick || picking}
-                        onClick={() => void pickDirectory()}
-                        data-testid="daemon-pick-dir"
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs text-muted-foreground"
+                      />
+                    }
+                  >
+                    <TerminalIcon data-icon="inline-start" />
+                    或使用 CLI
+                    <ChevronDownIcon data-icon="inline-end" />
+                  </CollapsibleTrigger>
+                  <CollapsibleContent className="w-full">
+                    <div className="mt-2 flex min-w-0 items-center gap-1 rounded-lg border bg-muted/40 px-3 py-2">
+                      <code
+                        className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
+                        title={CLI_HINT}
                       >
-                        {picking ? <Spinner /> : <FolderIcon />}
-                        选择文件夹
+                        {CLI_HINT}
+                      </code>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="复制 CLI 命令"
+                        title="复制 CLI 命令"
+                        onClick={() => void copy(CLI_HINT, "CLI 命令")}
+                      >
+                        <CopyIcon />
                       </Button>
                     </div>
-                    {!canPick ? (
-                      <p className="text-xs text-muted-foreground">
-                        当前环境没有可用的目录对话框，请手动输入路径。
-                      </p>
-                    ) : null}
-                  </div>
-                ) : null}
+                  </CollapsibleContent>
+                </Collapsible>
+              </Empty>
+            ) : (
+              services.map((service) => (
+                <ServiceRow
+                  key={service.id}
+                  service={service}
+                  busy={busyId === service.id}
+                  onSecret={(item) => setSecretFor(item)}
+                  onStop={(item) => setConfirm({ kind: "stop", service: item })}
+                  onRemove={(item) => setConfirm({ kind: "remove", service: item })}
+                  onCopyPath={(path) => void copy(path, "目录路径")}
+                />
+              ))
+            )}
+          </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="daemon-mount-port">端口（可选）</Label>
-                    <Input
-                      id="daemon-mount-port"
-                      value={port}
-                      onChange={(event) => setPort(event.target.value)}
-                      placeholder="自动挑空闲"
-                      inputMode="numeric"
-                      aria-invalid={formError?.includes("端口") ? true : undefined}
-                      data-testid="daemon-mount-port"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="daemon-mount-name">名称（可选）</Label>
-                    <Input
-                      id="daemon-mount-name"
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                      placeholder="默认用目录名"
-                      data-testid="daemon-mount-name"
-                    />
-                  </div>
-                </div>
+          <Separator />
+          <footer className="pb-4">
+            <span className="text-xs text-muted-foreground">
+              daemon 面只绑定回环地址，供本机开发/自动化使用。
+            </span>
+          </footer>
+        </div>
+      </div>
 
+      {/* 挂载 Sheet：<640px 底部抽屉，≥640px 右侧 440px；body 内部滚动、footer 固定。 */}
+      <Sheet
+        open={mountOpen}
+        onOpenChange={(open) => {
+          if (open) setMountOpen(true);
+          else closeMount();
+        }}
+      >
+        <SheetContent
+          side={wideSheet ? "right" : "bottom"}
+          data-testid="daemon-mount-sheet"
+          className={
+            wideSheet
+              ? "w-full gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-[440px]"
+              : "max-h-[85dvh] gap-0 rounded-t-2xl pb-[env(safe-area-inset-bottom)]"
+          }
+        >
+          <SheetHeader className="gap-1 border-b px-4 pt-4 pb-3">
+            <SheetTitle>挂载服务</SheetTitle>
+            <SheetDescription>
+              把一块公示板挂到 daemon 上：服务在后台常驻（不随终端退出而停），口令与入口在这里统一管理。
+            </SheetDescription>
+          </SheetHeader>
+          <form onSubmit={(event) => void onMount(event)} className="flex min-h-0 flex-1 flex-col">
+            <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 py-4">
+              <div className="flex flex-col gap-1.5">
+                <Label>位置</Label>
+                <Tabs value={location} onValueChange={(value) => {
+                  setLocation(value as Location);
+                  setDirError(null);
+                  setGlobalError(null);
+                }}>
+                  <TabsList aria-label="会话位置" className="h-9 w-full" data-testid="daemon-location-tabs">
+                    <TabsTrigger value="auto" data-testid="daemon-location-auto">
+                      自动
+                    </TabsTrigger>
+                    <TabsTrigger value="temp" data-testid="daemon-location-temp">
+                      临时
+                    </TabsTrigger>
+                    <TabsTrigger value="path" data-testid="daemon-location-path">
+                      自定义
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                <p className="text-xs text-muted-foreground">{LOCATION_HINT[location]}</p>
+              </div>
+
+              {location === "path" ? (
                 <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="daemon-mount-key">访问口令（可选）</Label>
+                  <Label htmlFor="daemon-mount-data-dir">目录路径</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="daemon-mount-data-dir"
+                      value={dataDir}
+                      onChange={(event) => {
+                        setDataDir(event.target.value);
+                        setDirError(null);
+                        setGlobalError(null);
+                      }}
+                      placeholder="/path/to/data-dir"
+                      aria-invalid={dirError ? true : undefined}
+                      aria-describedby={dirError ? "daemon-mount-dir-error" : undefined}
+                      className="min-w-0 flex-1 font-mono text-xs sm:text-sm"
+                      data-testid="daemon-mount-data-dir"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={!canPick || picking}
+                      onClick={() => void pickDirectory()}
+                      data-testid="daemon-pick-dir"
+                    >
+                      {picking ? <Spinner /> : <FolderIcon data-icon="inline-start" />}
+                      选择文件夹
+                    </Button>
+                  </div>
+                  {dirError ? (
+                    <p
+                      id="daemon-mount-dir-error"
+                      className="text-xs text-destructive"
+                      data-testid="daemon-mount-error"
+                    >
+                      {dirError}
+                    </p>
+                  ) : !canPick ? (
+                    <p className="text-xs text-muted-foreground">
+                      当前环境没有可用的目录对话框，请手动输入路径。
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label htmlFor="daemon-mount-port">端口</Label>
+                  <Input
+                    id="daemon-mount-port"
+                    value={port}
+                    onChange={(event) => {
+                      setPort(event.target.value);
+                      setPortError(null);
+                      setGlobalError(null);
+                    }}
+                    placeholder="自动分配"
+                    inputMode="numeric"
+                    aria-invalid={portError ? true : undefined}
+                    aria-describedby={portError ? "daemon-mount-port-error" : undefined}
+                    data-testid="daemon-mount-port"
+                  />
+                  {portError ? (
+                    <p id="daemon-mount-port-error" className="text-xs text-destructive">
+                      {portError}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="flex min-w-0 flex-col gap-1.5">
+                  <Label htmlFor="daemon-mount-name">名称</Label>
+                  <Input
+                    id="daemon-mount-name"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="默认用目录名"
+                    data-testid="daemon-mount-name"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="daemon-mount-key">访问口令</Label>
+                <div className="flex gap-2">
                   <Input
                     id="daemon-mount-key"
                     value={key}
                     onChange={(event) => setKey(event.target.value)}
                     placeholder="留空自动生成"
-                    className="font-mono"
+                    type={revealKey ? "text" : "password"}
+                    autoComplete="new-password"
+                    className="min-w-0 flex-1 font-mono"
                     data-testid="daemon-mount-key"
                   />
-                  <p className="text-xs text-muted-foreground">
-                    填了就用它（会覆盖该目录原口令）；留空则沿用已有口令或自动生成。
-                  </p>
-                </div>
-
-                {formError ? (
-                  <p className="text-sm text-destructive" data-testid="daemon-mount-error">
-                    {formError}
-                  </p>
-                ) : null}
-              </CardContent>
-              <CardFooter className="gap-3">
-                <Button type="submit" disabled={submitting} data-testid="daemon-mount-submit">
-                  {submitting ? <Spinner /> : <PlusIcon />}
-                  挂载
-                </Button>
-                <span className="text-xs text-muted-foreground">端口留空＝自动挑空闲端口。</span>
-              </CardFooter>
-            </form>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <ServerIcon className="size-4 text-muted-foreground" />
-                服务
-              </CardTitle>
-              <CardAction>
-                <Badge variant="outline">
-                  {runningCount} 运行 / {services.length} 登记
-                </Badge>
-              </CardAction>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2" data-testid="daemon-services">
-              {loading ? (
-                <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                  <Spinner />
-                  正在读取服务列表…
-                </div>
-              ) : services.length === 0 ? (
-                <Empty>
-                  <EmptyHeader>
-                    <EmptyMedia variant="icon">
-                      <FolderIcon />
-                    </EmptyMedia>
-                    <EmptyTitle>还没有挂载的服务</EmptyTitle>
-                    <EmptyDescription>
-                      用上面的表单挂一个（位置选「自动」即可，不需要准备目录），或改用 CLI：
-                      <span className="mx-1 font-mono">stoa serve --data-dir &lt;目录&gt;</span>
-                    </EmptyDescription>
-                  </EmptyHeader>
-                </Empty>
-              ) : (
-                services.map((service) => (
-                  <ServiceRow
-                    key={service.id}
-                    service={service}
-                    busy={busyId === service.id}
-                    onSecret={(item) => setSecretFor(item)}
-                    onStop={(item) => void onStop(item)}
-                    onRemove={(item) => void onRemove(item)}
-                  />
-                ))
-              )}
-            </CardContent>
-          </Card>
-
-          <Separator />
-          <footer className="flex flex-wrap items-center justify-between gap-3 pb-4">
-            <span className="text-xs text-muted-foreground">
-              daemon 面只绑定回环地址，供本机开发/自动化使用。
-            </span>
-            <Dialog>
-              <DialogTrigger
-                render={
-                  <Button variant="outline" size="sm" data-testid="daemon-shutdown-open">
-                    <PowerIcon />
-                    关闭 daemon
-                  </Button>
-                }
-              />
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>关闭 daemon？</DialogTitle>
-                  <DialogDescription>
-                    挂载中的服务会被一并停止（登记保留），daemon 进程退出。之后
-                    <span className="mx-1 font-mono">stoa serve</span>
-                    或本页面都会重新按需拉起它。
-                  </DialogDescription>
-                </DialogHeader>
-                <DialogFooter>
-                  <DialogClose render={<Button variant="outline">取消</Button>} />
                   <Button
-                    variant="destructive"
-                    onClick={() => void onShutdown()}
-                    data-testid="daemon-shutdown-confirm"
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    aria-label={revealKey ? "隐藏口令" : "显示口令"}
+                    aria-pressed={revealKey}
+                    onClick={() => setRevealKey((value) => !value)}
                   >
-                    <PowerIcon />
-                    关闭
+                    {revealKey ? <EyeOffIcon /> : <EyeIcon />}
                   </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </footer>
-          <p className="text-center text-xs text-muted-foreground/70">
-            stoa daemon · {fullTime(boot.startedAt)} 启动
-          </p>
-        </div>
-      </div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  填了就用它（会覆盖该目录原口令）；留空则沿用已有口令或自动生成。
+                </p>
+              </div>
+
+              {globalError ? (
+                <Alert variant="destructive">
+                  <CircleAlertIcon />
+                  <AlertTitle>挂载失败</AlertTitle>
+                  <AlertDescription className="break-all">{globalError}</AlertDescription>
+                </Alert>
+              ) : null}
+            </div>
+
+            <SheetFooter className="mt-0 flex-row items-center justify-end gap-2 border-t px-4 py-3">
+              <Button type="button" variant="ghost" disabled={formBusy} onClick={closeMount}>
+                取消
+              </Button>
+              <Button type="submit" disabled={formBusy} data-testid="daemon-mount-submit">
+                {submitting ? <Spinner /> : <PlusIcon data-icon="inline-start" />}
+                挂载
+              </Button>
+            </SheetFooter>
+          </form>
+        </SheetContent>
+      </Sheet>
+
+      {confirmCopy ? (
+        <Dialog open onOpenChange={(open) => (open ? undefined : setConfirm(null))}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>{confirmCopy.title}</DialogTitle>
+              <DialogDescription>{confirmCopy.description}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline">取消</Button>} />
+              <Button
+                variant="destructive"
+                onClick={() => void runConfirm()}
+                data-testid={confirmCopy.testid}
+              >
+                {confirmCopy.action}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+
       {secretFor ? (
         <SecretDialog
           service={secretFor}
