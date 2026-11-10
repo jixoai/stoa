@@ -172,24 +172,29 @@ describe("面板资源", () => {
   });
 
   test("HTML 注入 baseUrl/publicUrl/account；桥与降级行为保留；无凭据", () => {
-    const cfg = resolveMcpConfig({
-      flags: {
-        baseUrl: "http://127.0.0.1:13687/",
+    const prevStateDir = process.env.STOA_DAEMON_STATE_DIR;
+    // 隔离 daemon 发现：显式指向不存在的状态目录 → 面板不注入 daemon 入口。
+    process.env.STOA_DAEMON_STATE_DIR = join(tmpdir(), "stoa-panel-no-daemon");
+    try {
+      const cfg = resolveMcpConfig({
+        flags: {
+          baseUrl: "http://127.0.0.1:13687/",
+          account: "manager",
+          publicUrl: "https://board.example/",
+        },
+        env: {},
+        home: "/nonexistent-home",
+      });
+      const html = renderPanelHtml(cfg);
+      expect(html.startsWith("<!doctype html>")).toBe(true);
+      expect(html.endsWith("</html>")).toBe(true);
+      const boot = JSON.stringify({
+        baseUrl: "http://127.0.0.1:13687",
+        publicUrl: "https://board.example",
         account: "manager",
-        publicUrl: "https://board.example/",
-      },
-      env: {},
-      home: "/nonexistent-home",
-    });
-    const html = renderPanelHtml(cfg);
-    expect(html.startsWith("<!doctype html>")).toBe(true);
-    expect(html.endsWith("</html>")).toBe(true);
-    const boot = JSON.stringify({
-      baseUrl: "http://127.0.0.1:13687",
-      publicUrl: "https://board.example",
-      account: "manager",
-    });
-    expect(html.includes(`const BOOT = ${boot};`)).toBe(true);
+        daemonUrl: null,
+      });
+      expect(html.includes(`const BOOT = ${boot};`)).toBe(true);
     // MCP Apps 桥（ui/initialize → initialized → tools/call / ui/open-link）保留。
     expect(html.includes("ui/initialize")).toBe(true);
     expect(html.includes("ui/notifications/initialized")).toBe(true);
@@ -201,8 +206,42 @@ describe("面板资源", () => {
     expect(html.includes("token")).toBe(false);
     expect(html.includes("Bearer")).toBe(false);
     // MCP Apps 桥身份中性化：appInfo.name = stoa（旧插件为 report-channel）。
-    expect(html.includes('appInfo: { name: "stoa"')).toBe(true);
-    expect(html.includes("report-channel")).toBe(false);
+      expect(html.includes('appInfo: { name: "stoa"')).toBe(true);
+      expect(html.includes("report-channel")).toBe(false);
+      // daemon 不存在：入口按钮留在 DOM 里但默认隐藏（stoa-daemon design §4）。
+      expect(html.includes('<button id="daemon" style="display:none">')).toBe(true);
+    } finally {
+      if (prevStateDir === undefined) delete process.env.STOA_DAEMON_STATE_DIR;
+      else process.env.STOA_DAEMON_STATE_DIR = prevStateDir;
+    }
+  });
+
+  test("daemon 控制台入口：daemon.json 存在时注入 daemonUrl 并显示按钮", () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "stoa-panel-daemon-"));
+    const prevStateDir = process.env.STOA_DAEMON_STATE_DIR;
+    process.env.STOA_DAEMON_STATE_DIR = stateDir;
+    try {
+      writeFileSync(
+        join(stateDir, "daemon.json"),
+        JSON.stringify({
+          pid: 4321,
+          port: 13679,
+          url: "http://127.0.0.1:13679",
+          stateDir,
+          version: "0.2.0",
+          startedAt: 1,
+        }),
+      );
+      const cfg = resolveMcpConfig({ flags: { baseUrl: "http://127.0.0.1:13687", account: "manager" }, env: {}, home: "/nonexistent-home" });
+      const html = renderPanelHtml(cfg);
+      expect(html.includes('"daemonUrl":"http://127.0.0.1:13679"')).toBe(true);
+      expect(html.includes("Daemon 控制台")).toBe(true);
+      expect(html.includes("BOOT.daemonUrl")).toBe(true);
+    } finally {
+      if (prevStateDir === undefined) delete process.env.STOA_DAEMON_STATE_DIR;
+      else process.env.STOA_DAEMON_STATE_DIR = prevStateDir;
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -479,6 +518,7 @@ describe("stoa mcp stdio 集成（隔离后端）", () => {
     const run = await runMcpSession(
       {
         HOME: ws.root,
+        STOA_DAEMON_STATE_DIR: join(ws.root, "no-daemon"),
         STOA_BASE_URL: server.url,
         STOA_ACCOUNT: "owner",
         STOA_DATA_DIR: ws.dataDir,
@@ -500,6 +540,7 @@ describe("stoa mcp stdio 集成（隔离后端）", () => {
       baseUrl: server.url,
       publicUrl: DEFAULT_PUBLIC_URL,
       account: "owner",
+      daemonUrl: null,
     });
     expect(html.includes(`const BOOT = ${boot};`)).toBe(true);
     expect(html.includes(ownerToken)).toBe(false);

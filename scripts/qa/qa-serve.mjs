@@ -551,6 +551,7 @@ async function start() {
       [
         CLI,
         "serve",
+        "--standalone",
         "--data-dir",
         dataDir,
         "--port",

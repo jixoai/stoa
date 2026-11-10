@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { DaemonConsolePage, readDaemonBoot } from "./pages/DaemonConsolePage";
 import "./app.css";
 
 // 深色路径：系统偏好为默认，用户手动切换后以 localStorage 为准（solid-glass 只认 .dark）
@@ -34,8 +35,8 @@ applyTheme();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found");
+// 渲染开关：daemon 进程注入 window.__STOA_DAEMON__ → 渲染 daemon 控制台；否则渲染公示板壳。
+const daemonBoot = readDaemonBoot();
 createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
+  <StrictMode>{daemonBoot ? <DaemonConsolePage boot={daemonBoot} /> : <App />}</StrictMode>,
 );

@@ -175,7 +175,7 @@ start_serve_foreground() {
   SERVE_ERR="$RUN_TMP/serve.err"
   : >"$SERVE_LOG"
   : >"$SERVE_ERR"
-  "${CLI[@]}" serve --data-dir "$DATA" --port "$PORT" --env-files "$envlist" \
+  "${CLI[@]}" serve --standalone --data-dir "$DATA" --port "$PORT" --env-files "$envlist" \
     >"$SERVE_LOG" 2>"$SERVE_ERR" &
   SERVER_PID=$!
   SERVER_MODE="foreground"

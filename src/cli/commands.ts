@@ -15,8 +15,25 @@ import {
 } from "../server/discovery.ts";
 import { initDataDir, describeAuthProvision } from "../server/init.ts";
 import { serverStatus, startServer, type ServeStatus } from "../server/serve.ts";
+import { assertPortInRange } from "../server/ports.ts";
 import { garbageCollect } from "../server/gc.ts";
 import { runExport, setPendingExportFlag } from "../server/export.ts";
+import { daemonRequest, probeDaemon } from "../daemon/client.ts";
+import { openDaemonLogFd, daemonEntryFromProcess, runDaemon } from "../daemon/run.ts";
+import {
+  DAEMON_DEFAULT_PORT,
+  DAEMON_PORT_ENV,
+  daemonLogPath,
+  daemonPortCandidates,
+  readDaemonInfo,
+  readServices,
+  removeDaemonInfo,
+  resolveDaemonStateDir,
+  sameDataDir,
+  tailFile,
+  type DaemonInfo,
+  type ServiceRecord,
+} from "../daemon/state.ts";
 import type { PostKind, SuggestedAccount, TrendingTag, WriteOp } from "../core/types.ts";
 import {
   flagInt,
@@ -285,8 +302,17 @@ async function cmdServe(ctx: CliContext): Promise<number> {
   const args = ctx.args;
   if (hasFlag(args, "stop")) return stopServer(ctx);
   if (hasFlag(args, "status")) return statusCommand(ctx);
+  // 兼容旧 `--daemon`：detach 单个 standalone 实例（不进 daemon、不进登记）。
   if (hasFlag(args, "daemon")) return startDaemon(ctx);
+  // `--standalone`：旧默认行为（前台占用终端）。
+  if (hasFlag(args, "standalone")) return serveStandalone(ctx);
+  // 默认：挂到 daemon（stoa-daemon design §3）——起 daemon（按需）→ 挂载 → 打印两链接 → 释放终端。
+  return serveViaDaemon(ctx);
+}
 
+/** 前台 serve（`--standalone`）：占用终端直到 Ctrl-C；stdout 首行 `REPORT_URL=`。 */
+async function serveStandalone(ctx: CliContext): Promise<number> {
+  const args = ctx.args;
   const port = flagInt(args, "port");
   const host = flagValue(args, "host") ?? "127.0.0.1";
   const running = await startServer({
@@ -314,9 +340,316 @@ async function cmdServe(ctx: CliContext): Promise<number> {
   return 0;
 }
 
+// ── daemon（stoa-daemon design §1/§3） ───────────────────────────────────────
+
+function daemonStateDirFromArgs(args: ParsedArgs, cwd: string): string {
+  return resolveDaemonStateDir({ flag: flagValue(args, "state-dir"), env: process.env, cwd });
+}
+
+/** 显式 daemon 端口（`--daemon-port` > `STOA_DAEMON_PORT`）；null = 自动择优。 */
+function daemonPortFromArgs(args: ParsedArgs): number | null {
+  const fromFlag = flagInt(args, "daemon-port");
+  if (fromFlag !== null) return fromFlag;
+  const raw = (process.env[DAEMON_PORT_ENV] ?? "").trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value)) {
+    fail("BAD_REQUEST", `${DAEMON_PORT_ENV} must be an integer (got ${raw})`);
+  }
+  return value;
+}
+
+/**
+ * 确保 daemon 在跑（幂等）：已有健康 daemon 直接复用；没有则 detached 拉起并等
+ * `/healthz` 就绪。候选端口：显式给值只用它；否则 13679→13670 向下找空位
+ * （同机多会话各持一个 daemon 时不会互抢）。
+ */
+async function ensureDaemon(opts: {
+  stateDir: string;
+  port: number | null;
+  cwd: string;
+}): Promise<DaemonInfo> {
+  const existing = readDaemonInfo(opts.stateDir);
+  if (existing) {
+    const health = await probeDaemon(existing.url, 600);
+    if (health && health.stateDir === opts.stateDir) return existing;
+    removeDaemonInfo(opts.stateDir); // stale（进程已死/端口已被别人接管）
+  }
+  const entry = daemonEntryFromProcess();
+  let lastDetail = "no candidate port";
+  for (const port of daemonPortCandidates(opts.port)) {
+    const occupied = await probeDaemon(`http://127.0.0.1:${port}`, 500);
+    if (occupied) {
+      lastDetail = `port ${port} already hosts a stoa daemon (state ${occupied.stateDir})`;
+      if (opts.port !== null) fail("CONFLICT", lastDetail);
+      continue;
+    }
+    const fd = openDaemonLogFd(opts.stateDir);
+    const child = spawn(
+      entry.bin,
+      [...entry.args, "daemon", "run", "--port", String(port), "--state-dir", opts.stateDir],
+      { cwd: opts.cwd, detached: true, stdio: ["ignore", fd, fd], env: process.env },
+    );
+    child.unref();
+    closeSync(fd);
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const info = readDaemonInfo(opts.stateDir);
+      if (info) {
+        const health = await probeDaemon(info.url, 600);
+        if (health && health.stateDir === opts.stateDir) return info;
+      }
+      if (child.exitCode !== null || child.signalCode !== null) {
+        lastDetail = `daemon exited during startup (code ${child.exitCode ?? "null"}):\n${tailFile(daemonLogPath(opts.stateDir))}`;
+        break; // 退出内层等待；外层 for 继续尝试下一个候选端口
+      }
+      if (Date.now() > deadline) {
+        lastDetail = `daemon did not become healthy within 10s:\n${tailFile(daemonLogPath(opts.stateDir))}`;
+        try {
+          if (child.pid !== undefined) process.kill(child.pid, "SIGKILL");
+        } catch {
+          // already gone
+        }
+        break; // 同上
+      }
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  fail("UNAVAILABLE", `cannot start stoa daemon: ${lastDetail}`);
+}
+
+/** `stoa serve`（默认）：daemon 模式——挂载本 dataDir 的服务并立即释放终端。 */
+async function serveViaDaemon(ctx: CliContext): Promise<number> {
+  const args = ctx.args;
+  const stateDir = daemonStateDirFromArgs(args, ctx.cwd);
+  const port = flagInt(args, "port");
+  if (port !== null) assertPortInRange(port);
+  const daemon = await ensureDaemon({
+    stateDir,
+    port: daemonPortFromArgs(args),
+    cwd: ctx.cwd,
+  });
+  const idleTimeoutMs = idleTimeoutMsFromArgs(args);
+  const out = await daemonRequest<{
+    ok: true;
+    service: ServiceRecord;
+    reused: boolean;
+    adopted: boolean;
+  }>(daemon.url, "/api/daemon/services", {
+    method: "POST",
+    body: {
+      dataDir: ctx.dataDir,
+      port,
+      name: flagValue(args, "name"),
+      envFiles: ctx.envFiles.length > 0 ? ctx.envFiles : null,
+      host: flagValue(args, "host"),
+      idleTimeoutMs: idleTimeoutMs ?? null,
+      expose: hasFlag(args, "expose") || null,
+      allowOpenExpose: hasFlag(args, "allow-open-expose") || null,
+    },
+  });
+  const service = out.service;
+  const note = out.adopted ? " (adopted an already-running instance)" : out.reused ? " (already mounted)" : "";
+  process.stderr.write(`[stoa] service ${service.url} mounted in daemon ${daemon.url}${note}\n`);
+  if (ctx.human) {
+    emitHuman(`service : ${service.url}`);
+    emitHuman(`daemon  : ${daemon.url}`);
+    emitHuman(`data dir: ${service.dataDir}`);
+    if (service.log) emitHuman(`log     : ${service.log}`);
+  } else {
+    emit({
+      ok: true,
+      detached: true,
+      service: {
+        id: service.id,
+        name: service.name,
+        data_dir: service.dataDir,
+        port: service.port,
+        pid: service.pid,
+        url: service.url,
+        status: service.status,
+        log: service.log,
+      },
+      daemon: {
+        url: daemon.url,
+        state_dir: daemon.stateDir,
+        pid: daemon.pid,
+        version: daemon.version,
+      },
+      service_url: service.url,
+      daemon_url: daemon.url,
+    });
+  }
+  return 0;
+}
+
+/** `stoa daemon start|stop|status|run`（不需要 data-dir；state-dir 决定“哪一个 daemon”）。 */
+async function cmdDaemon(args: ParsedArgs, cwd: string): Promise<number> {
+  const sub = args.positionals[0] ?? "status";
+  const human = hasFlag(args, "human");
+  const stateDir = daemonStateDirFromArgs(args, cwd);
+
+  if (sub === "run") {
+    // daemon 自身没有 data-dir/服务端口语义：`--port`（或 `--daemon-port`/env）就是 daemon 端口。
+    const port = flagInt(args, "port") ?? daemonPortFromArgs(args) ?? DAEMON_DEFAULT_PORT;
+    return runDaemon({ stateDir, port, cwd });
+  }
+
+  if (sub === "start") {
+    const info = await ensureDaemon({ stateDir, port: daemonPortFromArgs(args), cwd });
+    if (human) {
+      emitHuman(`stoa daemon running at ${info.url} (pid ${info.pid})`);
+      emitHuman(`state   : ${info.stateDir}`);
+      emitHuman(`console : ${info.url}`);
+    } else {
+      emit({ ok: true, running: true, ...info });
+    }
+    return 0;
+  }
+
+  if (sub === "status") {
+    const info = readDaemonInfo(stateDir);
+    const health = info ? await probeDaemon(info.url, 800) : null;
+    let services: ServiceRecord[] = readServices(stateDir);
+    if (health && info) {
+      try {
+        services = (await daemonRequest<{ services: ServiceRecord[] }>(info.url, "/api/daemon/services")).services;
+      } catch {
+        // 列表拉取失败时保留文件快照
+      }
+    }
+    if (human) {
+      emitHuman(
+        health && info
+          ? `stoa daemon running at ${info.url} (pid ${info.pid})`
+          : "stoa daemon is not running",
+      );
+      emitHuman(`state   : ${stateDir}`);
+      for (const service of services) {
+        emitHuman(
+          `  ${service.status === "running" ? "●" : "○"} ${service.name} [${service.status}] ${service.url ?? service.dataDir}`,
+        );
+      }
+      return 0;
+    }
+    emit({
+      ok: true,
+      running: Boolean(health),
+      state_dir: stateDir,
+      daemon: info,
+      stale: Boolean(info && !health),
+      services,
+    });
+    return 0;
+  }
+
+  if (sub === "stop") {
+    const info = readDaemonInfo(stateDir);
+    if (!info) {
+      if (human) emitHuman("stoa daemon is not running");
+      else emit({ ok: true, running: false, stopped: false, state_dir: stateDir });
+      return 0;
+    }
+    let apiStopped = false;
+    try {
+      await daemonRequest(info.url, "/api/daemon/shutdown", { method: "POST", timeoutMs: 5000 });
+      apiStopped = true;
+    } catch {
+      // daemon 面不可达：直接走信号兜底
+    }
+    const waitGone = async (timeoutMs: number): Promise<boolean> => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (!(await probeDaemon(info.url, 400))) return true;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      return !(await probeDaemon(info.url, 400));
+    };
+    let gone = await waitGone(20_000);
+    let forced = false;
+    if (!gone) {
+      try {
+        process.kill(info.pid, "SIGTERM");
+      } catch {
+        // already gone
+      }
+      gone = await waitGone(8000);
+    }
+    if (!gone) {
+      forced = true;
+      try {
+        process.kill(info.pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    // 兜底清扫：daemon 被强杀时，其挂载的服务可能还活着（登记为准）。
+    const leftovers = readServices(stateDir).filter((service) => service.status === "running");
+    for (const service of leftovers) {
+      if (service.pid === null) continue;
+      try {
+        process.kill(service.pid, "SIGTERM");
+      } catch {
+        // already gone
+      }
+    }
+    removeDaemonInfo(stateDir);
+    if (human) {
+      emitHuman(`stopped stoa daemon (pid ${info.pid})${forced ? " [SIGKILL]" : ""}`);
+      if (leftovers.length > 0) emitHuman(`signaled ${leftovers.length} mounted service(s) to stop`);
+    } else {
+      emit({
+        ok: true,
+        running: false,
+        stopped: true,
+        pid: info.pid,
+        via_api: apiStopped,
+        forced,
+        signaled_services: leftovers.length,
+        state_dir: stateDir,
+      });
+    }
+    return 0;
+  }
+
+  fail("BAD_REQUEST", `unknown daemon subcommand "${sub}" (expected start|stop|status|run)`);
+}
+
+/**
+ * `serve --stop` 的 daemon 感知：该 dataDir 正被本机默认 state-dir 的 daemon 挂载时，
+ * 走 daemon 的 stop（服务与登记一起收口）；否则返回 null 回落本地停机路径。
+ */
+async function stopViaDaemon(ctx: CliContext): Promise<ServiceRecord | null> {
+  // daemon 自己的 stop 子进程必须走本地停机（否则会回调正在等待它的 daemon → 重入死锁）。
+  if (process.env.STOA_DAEMON_STOP_DIRECT === "1") return null;
+  try {
+    const stateDir = daemonStateDirFromArgs(ctx.args, ctx.cwd);
+    const info = readDaemonInfo(stateDir);
+    if (!info) return null;
+    const health = await probeDaemon(info.url, 500);
+    if (!health || health.stateDir !== stateDir) return null;
+    const list = (
+      await daemonRequest<{ services: ServiceRecord[] }>(info.url, "/api/daemon/services")
+    ).services;
+    const record = list.find(
+      (service) => service.status === "running" && sameDataDir(service.dataDir, ctx.dataDir),
+    );
+    if (!record) return null;
+    const out = await daemonRequest<{ service: ServiceRecord }>(
+      info.url,
+      `/api/daemon/services/${record.id}/stop`,
+      { method: "POST", timeoutMs: 30_000 },
+    );
+    return out.service;
+  } catch {
+    return null; // daemon 面任何问题都不阻断本地停机
+  }
+}
+
 function daemonArgs(ctx: CliContext): string[] {
   const args = ctx.args;
-  const out: string[] = ["serve", "--data-dir", ctx.dataDir];
+  // `--standalone` 关键：detach 出来的子进程必须显式脱离 daemon 默认路径，否则递归。
+  const out: string[] = ["serve", "--standalone", "--data-dir", ctx.dataDir];
   const port = flagInt(args, "port");
   if (port !== null) out.push("--port", String(port));
   const host = flagValue(args, "host");
@@ -368,6 +701,27 @@ async function startDaemon(ctx: CliContext): Promise<number> {
 }
 
 async function stopServer(ctx: CliContext): Promise<number> {
+  // daemon 挂载的服务：走 daemon 的 stop（服务与登记一起收口，避免登记悬挂）。
+  const viaDaemon = await stopViaDaemon(ctx);
+  if (viaDaemon) {
+    if (ctx.human) emitHuman(`stopped report service (pid ${viaDaemon.pid}) [via daemon]`);
+    else {
+      emit({
+        ok: true,
+        running: false,
+        stopped: true,
+        pid: viaDaemon.pid,
+        via_daemon: true,
+        service: {
+          id: viaDaemon.id,
+          name: viaDaemon.name,
+          data_dir: viaDaemon.dataDir,
+          status: viaDaemon.status,
+        },
+      });
+    }
+    return 0;
+  }
   const status = await serverStatus(ctx.dataDir);
   if (!status.running) {
     cleanupStaleServerFiles(ctx.dataDir);
@@ -1473,6 +1827,8 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
   // `stoa mcp` 是长驻 stdio 服务：配置自含（flags/env/配置文件），不经过
   // 通用的 --data-dir 指针发现（否则无指针目录里根本起不来）。
   if (command === "mcp") return cmdMcp(args);
+  // `stoa daemon` 同理：daemon 的状态由 --state-dir/默认状态目录决定，不需要 data-dir。
+  if (command === "daemon") return cmdDaemon(args, cwd);
   // 直连模式（B2）：read/status/wait-notifications 允许完全没有 data-dir 指针——
   // 只要显式 base-url/env 文件里有板地址，就跳过「data-dir 解析失败」直接走直连配置。
   let dataDir: string;

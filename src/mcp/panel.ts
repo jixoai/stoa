@@ -13,11 +13,32 @@
  * 配置由服务端在 read 时注入（`__REPORT_CHANNEL_BOOT__` 占位）——注入内容只含
  * baseUrl/publicUrl/account，绝不含凭据。
  */
+import { existsSync, readFileSync } from "node:fs";
+import { DAEMON_STATE_DIR_ENV, daemonInfoPath, defaultDaemonStateDir } from "../daemon/state.ts";
 import type { McpConfig } from "./config.ts";
 
 /** 资源 URI（stoa-adapters design §6：随插件更名，面板语义不变）。 */
 export const PANEL_URI = "ui://stoa/board.html";
 export const PANEL_MIME = "text/html;profile=mcp-app";
+
+/**
+ * daemon 控制台链接（stoa-daemon design §4）：`STOA_DAEMON_URL` 显式优先，
+ * 否则读默认状态目录的 daemon.json（有 daemon 才显示入口，没有就不显示）。
+ */
+export function resolveDaemonConsoleUrl(
+  env: Record<string, string | undefined> = process.env,
+): string | null {
+  const explicit = (env.STOA_DAEMON_URL ?? "").trim();
+  if (explicit) return explicit.replace(/\/+$/, "");
+  const stateDir = (env[DAEMON_STATE_DIR_ENV] ?? "").trim() || defaultDaemonStateDir();
+  if (!existsSync(daemonInfoPath(stateDir))) return null;
+  try {
+    const info = JSON.parse(readFileSync(daemonInfoPath(stateDir), "utf8")) as { url?: string };
+    return typeof info.url === "string" && info.url ? info.url.replace(/\/+$/, "") : null;
+  } catch {
+    return null;
+  }
+}
 
 /** `resources/list` 的清单条目（name/title/mimeType 与旧插件逐字一致）。 */
 export const PANEL_RESOURCE = {
@@ -33,6 +54,8 @@ export function renderPanelHtml(cfg: McpConfig): string {
     baseUrl: cfg.baseUrl,
     publicUrl: cfg.publicUrl,
     account: cfg.account,
+    // daemon 控制台（stoa-daemon design §4）：无 daemon 时 null，面板不显示入口。
+    daemonUrl: resolveDaemonConsoleUrl(),
   }).replace(/</g, "\\u003c");
   return `<!doctype html>
 <html lang="zh-CN">
@@ -72,6 +95,7 @@ export function renderPanelHtml(cfg: McpConfig): string {
 <div class="bar">
   <button id="refresh">刷新</button>
   <button id="open">在公示板打开</button>
+  <button id="daemon" style="display:none">Daemon 控制台</button>
   <span id="hint" class="muted" style="margin-left:auto">每 20s 自动刷新</span>
 </div>
 <script>
@@ -158,6 +182,14 @@ document.getElementById("open").addEventListener("click", () => {
   if (bridged) rpc("ui/open-link", { url }).catch(() => window.open(url, "_blank"));
   else window.open(url, "_blank");
 });
+if (BOOT.daemonUrl) {
+  const daemonBtn = document.getElementById("daemon");
+  daemonBtn.style.display = "";
+  daemonBtn.addEventListener("click", () => {
+    if (bridged) rpc("ui/open-link", { url: BOOT.daemonUrl }).catch(() => window.open(BOOT.daemonUrl, "_blank"));
+    else window.open(BOOT.daemonUrl, "_blank");
+  });
+}
 refresh();
 setInterval(refresh, 20000);
 </script>

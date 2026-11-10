@@ -78,6 +78,7 @@ describe("PostView.read hydration", () => {
     }
   });
 
+  // 1000 条夹具 + 全量导出扫描：并发/负载下会超过 bun 默认 5s 超时（断言本身是查询数，不是墙钟）。
   test("a 1000-post export scan adds at most three post_reads queries", () => {
     const t = makeStore({ clock: () => T0 });
     try {
@@ -100,7 +101,7 @@ describe("PostView.read hydration", () => {
     } finally {
       t.close();
     }
-  });
+  }, 30_000);
 
   test("cursor-covered posts are read with read_at=null; per-post rows carry read_at", () => {
     const t = makeStore({ clock: () => T0 });

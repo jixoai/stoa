@@ -127,7 +127,7 @@ export async function startTestServer(opts: {
   env?: Record<string, string | undefined>;
 }): Promise<RunningTestServer> {
   const { workspace } = opts;
-  const args = [BUN, CLI, "serve", "--data-dir", workspace.dataDir];
+  const args = [BUN, CLI, "serve", "--standalone", "--data-dir", workspace.dataDir];
   if (workspace.envFiles.length > 0) {
     args.push("--env-files", workspace.envFiles.join(","));
   }
@@ -239,6 +239,10 @@ export async function runCli(
       STOA_ENV_FILES: undefined,
       STOA_ACCOUNT: undefined,
       STOA_AUTH: undefined,
+      // daemon 面同样隔离：开发机上的真实 daemon 状态不得渗进测试
+      STOA_DAEMON_STATE_DIR: undefined,
+      STOA_DAEMON_PORT: undefined,
+      STOA_DAEMON_URL: undefined,
       FDE2E_REPORT_DATA_DIR: undefined,
       FDE2E_REPORT_ENV_FILES: undefined,
       FDE2E_REPORT_ACCOUNT: undefined,

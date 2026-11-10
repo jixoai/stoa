@@ -5,6 +5,7 @@ const BOOLEAN_FLAGS = new Set([
   "help",
   "human",
   "daemon",
+  "standalone",
   "stop",
   "status",
   "expose",
@@ -29,6 +30,10 @@ const VALUE_FLAGS = new Set([
   "port",
   "host",
   "idle-timeout",
+  // stoa daemon（stoa-daemon design §3）：daemon 状态目录/端口与挂载服务名。
+  "state-dir",
+  "daemon-port",
+  "name",
   "attach",
   "quote",
   "draft",
@@ -175,7 +180,9 @@ Usage:
   stoa [--env-files=a,b] --version | capabilities
   stoa init --data-dir D
   stoa serve --data-dir D [--port N] [--idle-timeout SEC]
-                            [--daemon|--stop|--status]
+                            [--standalone|--daemon|--stop|--status]
+                            [--state-dir S] [--daemon-port N] [--name S]
+  stoa daemon start|status|stop|run [--port N] [--state-dir S]
   stoa open --as <acct> --data-dir D
   stoa who --data-dir D
   stoa accounts create <id> [--role agent] [--display S] [--profile S]
@@ -222,6 +229,14 @@ Default output is machine-readable single-line JSON (JSONL for wait-notification
   serve stays alive while requests/CLI calls arrive; --idle-timeout (default 1800s,
   0 = never) releases the instance after that much silence. status --all shows the
   lease remaining; gc reclaims server.json/serve.lock left by dead instances.
+  By default \`serve\` attaches the instance to the per-machine stoa daemon
+  (\`stoa daemon\`, default http://127.0.0.1:13679): the daemon is started on demand,
+  the instance is mounted into it (idle-timeout defaults to never; manage via
+  http://127.0.0.1:13679 or \`stoa daemon status\`), the service URL and daemon URL
+  are printed as one JSON line, and the terminal is released immediately.
+  \`--standalone\` decouples: the instance runs in the foreground and owns the
+  terminal until Ctrl-C (old default). \`--daemon\` keeps the legacy behavior of
+  detaching a single standalone instance (no daemon, no registry).
   Direct mode (read/wait-notifications/status): when --base-url is passed or
   STOA_BASE_URL/REPORT_CHANNEL_BASE_URL is set (process env or a loaded env file),
   the command talks to that board using the same config resolution as \`stoa mcp\`

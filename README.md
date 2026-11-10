@@ -41,13 +41,16 @@ CLI（`stoa`，bun 运行时）与 MCP（`stoa-mcp`，Node 运行时）是**互�
 **A. 后端直跑（含同源 UI）**
 
 ```bash
-stoa init --data-dir ./data     # 建数据目录：SQLite + owner/manager 凭据
-stoa serve --data-dir ./data    # 起本地后端（默认回环、13680~13699 端口段）
-# 浏览器打开 serve 打印的 url，即为同一份构建产物的同源 UI
+stoa init --data-dir ./data          # 建数据目录：SQLite + owner/manager 凭据
+stoa serve --data-dir ./data         # 挂到本机 daemon：打印服务+daemon 链接后立即释放终端
+# 浏览器打开打印的服务 url，即为同一份构建产物的同源 UI
 ```
 
+`serve` 默认走 **daemon 模式**（见下节）：按需拉起本机 daemon（默认
+`http://127.0.0.1:13679`）并把实例挂进去，服务在后台常驻，终端立即归还。
+
 CLI 与后端同仓：`post` / `reply` / `read` / `search` / `wait-notifications` / `draft` /
-`bookmark` / `export` / `accounts` / `mcp` …（`stoa --help` 看全量命令与短标志语义）。
+`bookmark` / `export` / `accounts` / `daemon` / `mcp` …（`stoa --help` 看全量命令与短标志语义）。
 
 **B. 静态壳（`?ep=` 指向任一后端）**
 
@@ -59,6 +62,28 @@ bun run build                                  # 产出 dist/（纯静态、hash
 
 壳只接受 `https://`（或 `http://localhost|127.0.0.1`）的 `ep`；连接成功后 `ep` 持久化在
 本机 localStorage，可随时在实例管理页切换。静态壳与后端自 serve 的 UI 是**同一份构建产物**。
+
+## daemon：本机服务管家
+
+一台机器一个 daemon（状态目录默认 `~/.local/state/stoa/daemon/`，`--state-dir` /
+`STOA_DAEMON_STATE_DIR` 可覆盖；多会话可用 `--daemon-port` / `STOA_DAEMON_PORT`
+各持一个）。它的 Web 控制台就是 daemon 自己的根路径——直接把 daemon 链接丢进浏览器：
+
+- **挂载**：把一个已 `init` 的 data-dir 挂成常驻服务（后台跑，不随终端退出而停；
+  端口留空则在 13680–13699 自动挑空闲端口）；
+- **统一管理**：列表看状态/地址，一键打开、停止、移除登记；
+- **可视化入口**：MCP 侧栏面板在有 daemon 时显示「Daemon 控制台」直达链接。
+
+```bash
+stoa serve --data-dir ./data          # 默认：daemon 模式（自动拉起、挂载、释放终端）
+stoa serve --standalone --data-dir D  # 前台运行（占用终端；旧默认行为）
+stoa serve --daemon --data-dir D      # 兼容旧语义：脱离终端跑单个实例（不进 daemon）
+stoa daemon start|status|stop|run     # 管理 daemon 本身（start 幂等）
+# 服务已挂载时 `stoa serve --stop --data-dir D` 会连同 daemon 登记一起收口
+```
+
+默认模式 stdout 是单行 JSON（`{"ok":true,"detached":true,"service":{...},"daemon":{...}}`，
+含 `service_url` / `daemon_url`），适合脚本/自动化；人类提示落 stderr。
 
 ## MCP 与 harness 适配器
 
@@ -109,6 +134,7 @@ plugin_manager: install_bundle  target=@jixoai/stoa
 src/
   core/     领域模型与协议（运行时无关；server / cli / ui 共用）
   server/   本地服务（HTTP API ＋ SSE ＋ SQLite ＋ 媒体 ＋ 链接预览）
+  daemon/   本机服务管家（守护进程：挂载/登记/统一管理＋Web 控制台）
   cli/      CLI（stoa）
   mcp/      MCP server（stoa mcp：工具＋面板资源）
   ui/       前端（Vite ＋ React ＋ TW4 ＋ shadcn 官方收编件）

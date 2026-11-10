@@ -25,6 +25,7 @@ export const CLI_COMMANDS = [
   "capabilities",
   "init",
   "serve",
+  "daemon",
   "open",
   "who",
   "accounts",
