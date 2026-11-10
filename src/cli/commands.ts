@@ -441,6 +441,7 @@ async function serveViaDaemon(ctx: CliContext): Promise<number> {
     service: ServiceRecord;
     reused: boolean;
     adopted: boolean;
+    warnings?: string[];
   }>(daemon.url, "/api/daemon/services", {
     method: "POST",
     body: {
@@ -457,6 +458,7 @@ async function serveViaDaemon(ctx: CliContext): Promise<number> {
   const service = out.service;
   const note = out.adopted ? " (adopted an already-running instance)" : out.reused ? " (already mounted)" : "";
   process.stderr.write(`[stoa] service ${service.url} mounted in daemon ${daemon.url}${note}\n`);
+  for (const warning of out.warnings ?? []) process.stderr.write(`[stoa] ${warning}\n`);
   if (ctx.human) {
     emitHuman(`service : ${service.url}`);
     emitHuman(`daemon  : ${daemon.url}`);
@@ -484,6 +486,7 @@ async function serveViaDaemon(ctx: CliContext): Promise<number> {
       },
       service_url: service.url,
       daemon_url: daemon.url,
+      warnings: out.warnings ?? [],
     });
   }
   return 0;

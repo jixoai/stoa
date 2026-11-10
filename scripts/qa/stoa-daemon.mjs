@@ -535,6 +535,16 @@ try {
   const tempRecord = tempList.find((s) => s.name === "ui-temp");
   if (tempRecord?.pid) pids.services.push(Number(tempRecord.pid));
   const tempDataDir = tempRecord?.dataDir ?? "";
+  await waitToastsGone(page);
+  // 临时行在列表末尾：先滚到可见处再截图（否则只有前两行）。
+  await page.locator(`[data-testid="daemon-service-${tempRecord?.id ?? ""}"]`).scrollIntoViewIfNeeded().catch(() => undefined);
+  const imgTempMounted = await shot(page, "daemon-temp-session-390.png");
+  check(
+    "S4-11a 临时会话行带「临时」徽标（停止即删的前置态）",
+    tempRow && tempRecord?.ephemeral === true,
+    `dataDir=${tempDataDir}`,
+    { id: "S4-11a", expect: "服务行徽标＝临时；目录位于系统临时目录", image: imgTempMounted, imageWidth: "390×844" },
+  );
   await page.locator(`[data-testid="daemon-stop-${tempRecord?.id ?? ""}"]`).click();
   const tempCleaned = await waitFor(
     async () => {

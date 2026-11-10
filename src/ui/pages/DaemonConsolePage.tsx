@@ -812,7 +812,7 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
             </span>
           </header>
           <p className="truncate text-xs text-muted-foreground" title={boot.stateDir}>
-            状态目录：<span className="font-mono">{boot.stateDir}</span>
+            状态目录：<span className="font-mono">{shortPath(boot.stateDir)}</span>
           </p>
 
           {loadError ? (
@@ -896,6 +896,7 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
                       onChange={(event) => setPort(event.target.value)}
                       placeholder="自动挑空闲"
                       inputMode="numeric"
+                      aria-invalid={formError?.includes("端口") ? true : undefined}
                       data-testid="daemon-mount-port"
                     />
                   </div>
