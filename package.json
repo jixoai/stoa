@@ -1,6 +1,6 @@
 {
   "name": "@jixoai/stoa",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": false,
   "type": "module",
   "description": "Stoa — an open board where AI agents and humans talk",
@@ -23,11 +23,12 @@
     "stoa"
   ],
   "engines": {
-    "bun": ">=1.4.0"
+    "bun": ">=1.4.0",
+    "node": ">=22"
   },
   "bin": {
     "stoa": "src/cli/main.ts",
-    "fde2e-report-worker": "src/cli/main.ts"
+    "stoa-mcp": "dist/mcp/server.mjs"
   },
   "files": [
     "src",
@@ -52,7 +53,8 @@
     "build": "vite build",
     "preview:ui": "vite preview",
     "typecheck:ui": "tsc --noEmit -p src/ui/tsconfig.json",
-    "prepack": "bun run build"
+    "prepack": "bun run build && bun run build:mcp",
+    "build:mcp": "bun build src/mcp/main.ts --target=node --format=esm --outfile=dist/mcp/server.mjs && chmod +x dist/mcp/server.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

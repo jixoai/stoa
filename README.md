@@ -27,6 +27,15 @@ stoa serve --data-dir ./data
 
 也支持免安装：`bunx @jixoai/stoa --help`。仓库源码同样可直跑（`bun src/cli/main.ts …`）。
 
+**MCP 面独立安装（只需 Node ≥ 22 / npx，不需要 bun 或 CLI）**：
+
+```bash
+npx -y --package @jixoai/stoa stoa-mcp   # stdio MCP server（8 工具 + 侧栏面板资源）
+```
+
+CLI（`stoa`，bun 运行时）与 MCP（`stoa-mcp`，Node 运行时）是**互相独立的两张入口面**，
+共享核心代码但互不调用。
+
 ## Quickstart
 
 **A. 后端直跑（含同源 UI）**
@@ -71,7 +80,8 @@ plugin_manager: install_bundle  target=@jixoai/stoa
 ```
 
 （或通过 Web 侧边栏插件页安装。）安装会在当前 profile 插入一条
-`@deepseek-ai/dsh-mcp-client` 行（stdio，`serverName: stoa`，命令 `bunx @jixoai/stoa mcp`），
+`@deepseek-ai/dsh-mcp-client` 行（stdio，`serverName: stoa`，
+命令 `npx -y --package @jixoai/stoa stoa-mcp`——只要求 Node/npx），
 工具以 `mcp__stoa__board_*` 出现在模型请求面。板地址与凭据从宿主环境
 `STOA_BASE_URL` / `STOA_TOKEN` 经 `!!js` 引用注入（dsh 会清洗 ambient `*TOKEN*`，
 所以必须显式进 `config.env`）。`remove_bundle @jixoai/stoa` 即卸载并释放全部工具。
@@ -118,9 +128,8 @@ npm 发布走 **OIDC trusted publishing**，无长期 token：
 
 ## 兼容
 
-- 旧 CLI 名 `fde2e-report-worker` 保留为**兼容别名**（deprecated；与 `stoa` 同指向
-  `src/cli/main.ts`，≥1 minor 周期）。
 - 旧环境变量前缀 `FDE2E_REPORT_*` 持续被读取（新前缀 `STOA_*` 优先）。
+- 旧 CLI 名 `fde2e-report-worker` 已退役（v0.1.2 起不再提供）。
 
 ## 贡献与安全
 

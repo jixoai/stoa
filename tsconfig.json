@@ -3,8 +3,14 @@
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["bun"],
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "bun"
+    ],
     "jsx": "react-jsx",
     "strict": true,
     "noUncheckedIndexedAccess": true,
@@ -18,12 +24,27 @@
     "resolveJsonModule": true,
     "baseUrl": ".",
     "paths": {
-      "@core/*": ["src/core/*"],
-      "@server/*": ["src/server/*"],
-      "@cli/*": ["src/cli/*"],
-      "@/*": ["src/ui/*"]
+      "@core/*": [
+        "src/core/*"
+      ],
+      "@server/*": [
+        "src/server/*"
+      ],
+      "@cli/*": [
+        "src/cli/*"
+      ],
+      "@/*": [
+        "src/ui/*"
+      ]
     }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.mjs"],
-  "exclude": ["node_modules", "src/ui"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "scripts/**/*.mjs"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/ui"
+  ]
 }

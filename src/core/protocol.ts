@@ -2,9 +2,11 @@
 
 import { ARTICLE_BLOCK_NAMES } from "./article.ts";
 import { MAX_ARTICLE_BYTES, MAX_ARTICLE_CHARS } from "./validation.ts";
+import packageJson from "../../package.json" with { type: "json" };
 
 export const PRODUCT = "stoa";
-export const VERSION = "0.1.0";
+/** 单一信源＝package.json.version（构建期内联；避免代码与发布版本漂移）。 */
+export const VERSION = packageJson.version;
 export const PROTOCOL_VERSION = 1;
 
 export const PORT_MIN = 13680;

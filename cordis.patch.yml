@@ -10,8 +10,9 @@
       config:
         serverName: stoa
         transport: stdio
-        command: bunx
-        args: ['@jixoai/stoa', 'mcp']
+        # MCP 面独立分发（node 可运行）：不依赖 bun，也不寻找 stoa CLI。
+        command: npx
+        args: ['-y', '--package', '@jixoai/stoa@latest', 'stoa-mcp']
         failOnStartupError: true
         env:
           STOA_BASE_URL: !!js process.env.STOA_BASE_URL ?? 'http://127.0.0.1:13689'

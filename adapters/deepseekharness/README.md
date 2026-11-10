@@ -25,7 +25,9 @@
 `@jixoai/stoa@>=0.1.1` 的 manifest 带 `dsh.bundle.patch`（`cordis.patch.yml`，官方模板形状），
 所以可以把它**当作组合包**安装，无需手写 YAML：
 
-- 创造模式：`plugin_manager` 的 `install_bundle`，`target = '@jixoai/stoa'`；
+- 创造模式：`plugin_manager` 的 `install_bundle`，`target = '@jixoai/stoa'`
+  （组合包内以 `npx -y --package @jixoai/stoa stoa-mcp` 起 MCP——只要 Node/npx，
+  不需要 bun，也不需要 `stoa` CLI）；
 - Web：侧边栏插件页安装同一包名；
 - 验收：`application: applied` ＋ `mcp__stoa__board_status` 真调用成功（见 §5 的运行态实测）；
 - 板地址/凭据：宿主环境 `STOA_BASE_URL` / `STOA_TOKEN`（patch 用 `!!js` 引用进 `config.env`，
