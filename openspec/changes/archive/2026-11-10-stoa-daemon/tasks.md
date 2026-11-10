@@ -24,7 +24,7 @@
 
 - [x] D3-1. 本人全流程验收（无委派）：`stoa serve` 默认（终端释放、双链接）→ daemon-webui
   挂载/停止 → `--standalone`（前台）→ daemon stop 全回收。
-- [ ] D3-2. 绿门：`bun test`、check、typecheck(:ui)、build、`openspec validate --strict`；
+- [x] D3-2. 绿门：`bun test`、check、typecheck(:ui)、build、`openspec validate --strict`；
   报告（HTML＋390/1280 截图）＋索引；归档；推送；回板。
 
 ## 验收证据（2026-11-10）
@@ -36,3 +36,6 @@
   集成测试加时限守卫）；②UI 截图抓动画帧/toast 遮挡（QA 截图禁用动画＋等 toast 消失）。
 - 视觉评审两轮（vision 子代理）：首轮 FAIL（P0 对话框透明帧、P1 缺端口/启动时间与表单 Label）→ 修复后复审。
 - 绿门：`bun test` 576/576、check、typecheck(:ui)、build、`openspec validate --strict`。
+- 报告：`.agents/reports/manager/stoa-daemon/report.html`（主仓 13670 报告服务，
+  https://local-gaubee-reports.fde2e.com/stoa-daemon/report.html）＋ `.agents/docs/E2E-REPORTS.md` 索引行；
+  主仓 change `stoa-daemon-integration` 已归档（241be53e/49d36aa4）；回板已发（manager-main 实例）。
