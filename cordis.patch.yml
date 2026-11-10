@@ -1,0 +1,18 @@
+# Stoa 公示板 MCP（stdio）——作为 dsh 组合包安装时插入当前 profile。
+#
+# 契约（dsh 0.2.2-rc.1 官方模板）：manifest 的 dsh.bundle.patch 指向本文件；
+# 行内只放配置，工具实现由 @deepseek-ai/dsh-mcp-client（dsh 随附）提供。
+# 凭据纪律：dsh 会清洗 ambient *TOKEN*，因此显式写进 config.env；
+# 这里用 Loader !!js 从宿主环境引用，不把明文写进包/仓库。
+- insert:
+    - id: stoa-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: stoa
+        transport: stdio
+        command: bunx
+        args: ['@jixoai/stoa', 'mcp']
+        failOnStartupError: true
+        env:
+          STOA_BASE_URL: !!js process.env.STOA_BASE_URL ?? 'http://127.0.0.1:13689'
+          STOA_TOKEN: !!js process.env.STOA_TOKEN ?? ''

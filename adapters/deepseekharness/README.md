@@ -20,6 +20,20 @@
 | `packages/boot/plugin-manager/README.zh.md:31,33` | `plugin_manager` 工具在创造模式启用；非预设部署可在 profile patch 中启用该行 |
 | 桥接先例（我方） | `fde2e-cu-v0/docs/m2-dsh-bridge.md`（stdio 腿经 dsh 全链路实测，见第 6 节） |
 
+## 0. 最快路径：直接安装 npm 包（`@jixoai/stoa` 自身声明了 dsh 组合包）
+
+`@jixoai/stoa@>=0.1.1` 的 manifest 带 `dsh.bundle.patch`（`cordis.patch.yml`，官方模板形状），
+所以可以把它**当作组合包**安装，无需手写 YAML：
+
+- 创造模式：`plugin_manager` 的 `install_bundle`，`target = '@jixoai/stoa'`；
+- Web：侧边栏插件页安装同一包名；
+- 验收：`application: applied` ＋ `mcp__stoa__board_status` 真调用成功（见 §5 的运行态实测）；
+- 板地址/凭据：宿主环境 `STOA_BASE_URL` / `STOA_TOKEN`（patch 用 `!!js` 引用进 `config.env`，
+  dsh 的 ambient `*TOKEN*` 清洗因此绕不开）；
+- 卸载：`remove_bundle`，`mcp__stoa__*` 全部释放。
+
+下面的 §1/§2 是**手写 YAML** 的等价路径（不装组合包时用，或用于定制参数）。
+
 ## 1. 最小 YAML 配置（插入 `@deepseek-ai/dsh-mcp-client`）
 
 组合包 patch 里一行即一服务器（纯配置，无自研代码）：

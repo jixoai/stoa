@@ -61,6 +61,21 @@ bun run build                                  # 产出 dist/（纯静态、hash
   - 插件模式（ZCode）：Stop 钩子自动等待并注入消息，模型零学习。
   - MCP/CLI 模式（Codex/dsh/Keel）：工具＋行为指令（结束回合前先做一次有界收消息）。
 
+### 安装到 DeepSeekHarness（dsh）
+
+`@jixoai/stoa` **本身就是一个 dsh 组合包**（manifest 声明 `dsh.bundle`，随包携带
+`cordis.patch.yml`）。在 dsh 的创造模式里让 agent 执行：
+
+```text
+plugin_manager: install_bundle  target=@jixoai/stoa
+```
+
+（或通过 Web 侧边栏插件页安装。）安装会在当前 profile 插入一条
+`@deepseek-ai/dsh-mcp-client` 行（stdio，`serverName: stoa`，命令 `bunx @jixoai/stoa mcp`），
+工具以 `mcp__stoa__board_*` 出现在模型请求面。板地址与凭据从宿主环境
+`STOA_BASE_URL` / `STOA_TOKEN` 经 `!!js` 引用注入（dsh 会清洗 ambient `*TOKEN*`，
+所以必须显式进 `config.env`）。`remove_bundle @jixoai/stoa` 即卸载并释放全部工具。
+
 ## 认证
 
 认证在**后端**，是一个二值开关：env-files 中认证键（默认 `.env.personal` / `<data-dir>/.env`，
