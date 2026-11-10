@@ -38,7 +38,7 @@
 - [x] S3-3. 空态：单一主 CTA + 折叠 CLI 备选（可复制）；390 不再被视口底边截断。
   - 证据：QA L1-1/L1-2（空态唯一实心 CTA；header 降级 ghost）、S4-2b 空态截图；
     失败态修正：`emptyState = !loading && !loadError && !daemonDown && services.length === 0`，
-    `loadError` 时渲染错误态（`daemon-retry`）而非 `Empty`（实现方 route-mock 探针 10/10）。
+    `loadError` 时渲染错误态（`daemon-retry`）而非 `Empty`（终验由正式 QA 覆盖：L11-1～L11-4）。
 - [x] S3-4. 次级信息：状态目录与行内路径可复制；截断文本有 title。
   - 证据：QA S4-2/S4-2b 新增断言（390/1280 各一组）：剪贴板 === 完整 stateDir / dataDir，
     `title` 含完整路径；复制钮升为 `icon-sm`（28×28）。
@@ -66,12 +66,14 @@
 - [x] S5-2. QA 脚本扩展（首屏无表单、打开 Sheet、Sheet 内错误、关闭重置、成功关闭），
   390/1280 截图；隔离环境全流程；结束自回收零残留。
   - 判据：脚本步骤全 PASS；无孤儿进程/端口。
-  - 证据：最终轮 **57/57 PASS**；S7-1/S7-2 零残留（daemon 与全部服务 pid 不存活、认领端口全释放）。
+  - 证据：最终轮 **62/62 PASS**（含 L11-1～L11-5：加载失败错误态＋重试恢复 390/1280、空态挂载成功焦点）；
+    S7-1/S7-2 零残留（daemon 与全部服务 pid 不存活、认领端口全释放）。终验轮晚于归档提交，
+    以 `test(stoa): QA 扩到 62 断言` 单提交补入（报告 74 步＝62 断言＋12 设计稿参考）。
 - [x] S5-3. HTML 报告：结论/数字 → 逐步截图 → 每个改动文件的 before/after 成对图，
   UNCOVERED=0；vision 子代理判图 + reviewer 子代理复核（阻塞项清零）。
-  - 证据：`report.html` 69 步（57 断言 + 12 设计稿参考）；改动文件覆盖表 + UNCOVERED=0 写入报告 env；
+  - 证据：`report.html` 74 步（62 断言 + 12 设计稿参考）；改动文件覆盖表 + UNCOVERED=0 写入报告 env；
     before/after 配对 12 组（before 来源与数据差异已在 env 如实登记）；vision 设计评审（3 P0 + 8 P1 落地）、
-    reviewer 两轮（HOLD→4 阻塞全修并复验）。
+    reviewer 三轮（HOLD 7/10 → 4 阻塞全修；HOLD 8/10 → 加载失败态补正式 QA 证据；SHIP 9/10，无阻塞）。
 - [x] S5-4. 版本 v0.3.1 → tag → CI 发布；更新 `.worktrees/stoa-main` 并 build；
   子仓指针更新；归档 change；主仓 E2E 报告索引；推送；回板。
   - 证据：commit/tag/发布记录、报告公网链接与索引行见交付说明。
