@@ -328,7 +328,22 @@ async function ensureServiceRunning(page, record, label) {
     );
     return { ok: false, healed: false, pid: observedPid, detail: `${observedStatus} pid=${observedPid} dead` };
   }
-  const heal = cliJson(["serve", "--data-dir", record.dataDir, "--port", String(record.port)], {
+  // `serve` CLI 输出用 data_dir（snake_case），daemon status 用 dataDir（camelCase）；
+  // 两处调用方都会传进来——缺字段时必须跳过 spawn，绝不能把 undefined 变成字符串 "undefined"。
+  const healDir = record.dataDir ?? record.data_dir ?? null;
+  const healPort = Number(record.port);
+  if (!healDir || healDir === "undefined" || !Number.isInteger(healPort)) {
+    knownBoundaries.push(
+      `${label}：登记缺少 dataDir/data_dir 或合法 port（dir=${String(healDir)} port=${String(record.port)}），已跳过自愈 spawn，避免 --data-dir undefined；交由步骤断言失败。`,
+    );
+    return {
+      ok: false,
+      healed: false,
+      pid: observedPid,
+      detail: `${observedStatus} pid=${observedPid} no-heal-target`,
+    };
+  }
+  const heal = cliJson(["serve", "--data-dir", healDir, "--port", String(healPort)], {
     STOA_DAEMON_STATE_DIR: stateDir,
   });
   const healedPid = Number(heal.json?.service?.pid) || null;
@@ -430,6 +445,8 @@ try {
   // ── S4a: daemon-webui 空态（先于任何 CLI 挂载） ───────────────────────────
   browser = await chromium.launch({ channel: "chrome", headless: true });
   const consoleErrors = [];
+  /** B1 测试窗口内故意注入的 500：Chrome 会记为 console error，仅在该窗口内忽略该签名。 */
+  let injectedFailures = 0;
   // 口令对话框的「复制」走 clipboard API：headless 下需要显式授权（否则走 execCommand 兜底可能失败）。
   const mainContext = await browser.newContext({
     viewport: { width: 390, height: 844 },
@@ -438,7 +455,10 @@ try {
   });
   const page = await mainContext.newPage();
   page.on("console", (msg) => {
-    if (msg.type() === "error") consoleErrors.push(msg.text());
+    if (msg.type() !== "error") return;
+    const text = msg.text();
+    if (injectedFailures > 0 && /500 \(Internal Server Error\)/.test(text)) return;
+    consoleErrors.push(text);
   });
   page.on("pageerror", (err) => consoleErrors.push(String(err)));
   await page.goto(daemonUrl, { waitUntil: "domcontentloaded" });
@@ -687,6 +707,173 @@ try {
     },
   );
   await setViewport(page, 390, 844);
+
+  // ── L11: 加载失败错误态 + 重试恢复（B1；390 与 1280 各一组）───────────────
+  // 真实 daemon 不可用时的路径：GET /api/daemon/services 注入 500 → 错误 Alert + daemon-retry，
+  // 不回退空态、header「添加服务」禁用；解除拦截后点重试 → 真实 200 空列表 → 空态恢复。
+  const failServicesRoute = async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue().catch(() => undefined);
+      return;
+    }
+    await route
+      .fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "QA 注入：服务列表加载失败" }),
+      })
+      .catch(() => undefined);
+  };
+  async function probeLoadFailure(width, height, suffix) {
+    await setViewport(page, width, height);
+    injectedFailures += 1;
+    await page.route("**/api/daemon/services", failServicesRoute);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForSelector('[data-testid="daemon-retry"]', { state: "visible", timeout: 10_000 });
+    const retryVisible = await visible(page, "daemon-retry");
+    const ctaGone = !(await visible(page, "daemon-mount-empty-cta"));
+    const emptyTextGone = !(await page.getByText("还没有挂载的服务").isVisible().catch(() => false));
+    // 注意：描述文案也含「服务列表加载失败」，必须用 exact 只匹配 AlertTitle（否则 strict 冲突 → false）。
+    const alertVisible = await page
+      .getByText("服务列表加载失败", { exact: true })
+      .isVisible()
+      .catch(() => false);
+    const addDisabled = await page.getByTestId("daemon-mount-open").isDisabled();
+    const imgFail = await shot(page, `daemon-load-failed-${suffix}.png`);
+    return { retryVisible, ctaGone, emptyTextGone, alertVisible, addDisabled, imgFail };
+  }
+  async function probeRetryRecovery(suffix) {
+    await page.unroute("**/api/daemon/services", failServicesRoute);
+    injectedFailures = Math.max(0, injectedFailures - 1);
+    await page.getByTestId("daemon-retry").click();
+    await page.waitForSelector('[data-testid="daemon-mount-empty-cta"]', { state: "visible", timeout: 10_000 });
+    const retryGone = (await page.getByTestId("daemon-retry").count()) === 0;
+    const ctaBack = await visible(page, "daemon-mount-empty-cta");
+    const addState = await page.getByTestId("daemon-mount-open").evaluate((el) => ({
+      disabled: el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true",
+      primary: el.className.includes("bg-primary"),
+    }));
+    const imgRecovered = await shot(page, `daemon-retry-recovered-${suffix}.png`);
+    return { retryGone, ctaBack, addState, imgRecovered };
+  }
+
+  const fail390 = await probeLoadFailure(390, 844, "390");
+  check(
+    "L11-1 加载失败错误态（390）：错误 Alert + 重试替代空态；无空态 CTA；header「添加服务」disabled",
+    fail390.retryVisible &&
+      fail390.ctaGone &&
+      fail390.emptyTextGone &&
+      fail390.alertVisible &&
+      fail390.addDisabled,
+    `retry=${fail390.retryVisible} ctaGone=${fail390.ctaGone} emptyGone=${fail390.emptyTextGone} alert=${fail390.alertVisible} addDisabled=${fail390.addDisabled}`,
+    {
+      id: "L11-1",
+      group: "sheet",
+      expect:
+        "GET /api/daemon/services 注入 500：渲染「服务列表加载失败」+ daemon-retry；不回退空态；增「添加服务」禁用",
+      image: fail390.imgFail,
+      imageWidth: "390×844",
+    },
+  );
+  const recover390 = await probeRetryRecovery("390");
+  check(
+    "L11-2 加载失败重试恢复（390）：解除拦截后点 daemon-retry → 空态 CTA 回归、错误消失、header 降级 ghost 且可用",
+    recover390.retryGone && recover390.ctaBack && !recover390.addState.disabled && !recover390.addState.primary,
+    `retryGone=${recover390.retryGone} cta=${recover390.ctaBack} add=${JSON.stringify(recover390.addState)}`,
+    {
+      id: "L11-2",
+      group: "sheet",
+      expect: "真实 /api/daemon/services 恢复 200 空列表；重试触发 refresh 后回到空态（单主 CTA）",
+      image: recover390.imgRecovered,
+      imageWidth: "390×844",
+    },
+  );
+  const fail1280 = await probeLoadFailure(1280, 900, "1280");
+  check(
+    "L11-3 加载失败错误态（1280）：错误 Alert + 重试替代空态；无空态 CTA；header「添加服务」disabled",
+    fail1280.retryVisible &&
+      fail1280.ctaGone &&
+      fail1280.emptyTextGone &&
+      fail1280.alertVisible &&
+      fail1280.addDisabled,
+    `retry=${fail1280.retryVisible} ctaGone=${fail1280.ctaGone} emptyGone=${fail1280.emptyTextGone} alert=${fail1280.alertVisible} addDisabled=${fail1280.addDisabled}`,
+    {
+      id: "L11-3",
+      group: "sheet",
+      expect: "1280×900 同一错误路径补图（新状态，无 before）",
+      image: fail1280.imgFail,
+      imageWidth: "1280×900",
+    },
+  );
+  const recover1280 = await probeRetryRecovery("1280");
+  check(
+    "L11-4 加载失败重试恢复（1280）：解除拦截后点 daemon-retry → 空态 CTA 回归、错误消失、header 降级 ghost 且可用",
+    recover1280.retryGone && recover1280.ctaBack && !recover1280.addState.disabled && !recover1280.addState.primary,
+    `retryGone=${recover1280.retryGone} cta=${recover1280.ctaBack} add=${JSON.stringify(recover1280.addState)}`,
+    {
+      id: "L11-4",
+      group: "sheet",
+      expect: "1280×900 重试恢复补图（新状态，无 before）",
+      image: recover1280.imgRecovered,
+      imageWidth: "1280×900",
+    },
+  );
+  await setViewport(page, 390, 844);
+
+  // ── L11-5: 空态 CTA 挂载成功 → 焦点落在新行「打开」（P2-8）────────────────
+  await openSheet(page, "daemon-mount-empty-cta");
+  await page.getByTestId("daemon-mount-name").fill("focus-probe");
+  await page.getByTestId("daemon-mount-submit").click();
+  await waitFor(
+    () => page.locator('[data-testid="daemon-mount-sheet"]').count().then((n) => n === 0),
+    20_000,
+    "focus-probe sheet closed",
+  );
+  const focusRow = await waitFor(
+    () => page.locator("text=focus-probe").count().then((n) => n > 0),
+    25_000,
+    "focus-probe row",
+  );
+  const registryFocus = cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? [];
+  const focusRecord = registryFocus.find((s) => s.name === "focus-probe");
+  if (focusRecord?.pid) pids.services.push(Number(focusRecord.pid));
+  await page.waitForTimeout(500); // rAF 焦点
+  const activeTestId = await page.evaluate(() => document.activeElement?.getAttribute("data-testid"));
+  check(
+    "L11-5 空态 CTA 挂载成功：Sheet 关闭后焦点落在新行「打开」动作（P2-8）",
+    focusRow && activeTestId === `daemon-open-${focusRecord?.id ?? ""}`,
+    `row=${focusRow} active=${activeTestId} expected=daemon-open-${focusRecord?.id ?? "?"}`,
+    {
+      id: "L11-5",
+      group: "sheet",
+      expect: "空态 CTA 已卸载 → focusMountResult 退到新行 daemon-open-<id>（而不是 header 或 body）",
+    },
+  );
+  await waitToastsGone(page);
+  // 清理：停止 + 移除 focus-probe，恢复空态，供后续 CLI serve 基线使用。
+  await openRowMenu(page, focusRecord?.id ?? "");
+  await page.getByTestId(`daemon-stop-${focusRecord?.id ?? ""}`).click({ timeout: 8000 });
+  await page.waitForSelector('[data-testid="daemon-stop-confirm"]', { state: "visible", timeout: 6000 });
+  await page.getByTestId("daemon-stop-confirm").click();
+  await waitFor(
+    async () =>
+      (cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? []).find(
+        (s) => s.id === focusRecord?.id,
+      )?.status === "stopped",
+    25_000,
+    "focus-probe stopped",
+  );
+  await waitToastsGone(page);
+  await openRowMenu(page, focusRecord?.id ?? "");
+  await page.getByTestId(`daemon-remove-${focusRecord?.id ?? ""}`).click({ timeout: 8000 });
+  await page.waitForSelector('[data-testid="daemon-remove-confirm"]', { state: "visible", timeout: 6000 });
+  await page.getByTestId("daemon-remove-confirm").click();
+  await waitFor(
+    () => page.locator("text=focus-probe").count().then((n) => n === 0),
+    15_000,
+    "focus-probe removed",
+  );
+  await waitToastsGone(page);
 
   // ── S2: CLI 默认 serve = daemon 模式 ───────────────────────────────────────
   const serveStart = Date.now();
@@ -1149,6 +1336,14 @@ try {
     uiSecretKey,
   );
   const imgSecret390 = await shot(page, "daemon-secret-dialog-390.png");
+  // P2-9：显隐钮 aria-pressed 随状态变化（截图仍取掩码态，见上）。
+  const revealBefore = await page.getByTestId("daemon-secret-reveal").getAttribute("aria-pressed");
+  await page.getByTestId("daemon-secret-reveal").click();
+  const revealOn = await page.getByTestId("daemon-secret-reveal").getAttribute("aria-pressed");
+  const typeOn = await page.getByTestId("daemon-secret-value").getAttribute("type");
+  await page.getByTestId("daemon-secret-reveal").click();
+  const revealOff = await page.getByTestId("daemon-secret-reveal").getAttribute("aria-pressed");
+  const typeOff = await page.getByTestId("daemon-secret-value").getAttribute("type");
   await page.getByTestId("daemon-secret-copy-link").click();
   await sleep(400);
   const copiedLink = await page
@@ -1158,14 +1353,19 @@ try {
   await page.getByTestId("daemon-secret-close").click();
   await page.waitForSelector('[data-testid="daemon-secret-dialog"]', { state: "detached", timeout: 8000 });
   check(
-    "L8-1 口令对话框（390）：口令掩码、链接展示打码、复制得到完整链接、完整 key 不出现在页面文本",
+    "L8-1 口令对话框（390）：口令掩码、链接展示打码、复制得到完整链接、完整 key 不出现在页面文本；显隐钮 aria-pressed 同步",
     secretType !== "text" &&
       uiSecretKey.length > 0 &&
       linkDisplay.includes("#key=••••••") &&
       !linkDisplay.includes(uiSecretKey) &&
       copiedLink === uiSecret?.key_link &&
-      keyNotInBody,
-    `masked=${secretType !== "text"} displayRedacted=${!linkDisplay.includes(uiSecretKey)} copyMatch=${copiedLink === uiSecret?.key_link} keyInBody=${!keyNotInBody}`,
+      keyNotInBody &&
+      revealBefore === "false" &&
+      revealOn === "true" &&
+      typeOn === "text" &&
+      revealOff === "false" &&
+      typeOff !== "text",
+    `masked=${secretType !== "text"} displayRedacted=${!linkDisplay.includes(uiSecretKey)} copyMatch=${copiedLink === uiSecret?.key_link} keyInBody=${!keyNotInBody} reveal=${revealBefore}->${revealOn}->${revealOff} type=${typeOn}/${typeOff}`,
     {
       id: "L8-1",
       group: "list",
@@ -1646,17 +1846,24 @@ try {
     els.map((el) => el.getAttribute("data-status")),
   );
   const openButtonsBeforeStale = await page.locator('[data-testid^="daemon-open-"]').count();
+  // P2-13：daemonDown 时 header「添加服务」disabled 且有 title 说明（不可再发挂载请求）。
+  const addDownState = await page.getByTestId("daemon-mount-open").evaluate((el) => ({
+    disabled: el.hasAttribute("disabled") || el.getAttribute("aria-disabled") === "true",
+    title: el.getAttribute("title") ?? "",
+  }));
   // 旧响应尚未回灌（hold 6s）：先取「关闭瞬间」的干净 stopped 态截图。
   const imgDown390 = await shot(page, "daemon-down-390.png");
   check(
-    "L10-1 daemon 已停止态（390）：横幅 + 概览「daemon 已停止」；在册服务即时降级 stopped 且无失效「打开」",
+    "L10-1 daemon 已停止态（390）：横幅 + 概览「daemon 已停止」；行降级 stopped 无失效「打开」；header「添加服务」disabled+title",
     daemonDownBanner &&
       daemonDownOverview &&
       bannerText.includes("daemon 已停止") &&
       stoppedRowsBeforeStale.length > 0 &&
       stoppedRowsBeforeStale.every((s) => s === "stopped") &&
-      openButtonsBeforeStale === 0,
-    `banner=${daemonDownBanner} overview=${daemonDownOverview} rows=${JSON.stringify(stoppedRowsBeforeStale)} open=${openButtonsBeforeStale}`,
+      openButtonsBeforeStale === 0 &&
+      addDownState.disabled &&
+      addDownState.title.length > 0,
+    `banner=${daemonDownBanner} overview=${daemonDownOverview} rows=${JSON.stringify(stoppedRowsBeforeStale)} open=${openButtonsBeforeStale} add=${JSON.stringify(addDownState)}`,
     {
       id: "L10-1",
       group: "shutdown",
