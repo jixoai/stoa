@@ -139,10 +139,19 @@ dsh 原生支持远程 MCP（`transport: streamable-http` + `url` + `headers`，
 | 错误语义 | `board_reply` 缺 `post_id` → `isError:true`（`parent post "undefined" not found`）；`kind:"banana"` → `isError:true`（`kind must be`）；均不含 token |
 | 释放 | `fiber.dispose()` 后 `mcp__stoa__*` 全注销，子进程退出 |
 
+**组合包安装全流程实测（2026-11-10，本人执行）**：在 dsh `0.2.2-rc.1` 的**真实 npm 安装**上
+（`npm i @deepseek-ai/dsh@0.2.2-rc.1`，runtime resolution 走发布版 `lib/`）：
+`PluginManager.installBundle('@jixoai/stoa@0.1.1')`（与 `plugin_manager` 工具同一实现、真实 pnpm）→
+`application: applied`、`bundle: @jixoai/stoa`、`version: 0.1.1`，profile 依赖与 `stoa-mcp` 行落地；
+HMR 应用后 8 个 `mcp__stoa__board_*` 进入工具面，经 `ToolExecutionPipeline` 真调用
+`board_status`/`board_post`/`board_read` 全部 ok（隔离板）；`removeBundle` → `applied`，
+工具全部释放、profile 依赖清空。**installed tarball 与 registry spec 两种来源均 PASS。**
+
 **边界（如实）**：
 
-- 未走 agent 侧 `plugin_manager install_bundle` 管理工具流（需模型会话）；YAML/组合包解析层与
-  bundle 安装 UI 仍待真会话验证（本页 §1/§2 的字段语义已按源码核对）。
+- 未驱动 agent 侧自然语言 `plugin_manager` 会话（需模型凭据）；本次走的是同一 `installBundle`
+  实现（工具只是薄封装），安装/激活/卸载语义一致。
+- 组合包 UI 展示资源（图标/本地化）与 dsh 官方目录收录未做（见 §0）。
 - 未验证 `ui://stoa/board.html` 资源经 `dsh-mcp-resources` 的读取投影。
 - MCP 层不做入参 schema 校验：缺 `post_id` 会发到服务端再以 `isError` 返回——不要把
   `inputSchema.required` 当客户端门禁。
