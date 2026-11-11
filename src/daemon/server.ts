@@ -8,6 +8,10 @@
  *   PATCH  /api/daemon/services/:id      — 更新登记（publicUrl（隧道域名）/name）
  *   GET    /api/daemon/services/:id/secret — 读取访问口令＋口令链接（no-store；仅回环面）
  *   PUT    /api/daemon/services/:id/secret — 设置/重新生成口令（必要时重启服务生效）
+ *   GET    /api/daemon/services/:id/preview — 按需生成/命中静态预览并返回元信息（幂等、单飞、no-store）
+ *   GET    /preview/:id — 302 → /preview/:id/
+ *   GET    /preview/:id/（或 /index.html）— 文档入口：ensure 后返回只读归档 index.html
+ *   GET    /preview/:id/assets/**、/media/** — 不 ensure，直接静态服务；其它路径 404（白名单）
  *   POST   /api/daemon/services/:id/stop — 停服务（`serve --stop` 语义）并更新登记（临时会话删目录）
  *   DELETE /api/daemon/services/:id      — 移除登记（须已停；临时会话删目录）
  *   POST   /api/daemon/pick-directory    — 原生目录选择器（宿主侧弹窗）
@@ -18,16 +22,19 @@
  * 子服务一律以 `stoa serve --standalone` 拉起（默认 `--idle-timeout 0`：daemon 持有生命周期，
  * 服务不按空闲自尽），登记 pid 用 server.json 里服务自报的 pid。
  */
-import { closeSync, chmodSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, chmodSync, existsSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, sep } from "node:path";
 import { Hono, type Context } from "hono";
 import type { StatusCode } from "hono/utils/http-status";
+import { isReportError } from "../core/errors.ts";
 import { PORT_MAX, PORT_MIN } from "../core/protocol.ts";
+import { DB_FILE_NAME } from "../server/db.ts";
 import { probeHealth, probeHealthBody, readServerInfo } from "../server/discovery.ts";
 import { initDataDir } from "../server/init.ts";
 import { isPortInWorkerRange } from "../server/ports.ts";
 import { pickDirectory, pickerSupported } from "./picker.ts";
+import { ensurePreview, previewExportDir } from "./preview.ts";
 import {
   findAuthKey,
   generateAuthKey,
@@ -170,7 +177,7 @@ function prepareSession(opts: {
   const warnings: string[] = [];
   const envFile = join(opts.dataDir, ".env");
   const hadEnvFile = existsSync(envFile);
-  if (!existsSync(join(opts.dataDir, "report.sqlite"))) {
+  if (!existsSync(join(opts.dataDir, DB_FILE_NAME))) {
     initDataDir({ dataDir: opts.dataDir, cwd: opts.dataDir, envFiles: [envFile] });
   }
   const envFiles = opts.location === "path" ? opts.envFiles : [envFile];
@@ -585,6 +592,99 @@ function uiResponse(ctx: DaemonContext, pathname: string): Response {
   return uiResponse(ctx, "/index.html");
 }
 
+/** 预览归档的不可变资源前缀（构建产物带哈希 / 媒体按内容寻址）。 */
+const PREVIEW_IMMUTABLE_PREFIXES = ["/assets/", "/media/"] as const;
+
+function textResponse(status: number, text: string): Response {
+  return new Response(`${text}\n`, {
+    status,
+    headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+  });
+}
+
+/**
+ * 解码归档内路径并做穿越守卫（返回以 `/` 开头的规范路径）：
+ * 覆盖 `..` 与 `%2e%2e`/`..%2f` 等编码变体、NUL、反斜杠。非法返回 null（400）。
+ */
+function decodePreviewPath(rawRel: string): string | null {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(rawRel);
+  } catch {
+    return null;
+  }
+  if (decoded === "" || decoded === "/") return "/index.html";
+  if (decoded.includes("\0") || decoded.includes("\\")) return null;
+  if (decoded.split("/").some((segment) => segment === "..")) return null;
+  return decoded.startsWith("/") ? decoded : `/${decoded}`;
+}
+
+/**
+ * 白名单（design v2 §1.5）：只服务文档入口 index.html 与 assets/media；其余
+ * （manifest.json、history/**、其它 html 等）一律 404。
+ */
+function previewPathKind(rel: string): "entry" | "asset" | "blocked" {
+  if (rel === "/index.html") return "entry";
+  if (PREVIEW_IMMUTABLE_PREFIXES.some((prefix) => rel.startsWith(prefix))) return "asset";
+  return "blocked";
+}
+
+/**
+ * 从归档目录静态服务（只读）：HTML no-cache、assets/media immutable；
+ * 不注入任何 boot、不携带 token（归档自带快照）。
+ */
+function servePreviewFile(exportDir: string, rel: string): Response {
+  const root = resolve(exportDir);
+  const target = resolve(root, `.${rel}`);
+  if (target !== root && !target.startsWith(`${root}${sep}`)) {
+    return textResponse(400, "bad path");
+  }
+  let isFile = false;
+  try {
+    isFile = statSync(target).isFile();
+  } catch {
+    isFile = false;
+  }
+  if (!isFile) return textResponse(404, "not found");
+
+  const file = Bun.file(target);
+  const headers: Record<string, string> = {};
+  if (rel === "/index.html") {
+    headers["content-type"] = "text/html; charset=utf-8";
+    headers["cache-control"] = "no-cache";
+  } else {
+    if (file.type) headers["content-type"] = file.type;
+    headers["cache-control"] = "public, max-age=31536000, immutable";
+  }
+  return new Response(file, { headers });
+}
+
+/**
+ * 预览前的数据可用性检查：登记存在但 dataDir / 报表库缺失 → 404 可读原因（不是 500）。
+ * 临时实例干净停止会连登记一起消失（表现为 unknown id），不再单列文案（design v2 §1.5）。
+ */
+function previewDataUnavailable(record: ServiceRecord): string | null {
+  if (existsSync(record.dataDir) && existsSync(join(record.dataDir, DB_FILE_NAME))) {
+    return null;
+  }
+  return `服务数据目录不可用（缺少 ${DB_FILE_NAME}）：${record.dataDir}`;
+}
+
+/** 预览页面的错误响应：保持 daemon JSON 契约（浏览器里也是可读文案）。 */
+function previewErrorResponse(err: unknown): Response {
+  const jsonError = (status: number, code: string, message: string): Response =>
+    new Response(JSON.stringify({ ok: false, code, error: message }), {
+      status,
+      headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
+    });
+  if (err instanceof HttpFail) return jsonError(err.status, err.code, err.message);
+  if (isReportError(err)) {
+    const status = err.status >= 400 && err.status < 600 ? err.status : 500;
+    return jsonError(status, err.code, err.message);
+  }
+  return jsonError(500, "INTERNAL", (err as Error).message);
+}
+
 export function createDaemonApp(ctx: DaemonContext): Hono {
   const app = new Hono();
   // 串行化登记读改写（挂载/停止/shutdown 可能并发进入）。
@@ -792,6 +892,75 @@ export function createDaemonApp(ctx: DaemonContext): Hono {
       }),
     ),
   );
+
+  app.get("/api/daemon/services/:id/preview", (c) =>
+    handle(c, async () => {
+      c.header("cache-control", "no-store");
+      const id = c.req.param("id");
+      const record = readServices(ctx.stateDir).find((item) => item.id === id);
+      if (!record) throw new HttpFail(404, "NOT_FOUND", `no service with id ${id}`);
+      const unavailable = previewDataUnavailable(record);
+      if (unavailable) throw new HttpFail(404, "PREVIEW_DATA_GONE", unavailable);
+      const preview = await ensurePreview(ctx, record);
+      return {
+        ok: true,
+        url: `/preview/${record.id}/`,
+        cached: preview.cached,
+        rev: preview.rev,
+        as_of_seq: preview.as_of_seq,
+        exported_at: preview.exported_at,
+        duration_ms: preview.duration_ms,
+      };
+    }),
+  );
+
+  // 裸 id 重定向到带斜杠形态：归档 HTML 里的相对资源（./assets/…、media/…）按
+  // `/preview/<id>/` 解析，缺斜杠会让它们落到 `/preview/assets/…`。
+  app.get("/preview/:id", (c) => {
+    const id = c.req.param("id");
+    return c.redirect(`/preview/${encodeURIComponent(id)}/`, 302);
+  });
+
+  app.get("/preview/:id/*", async (c) => {
+    try {
+      const id = c.req.param("id");
+      const record = readServices(ctx.stateDir).find((item) => item.id === id);
+      if (!record) throw new HttpFail(404, "NOT_FOUND", `no service with id ${id}`);
+      // 用原始 pathname 切片（而不是 decode 后的 param）计算归档内路径：
+      // 穿越守卫必须在 decode 之后按段判定，且不能被 Hono 的路由解码绕过。
+      const rest = c.req.path.slice("/preview/".length);
+      const slash = rest.indexOf("/");
+      const rawRel = slash < 0 ? "/" : rest.slice(slash);
+      const rel = decodePreviewPath(rawRel);
+      if (rel === null) return textResponse(400, "bad path");
+      const kind = previewPathKind(rel);
+      if (kind === "blocked") return textResponse(404, "not found");
+      if (kind === "entry") {
+        // 只有文档入口 ensure（F2）：一次页面加载的几十个 asset 请求不得放大成多次全量导出。
+        const unavailable = previewDataUnavailable(record);
+        if (unavailable) throw new HttpFail(404, "PREVIEW_DATA_GONE", unavailable);
+        const preview = await ensurePreview(ctx, record);
+        return servePreviewFile(preview.dir, rel);
+      }
+      // 子资源（assets/media）：不 ensure，直接服务；归档缺失 404。
+      return servePreviewFile(previewExportDir(record), rel);
+    } catch (err) {
+      return previewErrorResponse(err);
+    }
+  });
+
+  // 非 GET 的预览面：显式 405，避免 POST/PUT/DELETE 落到控制台 SPA 回退拿到 200。
+  app.all("/preview/*", (c) => {
+    c.header("allow", "GET");
+    return c.json(
+      {
+        ok: false,
+        code: "METHOD_NOT_ALLOWED",
+        error: `preview only supports GET (got ${c.req.method})`,
+      },
+      405,
+    );
+  });
 
   app.post("/api/daemon/pick-directory", (c) =>
     handle(c, async () => {

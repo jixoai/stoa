@@ -21,7 +21,16 @@
  */
 import { chromium } from "playwright-core";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { REPO_ROOT, argValue } from "./lib/qa-env.mjs";
@@ -37,6 +46,8 @@ mkdirSync(REPORT_DIR, { recursive: true });
 
 const CLI = join(REPO_ROOT, "src/cli/main.ts");
 const BUN = process.execPath;
+/** 本次构建版本（报告证据；缓存键 ui_version 同源）。 */
+const PKG_VERSION = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")).version;
 // 13680-13699 内只认领探测为空且不在保留集里的端口；13689 是生产板，13690/13696/13697
 // 是其它会话的常驻端口（见 PORT.md / 现场 lsof），一律不碰。
 const RESERVED_PORTS = new Set([13689, 13690, 13696, 13697]);
@@ -83,11 +94,11 @@ function beforeImage(name) {
   return target;
 }
 
-async function shot(page, name) {
+async function shot(page, name, opts = {}) {
   // animations:"disabled" 让 CSS 动画快进到终态（否则会抓到 toast/对话框的进场中间帧）。
   await page.waitForTimeout(250);
   const path = join(REPORT_DIR, name);
-  await page.screenshot({ path, animations: "disabled" });
+  await page.screenshot({ path, animations: "disabled", ...opts });
   screenshots.push(name);
   return name;
 }
@@ -130,13 +141,19 @@ async function waitFor(checkFn, timeoutMs, label) {
 }
 
 async function pickFreePort(min, max, exclude) {
-  for (let port = max; port >= min; port--) {
-    if (exclude.has(port)) continue;
-    // Bun 对已占用端口不抛错（会静默共享），必须 TCP 探测后再认领。
-    if (await portIsListening("127.0.0.1", port)) continue;
-    return port;
+  // 13680-13699 常被其它会话瞬时占满（本 change 实测一次 O3 端口争用）：有界等待
+  // 一次扫描位，避免外部进程短暂占用直接把整套 QA 判失败。仍不回收/抢占他人端口。
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    for (let port = max; port >= min; port--) {
+      if (exclude.has(port)) continue;
+      // Bun 对已占用端口不抛错（会静默共享），必须 TCP 探测后再认领。
+      if (await portIsListening("127.0.0.1", port)) continue;
+      return port;
+    }
+    if (Date.now() > deadline) throw new Error(`no free port in ${min}-${max}`);
+    await sleep(400);
   }
-  throw new Error(`no free port in ${min}-${max}`);
 }
 
 function cliRun(args, env = {}) {
@@ -164,6 +181,116 @@ async function fetchJson(url, timeoutMs = 2000) {
   } catch {
     return null;
   }
+}
+
+/** 原样记录一次 HTTP 响应（状态/头/正文），用于预览入口与守卫断言。 */
+async function httpProbe(url, init = {}) {
+  try {
+    const res = await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(20_000),
+    });
+    const text = await res.text();
+    const headers = {};
+    for (const [key, value] of res.headers.entries()) headers[key] = value;
+    return {
+      ok: true,
+      status: res.status,
+      headers,
+      text,
+      location: headers.location ?? null,
+      finalUrl: res.url,
+    };
+  } catch (err) {
+    return { ok: false, status: 0, headers: {}, text: String(err), location: null, finalUrl: "" };
+  }
+}
+
+/** 预览元信息（stoa-stopped-preview design v2 §1.5；非 2xx 返回 null）。 */
+async function previewMeta(id) {
+  return fetchJson(`${daemonUrl}/api/daemon/services/${id}/preview`, 20_000);
+}
+
+/** 预览归档 manifest（缓存单一信源，直接读磁盘）。 */
+function previewManifest(dataDir) {
+  try {
+    return JSON.parse(readFileSync(join(dataDir, "export-preview", "manifest.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 等归档页正文出现指定文本：静态快照的 feed 是异步 React 首帧
+ * （static-banner 先出现，帖子列表随后渲染），不能只等 banner 就读 innerText。
+ */
+async function waitForArchiveText(page, text, timeoutMs = 20_000) {
+  return page
+    .waitForFunction(
+      (needle) => {
+        if (document.querySelectorAll("[data-post-id]").length === 0) return false;
+        return document.body.innerText.includes(needle);
+      },
+      text,
+      { timeout: timeoutMs },
+    )
+    .then(() => true)
+    .catch(() => false);
+}
+
+/**
+ * 字面 `../` 与 `%2e%2e` 变体在客户端/服务端 URL 规范化后落到 `/preview/x`
+ * （未知 id → 302 → 404）；编码斜杠变体会到达处理器并被守卫判 400。
+ * 两者都算「未返回归档内容」。
+ */
+function trailingTraversalOk(probe) {
+  return probe.status === 400 || probe.status === 404;
+}
+
+/** 从归档里挑一个真实子资源（assets/ 下第一份文件）用于 immutable 断言。 */
+function pickPreviewAsset(dataDir) {
+  const walk = (dir, prefix) => {
+    let entries = [];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return null;
+    }
+    for (const entry of entries) {
+      if (entry.isFile()) return `${prefix}${entry.name}`;
+      if (entry.isDirectory()) {
+        const nested = walk(join(dir, entry.name), `${prefix}${entry.name}/`);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  };
+  return walk(join(dataDir, "export-preview", "assets"), "assets/");
+}
+
+/**
+ * 点开真 `<a target="_blank">` 预览入口（行内按钮或 ⋯ 菜单项），用 Playwright
+ * 新页事件捕获弹层页面，等静态归档壳（static-banner）渲染完成。
+ */
+async function openPreview(page, testid, label) {
+  const popupPromise = page
+    .context()
+    .waitForEvent("page", { timeout: 30_000 })
+    .catch(() => null);
+  await page.getByTestId(testid).click();
+  const popup = await popupPromise;
+  if (!popup) return { ok: false, page: null, errors: [], detail: `${label}: no popup page event` };
+  const errors = [];
+  popup.on("pageerror", (err) => errors.push(String(err)));
+  // 弹层继承 context 的 390 视口（主页面用 setViewportSize 只改了自身）：
+  // 预览归档的截图/断言统一用桌面 1280×900，与报告口径一致。
+  await popup.setViewportSize({ width: 1280, height: 900 }).catch(() => undefined);
+  await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
+  const banner = await popup
+    .waitForSelector('[data-testid="static-banner"]', { state: "visible", timeout: 30_000 })
+    .then(() => true)
+    .catch(() => false);
+  return { ok: banner, page: popup, errors, detail: `${label}: banner=${banner} url=${redactUrl(popup.url())}` };
 }
 
 /** testid 是否可见（未挂载/隐藏一律 false，不抛错）。 */
@@ -1018,6 +1145,539 @@ try {
     },
   );
 
+  // ══ P1–P5/P7/P8：停止实例静态预览＋构建缓存（stoa-stopped-preview §4）══════
+  // 真机链路：控制台入口是真 `<a target="_blank">` → Playwright 新页事件捕获弹层；
+  // 缓存判定以 manifest（数据本体自证）为准，不做耗时断言。
+  const previewId = serviceA.id;
+  const previewEntryUrl = `${daemonUrl}/preview/${previewId}/`;
+  const seedText = `QA 预览基线帖 ${Date.now()}（static preview baseline，首份归档应含此正文）`;
+  const seedRun = cliRun([
+    "post",
+    "--data-dir",
+    dirs.a,
+    "--env-files",
+    join(dirs.a, "accounts", "owner.env"),
+    "--as",
+    "owner",
+    // 归档首页默认「为你推荐」只收 result 标签/@owner 的根帖——不带 tag 的帖
+    // 不出现在 feed（会让「正文可见」断言假阴性，不是归档缺内容）。
+    "--tag",
+    "result",
+    "-m",
+    seedText,
+  ]);
+  let seedJson = null;
+  try {
+    seedJson = JSON.parse(seedRun.stdout.split("\n").find((line) => line.trim().startsWith("{")) ?? "null");
+  } catch {
+    seedJson = null;
+  }
+  const seedPost = seedJson?.posts?.[0] ?? null;
+  const seedHealth = await fetchJson(`http://127.0.0.1:${portA}/healthz`);
+  check(
+    "P1-0 预览夹具：CLI（真实服务＋账号 env 文件）向 board-a 发一条基线帖",
+    seedRun.code === 0 && Boolean(seedPost?.id) && seedHealth?.ok === true,
+    `exit=${seedRun.code} post=${seedPost?.id ?? "?"} seq=${seedPost?.seq ?? "?"} health=${seedHealth?.ok} ${(seedRun.stderr || "").slice(0, 140)}`,
+    {
+      id: "P1-0",
+      group: "preview",
+      expect:
+        "`bun src/cli/main.ts post --data-dir <a> --env-files <a>/accounts/owner.env --as owner -m …` 退出码 0；服务 healthz 200",
+    },
+  );
+
+  await openRowMenu(page, previewId);
+  const menuPreviewVisible = await visible(page, `daemon-preview-menu-${previewId}`);
+  const menuPreview = page.getByTestId(`daemon-preview-menu-${previewId}`);
+  const menuPreviewTag = await menuPreview.evaluate((el) => el.tagName).catch(() => "");
+  const menuPreviewHref = await menuPreview.getAttribute("href").catch(() => null);
+  const menuPreviewTarget = await menuPreview.getAttribute("target").catch(() => null);
+  const menuPreviewText = ((await menuPreview.innerText().catch(() => "")) || "").replace(/\s+/g, "");
+  const imgPreviewMenu = await shot(page, "preview-running-menu-1280.png");
+  check(
+    "P1-1 running 行 ⋯ 菜单新增「生成静态预览」：真 <a> 直链 /preview/<id>/（target=_blank）",
+    menuPreviewVisible &&
+      menuPreviewTag === "A" &&
+      menuPreviewHref === `/preview/${previewId}/` &&
+      menuPreviewTarget === "_blank" &&
+      menuPreviewText.includes("生成静态预览"),
+    `visible=${menuPreviewVisible} tag=${menuPreviewTag} href=${menuPreviewHref} target=${menuPreviewTarget} text=${menuPreviewText}`,
+    {
+      id: "P1-1",
+      group: "preview",
+      expect: "菜单项可见且为真 `<a href=/preview/<id>/ target=_blank>`；文案「生成静态预览」",
+      image: imgPreviewMenu,
+      imageWidth: "1280×900",
+    },
+  );
+
+  const p1Open = await openPreview(page, `daemon-preview-menu-${previewId}`, "P1");
+  const p1Page = p1Open.page;
+  const p1SeedRendered = p1Page ? await waitForArchiveText(p1Page, seedText) : false;
+  const p1Url = p1Page ? new URL(p1Page.url()) : null;
+  const p1BannerText = p1Page ? ((await p1Page.getByTestId("static-banner").innerText().catch(() => "")) || "") : "";
+  const p1Body = p1Page ? ((await p1Page.evaluate(() => document.body.innerText).catch(() => "")) || "") : "";
+  const p1Boot = p1Page ? await p1Page.evaluate(() => Boolean(window.__STOA_DAEMON__)).catch(() => true) : true;
+  const p1Snapshot = p1Page
+    ? await p1Page.evaluate(() => Boolean(document.getElementById("report-snapshot"))).catch(() => false)
+    : false;
+  const p1HasSeed = p1Body.includes(seedText);
+  const imgPreviewArchive = p1Page ? await shot(p1Page, "preview-archive-1280.png", { fullPage: true }) : undefined;
+  if (p1Page) await p1Page.close();
+  check(
+    "P1-2 点开 running 行菜单 → 新页打开归档：静态模式标识「静态归档 · 只读」+ 既有帖子正文可见",
+    p1Open.ok &&
+      p1Url?.pathname === `/preview/${previewId}/` &&
+      p1BannerText.includes("静态归档 · 只读") &&
+      p1SeedRendered &&
+      p1HasSeed &&
+      p1Snapshot &&
+      !p1Boot &&
+      p1Open.errors.length === 0,
+    `url=${p1Url?.pathname ?? "?"} banner="${p1BannerText.replace(/\s+/g, " ")}" seedRendered=${p1SeedRendered} seedInText=${p1HasSeed} snapshot=${p1Snapshot} boot=${p1Boot} errors=${p1Open.errors.length}`,
+    {
+      id: "P1-2",
+      group: "preview",
+      expect:
+        "Playwright page 事件捕获弹层；URL=/preview/<id>/；static-banner「静态归档 · 只读」；内联 report-snapshot 存在；正文含夹具帖；无 __STOA_DAEMON__ 注入",
+      image: imgPreviewArchive,
+      imageWidth: "1280×900（整页）",
+    },
+  );
+
+  const entryProbe = await httpProbe(previewEntryUrl);
+  const entryContentType = entryProbe.headers["content-type"] ?? "";
+  const entryCacheControl = entryProbe.headers["cache-control"] ?? "";
+  const entryNoBoot = !entryProbe.text.includes("__STOA_DAEMON__");
+  const metaFirst = await previewMeta(previewId);
+  const manifestFirst = previewManifest(dirs.a);
+  check(
+    "P1-3 归档入口契约：text/html + no-cache、不注入 __STOA_DAEMON__；元信息 cached:true 且 exported_at=manifest",
+    entryProbe.status === 200 &&
+      entryContentType.includes("text/html") &&
+      entryCacheControl.includes("no-cache") &&
+      entryNoBoot &&
+      metaFirst?.cached === true &&
+      Boolean(manifestFirst) &&
+      metaFirst?.exported_at === manifestFirst?.exported_at,
+    `status=${entryProbe.status} type=${entryContentType} cache=${entryCacheControl} noBoot=${entryNoBoot} cached=${metaFirst?.cached} metaAt=${metaFirst?.exported_at} manifestAt=${manifestFirst?.exported_at}`,
+    {
+      id: "P1-3",
+      group: "preview",
+      expect:
+        "GET /preview/<id>/ → 200 text/html; no-cache；HTML 不含 __STOA_DAEMON__；GET /api/daemon/services/<id>/preview → cached:true，exported_at 与磁盘 manifest 一致",
+    },
+  );
+
+  // ── P2: 二次访问命中缓存（断言 exported_at 不变；不做耗时断言）───────────────
+  const metaCached = await previewMeta(previewId);
+  const manifestCached = previewManifest(dirs.a);
+  check(
+    "P2-1 缓存命中：二次 GET 元信息 → cached:true，exported_at 与首次（manifest）一致",
+    metaCached?.cached === true &&
+      metaCached?.exported_at === metaFirst?.exported_at &&
+      manifestCached?.exported_at === manifestFirst?.exported_at &&
+      metaCached?.rev === metaFirst?.rev,
+    `cached=${metaCached?.cached} exported_at=${metaCached?.exported_at} first=${metaFirst?.exported_at} revSame=${metaCached?.rev === metaFirst?.rev}`,
+    {
+      id: "P2-1",
+      group: "preview",
+      expect: "cached:true；exported_at/rev 与首次一致（manifest 未重写）",
+    },
+  );
+
+  // ── P3: 数据变化（CLI 发帖）→ 缓存自证失效 → 重生成且新帖可见 ────────────────
+  const deltaText = `QA 预览增量帖 ${Date.now()}（static preview delta，重生成后应出现在归档）`;
+  const deltaRun = cliRun([
+    "post",
+    "--data-dir",
+    dirs.a,
+    "--env-files",
+    join(dirs.a, "accounts", "owner.env"),
+    "--as",
+    "owner",
+    "--tag",
+    "result",
+    "-m",
+    deltaText,
+  ]);
+  let deltaJson = null;
+  try {
+    deltaJson = JSON.parse(deltaRun.stdout.split("\n").find((line) => line.trim().startsWith("{")) ?? "null");
+  } catch {
+    deltaJson = null;
+  }
+  const deltaPost = deltaJson?.posts?.[0] ?? null;
+  check(
+    "P3-1 数据变化夹具：CLI 再发一条新帖（写操作走真实实例）",
+    deltaRun.code === 0 && Boolean(deltaPost?.id) && Number(deltaPost?.seq) > Number(seedPost?.seq),
+    `exit=${deltaRun.code} post=${deltaPost?.id ?? "?"} seq=${deltaPost?.seq ?? "?"} seedSeq=${seedPost?.seq ?? "?"}`,
+    { id: "P3-1", group: "preview", expect: "新帖 seq 大于基线帖；退出码 0" },
+  );
+
+  const metaRegen = await previewMeta(previewId);
+  const manifestRegen = previewManifest(dirs.a);
+  check(
+    "P3-2 数据变化 → 缓存 miss 并重生成：cached:false、as_of_seq 增大、rev 变化",
+    metaRegen?.cached === false &&
+      Number(metaRegen?.as_of_seq) > Number(metaFirst?.as_of_seq) &&
+      metaRegen?.rev !== metaFirst?.rev &&
+      Number(metaRegen?.exported_at) > Number(metaFirst?.exported_at) &&
+      metaRegen?.exported_at === manifestRegen?.exported_at,
+    `cached=${metaRegen?.cached} as_of=${metaFirst?.as_of_seq}->${metaRegen?.as_of_seq} revChanged=${metaRegen?.rev !== metaFirst?.rev} exported_at=${metaFirst?.exported_at}->${metaRegen?.exported_at}`,
+    {
+      id: "P3-2",
+      group: "preview",
+      expect: "首次 GET 即触发重生成（cached:false）；as_of_seq 增大；rev 变化；manifest 与响应 exported_at 一致",
+    },
+  );
+
+  await openRowMenu(page, previewId);
+  const p3Open = await openPreview(page, `daemon-preview-menu-${previewId}`, "P3");
+  const p3DeltaRendered = p3Open.page ? await waitForArchiveText(p3Open.page, deltaText) : false;
+  const p3Body = p3Open.page ? ((await p3Open.page.evaluate(() => document.body.innerText).catch(() => "")) || "") : "";
+  if (p3Open.page) await p3Open.page.close();
+  const metaAfterOpen = await previewMeta(previewId);
+  check(
+    "P3-3 重生成的归档含新帖正文（基线帖仍在）；再次打开命中缓存（exported_at=重生成值）",
+    p3Open.ok &&
+      p3DeltaRendered &&
+      p3Body.includes(deltaText) &&
+      p3Body.includes(seedText) &&
+      metaAfterOpen?.cached === true &&
+      metaAfterOpen?.exported_at === metaRegen?.exported_at,
+    `banner=${p3Open.ok} deltaRendered=${p3DeltaRendered} newText=${p3Body.includes(deltaText)} baseline=${p3Body.includes(seedText)} cachedAgain=${metaAfterOpen?.cached} exportedAtSame=${metaAfterOpen?.exported_at === metaRegen?.exported_at}`,
+    {
+      id: "P3-3",
+      group: "preview",
+      expect: "归档含新帖与基线帖正文；第二次打开（P3 元信息已重生成）cached:true 且 exported_at 不再变化",
+    },
+  );
+
+  // ── P4: 停止实例 → stopped 行「生成预览」→ 归档可读、缓存命中、端口已释放 ────
+  await setViewport(page, 1280, 900);
+  const p4Live = await ensureServiceRunning(page, serviceA, "P4");
+  if (!p4Live.ok) throw new Error(`P4 precheck: board-a not running (${p4Live.detail})`);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("text=Stoa Daemon", { timeout: 10_000 });
+  await waitFor(
+    () => page.locator(`[data-testid="daemon-service-${previewId}"]`).count().then((n) => n > 0),
+    15_000,
+    "P4 board-a row",
+  );
+  await waitToastsGone(page);
+  await openRowMenu(page, previewId);
+  await page.getByTestId(`daemon-stop-${previewId}`).click({ timeout: 8000 });
+  await page.waitForSelector('[data-testid="daemon-stop-confirm"]', { state: "visible", timeout: 6000 });
+  await page.getByTestId("daemon-stop-confirm").click();
+  const p4Stopped = await waitFor(
+    async () =>
+      (cliJson(["daemon", "status", "--state-dir", stateDir]).json.services ?? []).find(
+        (s) => s.id === previewId,
+      )?.status === "stopped",
+    25_000,
+    "P4 board-a stopped",
+  );
+  await waitToastsGone(page);
+  const p4PortReleased = await waitFor(
+    () => portIsListening("127.0.0.1", portA).then((listening) => !listening),
+    15_000,
+    "P4 port release",
+  );
+  const p4PidDead = !pidAlive(p4Live.pid);
+  const p4RowStatus = await page
+    .getByTestId(`daemon-service-${previewId}`)
+    .getAttribute("data-status")
+    .catch(() => null);
+  const p4EntryVisible = await visible(page, `daemon-preview-${previewId}`);
+  const p4EntryTag = await page
+    .getByTestId(`daemon-preview-${previewId}`)
+    .evaluate((el) => el.tagName)
+    .catch(() => "");
+  const p4EntryHref = await page
+    .getByTestId(`daemon-preview-${previewId}`)
+    .getAttribute("href")
+    .catch(() => null);
+  const p4EntryTitle = await page
+    .getByTestId(`daemon-preview-${previewId}`)
+    .getAttribute("title")
+    .catch(() => null);
+  await page
+    .locator(`[data-testid="daemon-service-${previewId}"]`)
+    .scrollIntoViewIfNeeded()
+    .catch(() => undefined);
+  const imgStoppedRow = await shot(page, "preview-stopped-row-1280.png");
+  check(
+    "P4-1 停止后 stopped 行出现「生成预览」入口（真 <a>）；实例进程死亡且端口已释放",
+    p4Stopped &&
+      p4PortReleased &&
+      p4PidDead &&
+      p4RowStatus === "stopped" &&
+      p4EntryVisible &&
+      p4EntryTag === "A" &&
+      p4EntryHref === `/preview/${previewId}/` &&
+      (p4EntryTitle ?? "").includes("静态快照 · 只读"),
+    `stopped=${p4Stopped} portReleased=${p4PortReleased} pidDead=${p4PidDead} row=${p4RowStatus} entry=${p4EntryVisible}/${p4EntryTag} href=${p4EntryHref} title=${p4EntryTitle}`,
+    {
+      id: "P4-1",
+      group: "preview",
+      expect:
+        "菜单停止＋确认后登记 stopped、pid 死、端口不再监听；行内 daemon-preview-<id> 可见且为 `<a href=/preview/<id>/ title=静态快照…>`",
+      image: imgStoppedRow,
+      imageWidth: "1280×900",
+      imageBefore: beforeImage("preview-stopped-row-1280.png"),
+      beforeWidth: "1280×900",
+    },
+  );
+
+  const p4Open = await openPreview(page, `daemon-preview-${previewId}`, "P4");
+  const p4DeltaRendered = p4Open.page ? await waitForArchiveText(p4Open.page, deltaText) : false;
+  const p4Body = p4Open.page ? ((await p4Open.page.evaluate(() => document.body.innerText).catch(() => "")) || "") : "";
+  const imgStoppedArchive = p4Open.page
+    ? await shot(p4Open.page, "preview-archive-stopped-1280.png", { fullPage: true })
+    : undefined;
+  if (p4Open.page) await p4Open.page.close();
+  const metaStopped = await previewMeta(previewId);
+  check(
+    "P4-2 停止态预览不依赖实例进程：归档可读（基线/新帖正文）且 cached:true、exported_at 不变",
+    p4Open.ok &&
+      p4DeltaRendered &&
+      p4Body.includes(seedText) &&
+      p4Body.includes(deltaText) &&
+      p4Open.errors.length === 0 &&
+      metaStopped?.cached === true &&
+      metaStopped?.exported_at === metaRegen?.exported_at,
+    `banner=${p4Open.ok} deltaRendered=${p4DeltaRendered} seed=${p4Body.includes(seedText)} delta=${p4Body.includes(deltaText)} cached=${metaStopped?.cached} exportedAtSame=${metaStopped?.exported_at === metaRegen?.exported_at}`,
+    {
+      id: "P4-2",
+      group: "preview",
+      expect:
+        "实例停止后点 stopped 行「生成预览」→ 静态归档整页可读（两帖正文）；元信息 cached:true 且 exported_at 与停止前一致（未重生成）",
+      image: imgStoppedArchive,
+      imageWidth: "1280×900（整页）",
+    },
+  );
+
+  // 画面与后续断言基线：重新 serve board-a（同 dataDir/端口 → 复用同一 id）。
+  const reserveA = cliJson(["serve", "--data-dir", dirs.a, "--port", String(portA)], {
+    STOA_DAEMON_STATE_DIR: stateDir,
+  });
+  const serviceAResumed = reserveA.json.service ?? {};
+  if (serviceAResumed.pid) pids.services.push(Number(serviceAResumed.pid));
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("text=Stoa Daemon", { timeout: 10_000 });
+  const resumedRunning = await waitFor(
+    () =>
+      page
+        .getByTestId(`daemon-service-${previewId}`)
+        .getAttribute("data-status")
+        .then((status) => status === "running")
+        .catch(() => false),
+    20_000,
+    "P4 board-a resumed",
+  );
+  await waitToastsGone(page);
+  check(
+    "P4-3 预览链路零副作用：重新 serve 复用同一 id/登记，行恢复 running（后续步骤基线）",
+    reserveA.code === 0 &&
+      serviceAResumed.id === previewId &&
+      serviceAResumed.status === "running" &&
+      resumedRunning,
+    `exit=${reserveA.code} id=${serviceAResumed.id} status=${serviceAResumed.status} rowRunning=${resumedRunning}`,
+    {
+      id: "P4-3",
+      group: "preview",
+      expect: "停止/预览不破坏登记；`serve` 复用同 id 与端口，行回到 running（供 L5/O1 等后续步骤继续）",
+    },
+  );
+
+  // ── P5: 子资源（assets）不触发生成：immutable 缓存头 + manifest exported_at 不变 ─
+  const manifestBeforeAsset = previewManifest(dirs.a);
+  const assetRel = pickPreviewAsset(dirs.a);
+  const assetProbe = assetRel
+    ? await httpProbe(`${daemonUrl}/preview/${previewId}/${assetRel}`)
+    : { status: 0, headers: {}, text: "", location: null, finalUrl: "" };
+  const assetCacheControl = assetProbe.headers["cache-control"] ?? "";
+  const metaAfterAsset = await previewMeta(previewId);
+  const manifestAfterAsset = previewManifest(dirs.a);
+  check(
+    "P5-1 子资源请求不触发生成：assets 200 + cache-control immutable；manifest/元信息 exported_at 不变",
+    Boolean(assetRel) &&
+      assetProbe.status === 200 &&
+      assetCacheControl.includes("immutable") &&
+      Boolean(manifestBeforeAsset) &&
+      manifestAfterAsset?.exported_at === manifestBeforeAsset?.exported_at &&
+      metaAfterAsset?.cached === true &&
+      metaAfterAsset?.exported_at === manifestBeforeAsset?.exported_at,
+    `asset=${assetRel ?? "?"} status=${assetProbe.status} cache="${assetCacheControl}" exported_at=${manifestBeforeAsset?.exported_at}->${manifestAfterAsset?.exported_at} metaCached=${metaAfterAsset?.cached}`,
+    {
+      id: "P5-1",
+      group: "preview",
+      expect:
+        "GET /preview/<id>/assets/** → 200 且 cache-control 含 immutable；随后元信息 cached:true 且 exported_at 与 manifest 均未变化（未触发导出）",
+    },
+  );
+
+  // ── P7: 白名单与路径守卫（manifest/history 404；穿越 400/404；裸 id 302）────────
+  const whitelistProbe = await httpProbe(`${daemonUrl}/preview/${previewId}/manifest.json`);
+  const historyProbe = await httpProbe(`${daemonUrl}/preview/${previewId}/history/20260101/index.html`);
+  const traversalLiteral = await httpProbe(`${daemonUrl}/preview/${previewId}/../x`);
+  const traversalEncoded = await httpProbe(`${daemonUrl}/preview/${previewId}/%2e%2e/x`);
+  const guardSlash1 = await httpProbe(`${daemonUrl}/preview/${previewId}/..%2fsecret.txt`);
+  const guardSlash2 = await httpProbe(`${daemonUrl}/preview/${previewId}/%2e%2e%2fsecret.txt`);
+  check(
+    "P7-1 白名单：manifest.json / history/** 一律 404（只服务 index.html、assets、media）",
+    whitelistProbe.status === 404 && historyProbe.status === 404,
+    `manifest=${whitelistProbe.status} history=${historyProbe.status}`,
+    {
+      id: "P7-1",
+      group: "preview",
+      expect: "白名单外路径不返回归档文件（404），manifest 不对外暴露",
+    },
+  );
+  check(
+    "P7-2 穿越守卫：../x 与 %2e%2e/x 最终 404；编码斜杠变体（..%2f）400",
+    trailingTraversalOk(traversalLiteral) &&
+      trailingTraversalOk(traversalEncoded) &&
+      guardSlash1.status === 400 &&
+      guardSlash2.status === 400,
+    `../x=${traversalLiteral.status}(${redactUrl(traversalLiteral.finalUrl)}) %2e%2e/x=${traversalEncoded.status}(${redactUrl(traversalEncoded.finalUrl)}) ..%2f=${guardSlash1.status} %2e%2e%2f=${guardSlash2.status}`,
+    {
+      id: "P7-2",
+      group: "preview",
+      expect:
+        "Bun 对字面 `..`/`%2e%2e` 路径段先做 URL 规范化（落到 /preview/x → 未知 id 404），编码斜杠变体到达处理器后由 decode+分段守卫判 400；均不返回归档内容",
+    },
+  );
+  const bareProbe = await httpProbe(`${daemonUrl}/preview/${previewId}`, { redirect: "manual" });
+  check(
+    "P7-3 裸 id 302 到带斜杠形态（相对资源按 /preview/<id>/ 解析）",
+    bareProbe.status === 302 && bareProbe.location === `/preview/${previewId}/`,
+    `status=${bareProbe.status} location=${bareProbe.location}`,
+    {
+      id: "P7-3",
+      group: "preview",
+      expect: "GET /preview/<id> → 302 Location=/preview/<id>/",
+    },
+  );
+
+  // ── P7-4: 非 GET 预览面 → 405（新守卫：不落控制台 SPA 回退拿到 200）──────────
+  const postManifestProbe = await httpProbe(`${daemonUrl}/preview/${previewId}/manifest.json`, {
+    method: "POST",
+  });
+  const postEntryProbe = await httpProbe(`${daemonUrl}/preview/${previewId}/`, { method: "POST" });
+  let postManifestJson = null;
+  try {
+    postManifestJson = JSON.parse(postManifestProbe.text);
+  } catch {
+    postManifestJson = null;
+  }
+  check(
+    "P7-4 非 GET /preview/* → 405 METHOD_NOT_ALLOWED（Allow: GET；不落 SPA 回退 200）",
+    postManifestProbe.status === 405 &&
+      postEntryProbe.status === 405 &&
+      (postManifestProbe.headers.allow ?? "").toUpperCase().includes("GET") &&
+      postManifestJson?.code === "METHOD_NOT_ALLOWED",
+    `POST manifest.json=${postManifestProbe.status} allow=${postManifestProbe.headers.allow ?? "-"} code=${postManifestJson?.code ?? "?"} POST /preview/<id>/=${postEntryProbe.status}`,
+    {
+      id: "P7-4",
+      group: "preview",
+      expect:
+        "POST /preview/<id>/manifest.json 与 POST /preview/<id>/ 均 405 + Allow: GET + JSON {code:METHOD_NOT_ALLOWED}；不得回退控制台 HTML/200",
+    },
+  );
+
+  // ── P8: 静态归档只读（沿用 report-static-mode 断言方式）：零网络写请求 ─────────
+  const p8Context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const p8Page = await p8Context.newPage();
+  const p8Requests = [];
+  p8Page.on("request", (request) => p8Requests.push({ method: request.method(), url: request.url() }));
+  const p8Errors = [];
+  p8Page.on("pageerror", (err) => p8Errors.push(String(err)));
+  await p8Page.goto(previewEntryUrl, { waitUntil: "domcontentloaded" });
+  const p8Banner = await p8Page
+    .getByTestId("static-banner")
+    .innerText()
+    .catch(() => "");
+  // 桌面/移动两套导航同时存在于 DOM（一套 hidden）：只点可见的那一个。
+  const composeNavAll = p8Page.getByRole("button", { name: "发帖" });
+  const composeNavCount = await composeNavAll.count();
+  let composeNav = null;
+  for (let i = 0; i < composeNavCount; i += 1) {
+    const candidate = composeNavAll.nth(i);
+    if (await candidate.isVisible().catch(() => false)) {
+      composeNav = candidate;
+      break;
+    }
+  }
+  if (!composeNav) composeNav = composeNavAll.first();
+  const composeNavDisabled = await composeNav.getAttribute("aria-disabled").catch(() => null);
+  const p8HashBefore = await p8Page.evaluate(() => location.hash);
+  // 归档页的「发帖」按钮带 aria-disabled（静态只读）；Playwright 的 actionability
+  // 会把它当作不可点。这里用 DOM click 触发同一 React onClick（与用户点击同路径）。
+  const p8NavClicked = await composeNav
+    .evaluate((el) => {
+      el.scrollIntoView({ block: "center" });
+      el.click();
+      return true;
+    })
+    .catch(() => false);
+  const p8ReadonlyToast = await p8Page
+    .waitForFunction(
+      () =>
+        [...document.querySelectorAll('[data-slot="toast"]')].some((el) =>
+          (el.textContent ?? "").includes("静态归档是只读的"),
+        ),
+      undefined,
+      { timeout: 8000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  const p8HashAfter = await p8Page.evaluate(() => location.hash);
+  const imgReadonly = await shot(p8Page, "preview-readonly-1280.png");
+  await p8Page.evaluate(() => {
+    location.hash = "#/compose";
+  });
+  const composeReadonly = await p8Page
+    .waitForSelector('[data-testid="compose-readonly"]', { state: "visible", timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  const composeReadonlyText = composeReadonly
+    ? ((await p8Page.getByTestId("compose-readonly").innerText().catch(() => "")) || "")
+    : "";
+  await p8Page.waitForTimeout(600);
+  const writeRequests = p8Requests.filter((item) => !["GET", "HEAD", "OPTIONS"].includes(item.method));
+  const apiRequests = p8Requests.filter((item) => {
+    try {
+      return new URL(item.url).pathname.startsWith("/api/");
+    } catch {
+      return false;
+    }
+  });
+  await p8Context.close();
+  check(
+    "P8-1 静态归档只读：点「发帖」被拦（只读 toast、不导航、零网络写请求）；#/compose 显示只读面板",
+    p8Banner.includes("静态归档 · 只读") &&
+      p8NavClicked &&
+      composeNavDisabled === "true" &&
+      p8ReadonlyToast &&
+      p8HashAfter === p8HashBefore &&
+      composeReadonly &&
+      composeReadonlyText.includes("静态归档 · 只读") &&
+      writeRequests.length === 0 &&
+      apiRequests.length === 0 &&
+      p8Errors.length === 0,
+    `banner="${p8Banner.replace(/\s+/g, " ")}" clicked=${p8NavClicked} navDisabled=${composeNavDisabled} toast=${p8ReadonlyToast} hashUnchanged=${p8HashAfter === p8HashBefore} composeReadonly=${composeReadonly} writes=${writeRequests.length} api=${apiRequests.length} errors=${p8Errors.length}`,
+    {
+      id: "P8-1",
+      group: "preview",
+      expect:
+        "归档页发帖入口 aria-disabled + 只读 toast；URL 不跳转；全程零 POST/PUT/PATCH/DELETE、零 /api/* 请求；直接进 #/compose 显示「静态归档 · 只读」",
+      image: imgReadonly,
+      imageWidth: "1280×900",
+    },
+  );
+
   // ── L5: 操作层级（running）：打开唯一主操作；停止/移除必须经菜单 ───────────
   const openTag = await page.getByTestId(`daemon-open-${serviceA.id}`).evaluate((el) => el.tagName).catch(() => "");
   const openHref = await page.getByTestId(`daemon-open-${serviceA.id}`).getAttribute("href").catch(() => null);
@@ -1762,6 +2422,29 @@ try {
     },
   );
 
+  // ── P6: 临时实例干净停止 → 行消失（S4-11 已断言）＋ 直接 GET 旧 id 预览 404 ──
+  const tempPreviewPage = await httpProbe(`${daemonUrl}/preview/${tempRecord?.id ?? ""}/`);
+  const tempPreviewApi = await httpProbe(`${daemonUrl}/api/daemon/services/${tempRecord?.id ?? ""}/preview`);
+  let tempPreviewJson = null;
+  try {
+    tempPreviewJson = JSON.parse(tempPreviewPage.text);
+  } catch {
+    tempPreviewJson = null;
+  }
+  check(
+    "P6-1 临时实例停止即删后：直接 GET /preview/<旧id>/ 与元信息 → 404 可读 JSON（登记已消失）",
+    tempPreviewPage.status === 404 &&
+      tempPreviewJson?.ok === false &&
+      tempPreviewJson?.code === "NOT_FOUND" &&
+      tempPreviewApi.status === 404,
+    `page=${tempPreviewPage.status} code=${tempPreviewJson?.code ?? "?"} api=${tempPreviewApi.status} id=${tempRecord?.id ?? "?"}`,
+    {
+      id: "P6-1",
+      group: "preview",
+      expect: "临时实例干净停止后登记与目录一并删除 → 预览入口/元信息均 404（JSON 可读，不是 500）",
+    },
+  );
+
   // ── O1–O5: 从控制台打开自带口令（stoa-console-open-with-key design §4）──────
   const qaOpenedUrls = () => page.evaluate(() => [...(window.__qaOpenUrls ?? [])]);
   const resetQaOpenedUrls = () =>
@@ -2325,17 +3008,18 @@ try {
     JSON.stringify(
       {
         title:
-          "stoa-console-open-with-key — 控制台「打开」自带口令（daemon 全量 E2E 回归）",
-        brand: "Stoa（人机公示板）· stoa-console-open-with-key 交付报告",
+          "stoa-stopped-preview — 停止实例静态预览与构建缓存（daemon 全量 E2E 回归）",
+        brand: "Stoa（人机公示板）· stoa-stopped-preview 交付报告",
         subtitle:
-          "服务行「打开」主操作与行内入口（本地/公网）点击时按需读取口令，把 `#key=<口令>` 附为 fragment 后打开——从控制台打开服务不再落到登录门；开放模式/无口令/读取失败退回无 key URL 并给出可见提示；界面展示仍打码。",
-        meta: `2026-11-11 · ${checks.length} 断言 / ${failedChecks.length} FAIL · 390×844 + 1280×900 · 隔离 stateDir=${stateDir} · 真实 daemon/服务进程全程回收 · 端口 ${[...new Set(qaPorts)].join("/") || "—"}`,
+          "无实例进程也能读内容：控制台 stopped 行「生成预览」与 running 行 ⋯ 菜单「生成静态预览」都指向 daemon 的 `/preview/<id>/` 只读归档；manifest 以数据本体自证缓存（rev/as_of_seq），数据变化才重生成，子资源请求不触发生成，归档零网络写请求。",
+        meta: `2026-11-11 · ${checks.length} 断言 / ${failedChecks.length} FAIL · 390×844 + 1280×900 · Stoa v${PKG_VERSION} · 隔离 stateDir=${stateDir} · 真实 daemon/服务进程全程回收 · 端口 ${[...new Set(qaPorts)].join("/") || "—"}`,
         thesis:
           failedChecks.length === 0
-            ? "结论：控制台「打开」与行内本地/公网入口均自带口令（O1/O2：目标 URL 携带 #key=，新上下文直达板面、地址栏 hash 已抹除，连点去抖只开一个）；开放模式与 /secret 读取失败时退回无 key 且有可见提示（O3/O4）；界面文本/title/aria-label 不含完整口令（O5）。既有 62 项布局/会话/回收断言全量回归通过；浏览器零 console error。"
+            ? "结论：running 行菜单生成→新页捕获归档（静态模式标识＋既有帖子正文）；二次访问 cached:true 且 exported_at 不变（P2）；CLI 发帖后 cached:false、as_of_seq 增大、新帖可见（P3，rev 计数已升级为 count+rowid_total 等价交换自证）；停止实例后 stopped 行「生成预览」仍可读且 cached:true（P4，端口已释放）；assets 子资源 immutable 且不触发生成（P5）；临时实例停止后旧 id 404（P6）；manifest/history 404、穿越 400/404、裸 id 302、非 GET 405（P7）；归档页发帖被拦且零网络写请求（P8）。既有布局/会话/口令/回收断言零回归；浏览器零 console error。"
             : `结论：${failedChecks.length} 项断言失败（见 FAIL 步骤），不得视为交付。其余 ${checks.length - failedChecks.length} 项全 PASS。`,
         env: [
           ["隔离沙箱", sandbox],
+          ["Stoa 版本", `v${PKG_VERSION}（package.json；manifest.ui_version 与缓存键同源）`],
           ["daemon", `state-dir=${stateDir}（STOA_DAEMON_STATE_DIR；端口 ${qaPorts[0] ?? "?"}，13680-13699 探测认领）`],
           ["HOME（会话根）", `${sandboxHome}（自动会话 → $HOME/.stoa/sessions；与真实主目录隔离）`],
           ["目录选择器", `测试钩子 STOA_DIR_PICKER_RESULT=${pickedDir}（真实原生对话框为人工验收项）`],
@@ -2345,24 +3029,32 @@ try {
           ["刷新态/竞态取证", "GET /api/daemon/services：刷新态注入 1.5s 延迟；L10-3 探针在关闭前抓取真实响应、延迟 6s 回灌（模拟慢回包；均走真实 daemon）"],
           [
             "覆盖表 · src/ui/pages/DaemonConsolePage.tsx",
-            "行内「打开」主按钮 → O1（390 before/after）；行内「本地入口」→ O1 同一链路；行内「公网入口」→ O2（1280 before/after）；开放模式 → O3（toast 截图）；/secret 500 兜底 → O4（toast 截图）；打码纪律 → O5。UNCOVERED=0",
+            "行内「打开」主按钮 → O1（390 before/after）；行内「本地入口」→ O1 同一链路；行内「公网入口」→ O2（1280 before/after）；开放模式 → O3（toast 截图）；/secret 500 兜底 → O4（toast 截图）；打码纪律 → O5；stopped 行「生成预览」→ P4-1/P4-2（1280 stopped 行操作区＋归档整页）；running 行 ⋯「生成静态预览」→ P1-1/P1-2（1280 菜单展开＋归档整页）。UNCOVERED=0",
+          ],
+          [
+            "覆盖表 · src/daemon/preview.ts / src/daemon/server.ts",
+            "GET /preview/<id>/ 文档入口（text/html、no-cache、不注入 boot）→ P1-3；元信息 cached/exported_at → P2-1/P3-2；停止后预览不走实例进程 → P4-2；assets/media 不 ensure＋immutable → P5-1；白名单/穿越/裸 id/非 GET 405 → P7-1/P7-2/P7-3/P7-4；临时实例 404 → P6-1",
+          ],
+          [
+            "覆盖表 · src/server/export.ts",
+            "manifest.json 的 rev/as_of_seq/exported_at 作为缓存单一信源 → P1-3/P2-1/P3-2/P5-1（磁盘 manifest 与 API 元信息双向对表）",
           ],
           [
             "覆盖表 · scripts/qa/stoa-daemon.mjs",
             "QA harness 本身（测试工具，无视觉面——显式登记，三类豁免之①）",
           ],
           [
-            "覆盖表 · openspec/changes/stoa-console-open-with-key/tasks.md",
+            "覆盖表 · openspec/changes/stoa-stopped-preview/tasks.md",
             "规格/任务台账（文档，无视觉面——显式登记，三类豁免之①）",
           ],
           ["UNCOVERED", "0（改动文件均有对应步骤；未覆盖项见下）"],
           [
             "before/after 图来源",
-            "本 change 的 before/after 图（O1/O2）均由本次脚本在同一隔离 daemon、同一服务上生成（非旧版 UI 截图，数据/端口/状态一致）：before＝不带 key 的原 URL 在全新上下文打开（复现改动前的落点＝登录门）；after＝同服务带 #key= 打开后直达板面。其余既有步骤的 before 图沿用旧报告 .agents/reports/manager/stoa-daemon/（旧版 UI，仅作布局对比，沙箱/端口/数据与本次不同）。O2 的 publicUrl 为登记 fixture（public.stoa.test），仅验证目标 URL 形态，before/after 仍取本地原 URL 以保持同状态可比。",
+            "本 change 的 after 图（preview-running-menu-1280.png / preview-archive-1280.png / preview-stopped-row-1280.png / preview-archive-stopped-1280.png / preview-readonly-1280.png）全部来自本次脚本的同一隔离 daemon 与同一 board-a 数据；before 图取自 v0.5.0 稳定检出（stoa-main，tag v0.5.0）的独立沙箱同状态 stopped 行（1280×900），控制台无预览入口——两个沙箱的数据/端口不同，仅作「行操作区无入口 → 有入口」的版面对比，文件名与说明均标注版本。",
           ],
           [
             "未覆盖项（如实登记）",
-            "口令读取慢响应/超时（仅注入 500）；window.open 被浏览器真实拦截的提示路径（QA 用录制替身，未模拟真实弹窗拦截）；中键/Cmd+点击的原生新标签行为（代码保留默认语义，未做浏览器级断言）；暗色主题；真实原生目录弹窗（自动化用 STOA_DIR_PICKER_RESULT 钩子验证接线）；S4-1 版本/tag/CI 发布（由编排方统一处理，不在本子任务）",
+            "首次预览的同步导出对 daemon 事件循环的占用（design §5 已知边界，未做大媒体压力测试）；`bun run build` 未改版号时 ui_version 不失效缓存（design §5 承诺收窄，未构造同版本重建场景）；已读游标不进 rev 导致的归档已读态陈旧（设计有意排除）；暗色主题；真实原生目录弹窗（自动化用 STOA_DIR_PICKER_RESULT 钩子验证接线）；S4-1 版本/tag/CI 发布（由编排方统一处理，不在本子任务）",
           ],
           ...(knownBoundaries.length
             ? [["已知边界（如实登记，不阻塞本 change）", knownBoundaries.join(" ｜ ")]]
@@ -2395,6 +3087,11 @@ try {
             title: "5 · 挂载/停止/移除、自动与临时会话、口令链接（S4-4–S4-11/L6/L9）",
             note: "目录选择器回填；自定义目录自动 init；toast + 列表新增行；停止/移除二次确认；自动会话落 $HOME；临时会话停止即删；口令链接新上下文自动登录。",
             steps: byGroup(["mount"]),
+          },
+          {
+            title: "5b · 停止实例静态预览与构建缓存（P1–P8）",
+            note: "running 行菜单「生成静态预览」→ Playwright 新页捕获 `/preview/<id>/` 只读归档（静态模式标识＋既有正文）；manifest 自证缓存（二次访问 cached:true、exported_at 不变；rev 计数含 count+rowid_total，等价交换也会 miss）；CLI 发帖后 cached:false、as_of_seq 增大、新帖可见；停止实例后 stopped 行「生成预览」仍可读、端口已释放；assets 子资源 immutable 且不触发生成；临时实例停止后旧 id 404；白名单/穿越守卫/裸 id 302/非 GET 405；归档页发帖被拦且零网络写请求。",
+            steps: byGroup(["preview"]),
           },
           {
             title: "6 · 从控制台打开自带口令（O1–O5）",

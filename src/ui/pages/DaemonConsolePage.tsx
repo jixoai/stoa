@@ -12,6 +12,8 @@
  *   - 表单错误就地显示，端口校验错误在重新输入时清除；
  *   - 「打开」与行内入口（本地/公网）点击时按需读取口令并把 `#key=` 附为 fragment
  *     （stoa-console-open-with-key design §2）：从控制台打开服务不再落到登录门。
+ *   - 已停止实例可「生成预览」（stoa-stopped-preview design v2 §2）：真 `<a>` 直链 daemon 的
+ *     `/preview/<id>/`——静态快照、只读、首开生成后命中缓存；所有 stopped 行都给入口，数据缺失由预览页 404 承接。
  */
 import {
   useCallback,
@@ -250,8 +252,9 @@ function useWideSheet(): boolean {
 /**
  * 服务行（design §2.3）：身份+状态 → 入口 → 元信息 → 操作。
  * 使用容器查询（≥720px）切四列横排；<720px 纵向堆叠且操作与身份同一行。
+ * 导出供 SSR 行渲染测试（test/daemon-console-preview.test.tsx）直接断言行操作。
  */
-function ServiceRow({
+export function ServiceRow({
   service,
   busy,
   onOpen,
@@ -275,6 +278,17 @@ function ServiceRow({
   const timeTitle = `pid ${service.pid ?? "—"} · 启动于 ${fullTime(service.startedAt)}${
     stoppedAt ? ` · 停止于 ${fullTime(stoppedAt)}` : ""
   }`;
+  /**
+   * 静态预览入口（stoa-stopped-preview design v2 §2）：daemon 同源相对路径的真 `<a>`——
+   * 同步导航不受弹窗拦截影响（与「打开」读口令路径不同，预览免口令、免实例运行）。
+   * **所有 stopped 行都给入口**（评审 F8）：临时实例干净停止会连 dataDir/登记一起删除、
+   * 控制台根本不会出现该行；外部死亡被降级（reconcileServices）的临时行数据仍在、预览本可用。
+   * 数据真缺失的罕见情形（手工删目录）由预览页的可读 404 承接，前端不做存在性探测。
+   * `service.id` 经 encodeURIComponent（与 daemon 路由的 decode 对称；newServiceId 生成的 id 不变）。
+   */
+  const previewHref = `/preview/${encodeURIComponent(service.id)}/`;
+  const previewTitle = "静态快照 · 只读 · 首次生成后自动缓存";
+  const stoppedPreview = !running;
 
   /**
    * 普通左键走「读口令→附 #key=→打开」；修饰键（Cmd/Ctrl/Shift/Alt）不拦截，
@@ -454,6 +468,16 @@ function ServiceRow({
             打开
           </Button>
         ) : null}
+        {stoppedPreview ? (
+          <Button
+            render={<a href={previewHref} target="_blank" rel="noreferrer" />}
+            data-testid={`daemon-preview-${service.id}`}
+            title={previewTitle}
+          >
+            <EyeIcon data-icon="inline-start" />
+            生成预览
+          </Button>
+        ) : null}
         <Button
           variant="outline"
           disabled={busy}
@@ -487,6 +511,16 @@ function ServiceRow({
                 >
                   <SquareIcon />
                   停止服务
+                </DropdownMenuItem>
+                {/* 预览同走真 `<a>`（stoa-stopped-preview design v2 §2）；运行中也可快照。 */}
+                <DropdownMenuItem
+                  render={<a href={previewHref} target="_blank" rel="noreferrer" />}
+                  disabled={busy}
+                  title={previewTitle}
+                  data-testid={`daemon-preview-menu-${service.id}`}
+                >
+                  <EyeIcon />
+                  生成静态预览
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
               </>

@@ -5,12 +5,15 @@ import { fail } from "../core/errors.ts";
 
 export type Bindings = SQLQueryBindings[];
 
+/** 数据目录内 SQLite 库文件名（openDatabase / 就绪判定 / daemon 预览共用单一常量）。 */
+export const DB_FILE_NAME = "report.sqlite";
+
 export function openDatabase(opts: {
   dataDir: string;
   readonly?: boolean;
 }): Database {
   const { dataDir } = opts;
-  const path = join(dataDir, "report.sqlite");
+  const path = join(dataDir, DB_FILE_NAME);
   if (!opts.readonly) {
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   } else if (!existsSync(path)) {

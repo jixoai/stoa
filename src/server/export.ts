@@ -11,8 +11,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import type { Database } from "bun:sqlite";
 import { fail } from "../core/errors.ts";
 import { readMediaSize, type MediaSize } from "../core/media-meta.ts";
+import { VERSION } from "../core/protocol.ts";
 import type {
   DisabledFlag,
   MediaRef,
@@ -20,9 +22,9 @@ import type {
   QuotedView,
   Role,
 } from "../core/types.ts";
-import { openDatabase } from "./db.ts";
+import { get, getMeta, openDatabase } from "./db.ts";
 import { Store, type Viewer } from "./store.ts";
-import { LINK_PREVIEW } from "../core/plugins/builtin.ts";
+import { BUILTIN_PLUGINS, LINK_PREVIEW, builtinPlugin } from "../core/plugins/builtin.ts";
 
 export interface ExportOptions {
   dataDir: string;
@@ -34,16 +36,161 @@ export interface ExportOptions {
   viewer?: string | null;
   /** built frontend directory (defaults to <repo>/dist) */
   uiDir?: string | null;
+  /**
+   * @internal 测试专用 seam：在快照读取完成、rev 计数之前触发（用于构造
+   * 「快照读完后实例并发写入」的同读一致性场景）。生产路径绝不传。
+   */
+  __testAfterSnapshot?: () => void;
 }
 
 export interface ExportResult {
   out_dir: string;
   as_of_seq: number;
+  /** 数据修订（stoa-stopped-preview design §1.1）：与产物 manifest.rev 同值。 */
+  rev: string;
   /** the archive is a single app shell; kept in the JSON for CLI compatibility */
   pages: number;
   threads: number;
   media: number;
   duration_ms: number;
+}
+
+/**
+ * 导出产物根的修订清单（stoa-stopped-preview design §1.1）。
+ *
+ * 缓存单一信源：消费方只比对 `rev`（数据本体自证）与 `ui_version`，绝不以
+ * mtime/ETag 等传输层信号充当判据。清单本身不含 token、密钥或后端地址。
+ */
+export interface ExportManifest {
+  /** `dataRevision()` 的同值，形如 `<events_max_seq>:<accounts_count>`。 */
+  rev: string;
+  /** 快照头部事件 seq（Store.maxEventSeq）。 */
+  as_of_seq: number;
+  /** 导出时刻（毫秒）。 */
+  exported_at: number;
+  /** 可见性切片（`--as`；快照内 viewer 账号 id）。 */
+  viewer: string;
+  /** 导出所用前端版本（package.json version 的既有常量 VERSION）。 */
+  ui_version: string;
+}
+
+/** manifest 文件名（与 index.html / assets / media 同批原子换入）。 */
+export const EXPORT_MANIFEST_FILE = "manifest.json";
+
+/**
+ * 数据修订 `${seq}:${accounts}:${follows}:${bookmarks}:${pluginsOn}`
+ * （stoa-stopped-preview design v2 §1.3；计数分量为 `count,rowid_total`）。
+ *
+ * 所有读数与快照来自同一次一致读（WAL 读事务给稳定视图）：
+ *  - seq ← 本次快照的 `as_of_seq`（runExport 直接传快照值，绝不事后另查——
+ *    否则 rev 领先快照会让新帖永久不进归档）；`dataRevision()` 用于缓存比对时
+ *    取当前 `SELECT MAX(seq) AS seq FROM events`（与 Store.maxEventSeq 同一条 SQL，
+ *    src/server/store.ts:590）。
+ *  - accounts ← `COUNT(*), TOTAL(rowid) FROM accounts WHERE disabled != 2`：表名见
+ *    src/server/db.ts:63，口径与 `Store.listAccounts(false)` 一致（src/server/store.ts:331，
+ *    排除 disabled=2 tombstone），因此新建账号与删除身份都会推进修订。
+ *  - follows / bookmarks ← 整表 `COUNT(*), TOTAL(rowid)`；pluginsOn ← 内置插件开关位
+ *    （meta `plugins.<id>.enabled`，缺省取 manifest.defaultEnabled，见
+ *    src/core/plugins/builtin.ts）。这几类数据不进 events 但会进快照，必须由数据本体自证。
+ *  - rowid 总量是对「集合等价交换」的守卫：取关 A + 关注 B、取消收藏 A + 收藏 B
+ *    这类行数不变的关系/收藏变更会拿到新 rowid，`COUNT(*)` 相同但 `TOTAL(rowid)` 必变，
+ *    停止态预览因此不会命中陈旧关系/收藏（仍是一条廉价聚合查询）。
+ *  - 有意排除：逐账号已读游标（每次翻页都变，纳入会造成缓存抖动；归档已读状态可能陈旧，
+ *    登记为 design §5 已知边界）。
+ */
+export function dataRevision(dataDir: string): string {
+  const db = openDatabase({ dataDir, readonly: true });
+  try {
+    return inReadTransaction(db, () => revisionOf(db, maxEventSeqOf(db)));
+  } finally {
+    db.close();
+  }
+}
+
+/** 与 `Store.maxEventSeq()` 同一条 SQL（src/server/store.ts:590）。 */
+function maxEventSeqOf(db: Database): number {
+  return get<{ seq: number | null }>(db, "SELECT MAX(seq) AS seq FROM events")?.seq ?? 0;
+}
+
+/**
+ * 同一修订口径的库连接内版本：`seq` 由调用方给出（runExport 传快照 as_of_seq，
+ * dataRevision 传当前 MAX(seq)）。
+ *
+ * 计数分量统一是 `count,rowid_total`（TOTAL(rowid) 对空表返回 0，用 CAST 归一到整数）：
+ * rowid 表上的「等价交换」会更换 rowid 总量而不改变行数，单靠 COUNT(*) 会漏判。
+ */
+function revisionOf(db: Database, seq: number): string {
+  const tally = (sql: string): string => {
+    const row = get<{ c: number; t: number }>(db, sql);
+    return `${row?.c ?? 0},${row?.t ?? 0}`;
+  };
+  const accounts = tally(
+    "SELECT COUNT(*) AS c, CAST(TOTAL(rowid) AS INTEGER) AS t FROM accounts WHERE disabled != 2",
+  );
+  const follows = tally(
+    "SELECT COUNT(*) AS c, CAST(TOTAL(rowid) AS INTEGER) AS t FROM follows",
+  );
+  const bookmarks = tally(
+    "SELECT COUNT(*) AS c, CAST(TOTAL(rowid) AS INTEGER) AS t FROM bookmarks",
+  );
+  const pluginsOn =
+    BUILTIN_PLUGINS.map((plugin) => plugin.id)
+      .sort()
+      .map((id) => {
+        const raw = getMeta(db, `plugins.${id}.enabled`);
+        const enabled = raw === null ? builtinPlugin(id)?.defaultEnabled === true : raw === "1";
+        return enabled ? "1" : "0";
+      })
+      .join("") || "0";
+  return `${seq}:${accounts}:${follows}:${bookmarks}:${pluginsOn}`;
+}
+
+/** 只读连接的稳定视图：快照与计数在同一个读事务里取，避免跨提交错位。 */
+function inReadTransaction<T>(db: Database, fn: () => T): T {
+  db.exec("BEGIN");
+  try {
+    const value = fn();
+    db.exec("COMMIT");
+    return value;
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // 连接随后由调用方关闭；回滚失败不覆盖原始错误。
+    }
+    throw err;
+  }
+}
+
+/**
+ * 读取产物根的 manifest（缺文件 / 坏 JSON / 形状不符一律 null —— 视为无缓存，
+ * 绝不因清单损坏而报错）。
+ */
+export function readExportManifest(exportDir: string): ExportManifest | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(join(exportDir, EXPORT_MANIFEST_FILE), "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null) return null;
+  const manifest = raw as Partial<ExportManifest>;
+  if (
+    typeof manifest.rev !== "string" ||
+    typeof manifest.as_of_seq !== "number" ||
+    typeof manifest.exported_at !== "number" ||
+    typeof manifest.viewer !== "string" ||
+    typeof manifest.ui_version !== "string"
+  ) {
+    return null;
+  }
+  return {
+    rev: manifest.rev,
+    as_of_seq: manifest.as_of_seq,
+    exported_at: manifest.exported_at,
+    viewer: manifest.viewer,
+    ui_version: manifest.ui_version,
+  };
 }
 
 // ── snapshot contract (design §5; share one shape with the static mock) ───────
@@ -294,7 +441,21 @@ export function runExport(opts: ExportOptions): ExportResult {
   const db = openDatabase({ dataDir: opts.dataDir, readonly: true });
   try {
     const store = new Store({ dataDir: opts.dataDir, db, clock: () => now });
-    const snapshot = buildSnapshot(store, opts.viewer ?? "owner");
+    // 快照与修订计数必须来自同一个读事务（design v2 §1.3）：rev 的 seq 分量直接取
+    // 本次快照的 as_of_seq，绝不事后另查——否则 rev 领先快照会让新帖永久不进归档。
+    const { snapshot, rev } = inReadTransaction(db, () => {
+      const snapshot = buildSnapshot(store, opts.viewer ?? "owner");
+      // 测试 seam 落点：快照已定、rev 计数尚未读——恰好检验「rev 不得领先快照」。
+      opts.__testAfterSnapshot?.();
+      return { snapshot, rev: revisionOf(db, snapshot.as_of_seq) };
+    });
+    const manifest: ExportManifest = {
+      rev,
+      as_of_seq: snapshot.as_of_seq,
+      exported_at: now,
+      viewer: snapshot.viewer,
+      ui_version: VERSION,
+    };
 
     const uiDir = resolve(opts.uiDir ?? join(import.meta.dir, "..", "..", "dist"));
     const shellPath = join(uiDir, "index.html");
@@ -325,6 +486,11 @@ export function runExport(opts: ExportOptions): ExportResult {
       mediaCount += 1;
     }
 
+    // 修订清单进入临时产物根：随 index.html/assets/media 同批原子换入，绝不出现新旧混批。
+    writeFileSync(join(tmpRoot, EXPORT_MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`, {
+      mode: 0o600,
+    });
+
     // atomic swap
     mkdirSync(outRoot, { recursive: true, mode: 0o700 });
     const historyDir = join(outRoot, "history");
@@ -334,9 +500,16 @@ export function runExport(opts: ExportOptions): ExportResult {
       renameSync(historyDir, hold);
     }
     const old = `${outRoot}.old-${process.pid}-${ts}`;
-    if (existsSync(outRoot)) renameSync(outRoot, old);
-    renameSync(tmpRoot, outRoot);
-    if (existsSync(old)) rmSync(old, { recursive: true, force: true });
+    let swapped = false;
+    try {
+      if (existsSync(outRoot)) renameSync(outRoot, old);
+      renameSync(tmpRoot, outRoot);
+      swapped = true;
+    } finally {
+      // 成功换入后立即清掉上一版；失败时保留 old（可能是唯一完好归档），
+      // 交由 cleanupStaleExports 按 .old-* 前缀延后回收。
+      if (swapped && existsSync(old)) rmSync(old, { recursive: true, force: true });
+    }
     if (isDefaultOut) {
       if (existsSync(hold)) renameSync(hold, join(outRoot, "history"));
       const histRoot = join(outRoot, "history", ts);
@@ -347,6 +520,7 @@ export function runExport(opts: ExportOptions): ExportResult {
     return {
       out_dir: outRoot,
       as_of_seq: snapshot.as_of_seq,
+      rev,
       pages: 1,
       threads: Object.keys(snapshot.participants).length,
       media: mediaCount,
@@ -375,11 +549,17 @@ function copyTreeExpress(src: string, dest: string, skip: string[]): void {
   }
 }
 
+/**
+ * 导出崩溃残留的识别：tmp/hold 以点开头；`.old-*` 是原子换目录的上一版备份
+ * （`<outRoot>.old-<pid>-<YYYYMMDDTHHMMSS>`，见 runExport）。
+ */
+const STALE_EXPORT_RE = /^(?:\.export-tmp-|\.export-history-hold-)|\.old-\d+-\d{8}T\d{6}$/;
+
 /** Best-effort cleanup of interrupted exports (older than 1h). */
 export function cleanupStaleExports(dataDir: string, now = Date.now()): void {
   try {
     for (const entry of readdirSync(dataDir)) {
-      if (!/^\.export-tmp-|^\.export-history-hold-/.test(entry)) continue;
+      if (!STALE_EXPORT_RE.test(entry)) continue;
       const path = join(dataDir, entry);
       try {
         if (now - statSync(path).mtimeMs > 3_600_000) {

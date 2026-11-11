@@ -7,7 +7,7 @@ import type { Server } from "bun";
 import { AuthManager } from "./auth.ts";
 import { Presence } from "./presence.ts";
 import { Store } from "./store.ts";
-import { openDatabase, migrate } from "./db.ts";
+import { openDatabase, migrate, DB_FILE_NAME } from "./db.ts";
 import { createApp } from "./http.ts";
 import { Hub } from "./hub.ts";
 import {
@@ -85,7 +85,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     fail("BAD_REQUEST", `--idle-timeout must be a non-negative integer of seconds`);
   }
   const dataDir = assertSafeDataDir(opts.dataDir);
-  if (!existsSync(join(dataDir, "report.sqlite"))) {
+  if (!existsSync(join(dataDir, DB_FILE_NAME))) {
     fail("BAD_REQUEST", `data dir ${dataDir} is not initialized; run: stoa init --data-dir ${dataDir}`);
   }
   const startedAt = opts.now ?? Date.now();

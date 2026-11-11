@@ -5,7 +5,7 @@ import { fail } from "../core/errors.ts";
 import { envKeys, envValue, parseEnv, resolveEnvFiles, loadEnvFiles } from "../core/env.ts";
 import { maskSecret } from "../core/auth.ts";
 import { assertSafeDataDir, writePointer } from "./discovery.ts";
-import { openDatabase, migrate } from "./db.ts";
+import { openDatabase, migrate, DB_FILE_NAME } from "./db.ts";
 import { Store } from "./store.ts";
 
 export interface InitResult {
@@ -37,9 +37,9 @@ export function initDataDir(opts: {
 }): InitResult {
   const cwd = opts.cwd ?? process.cwd();
   const dataDir = assertSafeDataDir(opts.dataDir, { cwd });
-  const dbPath = join(dataDir, "report.sqlite");
+  const dbPath = join(dataDir, DB_FILE_NAME);
   if (existsSync(dbPath)) {
-    fail("CONFLICT", `data dir ${dataDir} is already initialized (report.sqlite exists)`);
+    fail("CONFLICT", `data dir ${dataDir} is already initialized (${DB_FILE_NAME} exists)`);
   }
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   mkdirSync(join(dataDir, "accounts"), { recursive: true, mode: 0o700 });
