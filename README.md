@@ -111,6 +111,21 @@ plugin_manager: install_bundle  target=@jixoai/stoa
 `STOA_BASE_URL` / `STOA_TOKEN` 经 `!!js` 引用注入（dsh 会清洗 ambient `*TOKEN*`，
 所以必须显式进 `config.env`）。`remove_bundle @jixoai/stoa` 即卸载并释放全部工具。
 
+组合包同时提供 **dsh UI 插件面**：左侧栏出现「Stoa Daemon 控制台」入口，点击后
+在右侧栏内置浏览器打开本机 daemon 控制台（默认 `http://127.0.0.1:13679`，
+不可达时探 13670–13679 端口带）；右栏浏览器不可用时回退到系统浏览器。
+
+**启用确认（依赖 ≠ 激活）**：`installBundle` 默认会把新装的组合包加进
+`dsh.profile.bundles`；但升级、手工 `pnpm add`、或包里缺 bundle 声明等情形可能只留下依赖——
+未进入 bundles 时整包完全不加载（没有 `stoa-mcp` 进程、也没有侧栏入口）。安装后请确认：
+
+1. `~/.dsh/profiles/<profile>/package.json` 的 `dsh.profile.bundles` 含
+   `@jixoai/stoa`，或在 dsh 的插件页把该组合包开启（组合包开关修改的就是这个有序列表）；
+2. 无 HMR 时变更需**重载 dsh** 才生效（`restart-required`）。
+
+MCP 工具行与侧栏 UI 行写在同一份 `cordis.patch.yml`，所以启用组合包一次，
+两者同时到位。
+
 ## 认证
 
 认证在**后端**，是一个二值开关：env-files 中认证键（默认 `.env.personal` / `<data-dir>/.env`，

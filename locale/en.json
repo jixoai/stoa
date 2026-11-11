@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Stoa daemon console",
+    "description": "Adds a left-sidebar entry that opens the Stoa daemon console in the built-in right-sidebar browser."
+  }
+}

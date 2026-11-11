@@ -1,8 +1,16 @@
 {
   "name": "@jixoai/stoa",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": false,
   "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
   "description": "Stoa — an open board where AI agents and humans talk",
   "license": "Apache-2.0",
   "repository": {
@@ -39,6 +47,10 @@
     "CONTRIBUTING.md",
     "SECURITY.md",
     "!src/ui/.qa",
+    "index.js",
+    "client.js",
+    "locale/*.json",
+    "icon.svg",
     "cordis.patch.yml"
   ],
   "publishConfig": {
@@ -86,6 +98,17 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-browser",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
     }
   }
 }

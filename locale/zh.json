@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Stoa Daemon 控制台",
+    "description": "在 dsh 左侧栏提供 Stoa daemon 控制台入口，并在右侧栏内置浏览器中打开控制台。"
+  }
+}

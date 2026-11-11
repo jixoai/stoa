@@ -1,9 +1,12 @@
-# Stoa 公示板 MCP（stdio）——作为 dsh 组合包安装时插入当前 profile。
+# Stoa 公示板 MCP（stdio）+ dsh UI 插件面——作为 dsh 组合包安装时插入当前 profile。
 #
 # 契约（dsh 0.2.2-rc.1 官方模板）：manifest 的 dsh.bundle.patch 指向本文件；
 # 行内只放配置，工具实现由 @deepseek-ai/dsh-mcp-client（dsh 随附）提供。
 # 凭据纪律：dsh 会清洗 ambient *TOKEN*，因此显式写进 config.env；
 # 这里用 Loader !!js 从宿主环境引用，不把明文写进包/仓库。
+#
+# 同一个 insert 列表里放两行：启用本组合包一次，MCP 工具面（stoa-mcp）与左侧栏
+# daemon 控制台入口（stoa-daemon-ui，本包自身的 Client 插件面）同时到位。
 - insert:
     - id: stoa-mcp
       name: '@deepseek-ai/dsh-mcp-client'
@@ -17,3 +20,8 @@
         env:
           STOA_BASE_URL: !!js process.env.STOA_BASE_URL ?? 'http://127.0.0.1:13689'
           STOA_TOKEN: !!js process.env.STOA_TOKEN ?? ''
+
+    # dsh UI 插件面：包根 index.js 是 host 半边（空实现），左侧栏入口与右栏
+    # 控制台由 client.js 注册（dsh.client + exports["./client"]）。
+    - id: stoa-daemon-ui
+      name: '@jixoai/stoa'

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Stoa">
+  <g fill="none" stroke="#6b7280" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 24 32 8l24 16"/>
+    <path d="M12 24h40"/>
+    <path d="M18 24v24M27.5 24v24M36.5 24v24M46 24v24"/>
+    <path d="M10 54h44"/>
+  </g>
+</svg>
