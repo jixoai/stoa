@@ -4,6 +4,8 @@
  * 终端释放、幂等）、`--standalone` 前台契约、daemon-webui（390/1280 真实操作：首屏效率/
  * 触发式挂载 Sheet/表单错误就地/操作层级/菜单＋二次确认/口令中心/口令链接自动登录/
  * 临时会话即删/关闭 daemon 与 daemon 已停止态）。
+ * stoa-console-open-with-key：O1–O5（「打开」/本地/公网入口自带 #key=、开放模式与
+ * /secret 失败的无 key 兜底、界面打码纪律）。
  *
  * Isolation: 全部状态在 mkdtemp 的 state-dir（STOA_DAEMON_STATE_DIR）与临时 data-dir；
  * 生产板 127.0.0.1:13689 与本机真实 daemon（13679）零接触（显式 --state-dir / env）。
@@ -19,7 +21,7 @@
  */
 import { chromium } from "playwright-core";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { REPO_ROOT, argValue } from "./lib/qa-env.mjs";
@@ -283,6 +285,19 @@ async function verifyCopyablePaths(page, stateDirValue, service) {
   };
 }
 
+/**
+ * 日志/报告只留 URL 的 origin+path（去掉 fragment）——口令真值绝不进输出。
+ * 断言比较在布尔层完成（URL 全等/前缀），detail 只用本函数的打码结果。
+ */
+function redactUrl(raw) {
+  try {
+    const url = new URL(String(raw ?? ""));
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return "(invalid-url)";
+  }
+}
+
 // ── sandbox ─────────────────────────────────────────────────────────────────
 const sandbox = mkdtempSync(join(tmpdir(), "stoa-daemon-qa-"));
 const stateDir = join(sandbox, "state");
@@ -295,6 +310,8 @@ const dirs = {
   a: join(sandbox, "board-a"),
   b: join(sandbox, "board-b"),
   c: join(sandbox, "board-c"),
+  /** 开放模式夹具（O3）：init 后移除 STOA_AUTH，standalone 起服务再由 daemon 收编。 */
+  open: join(sandbox, "board-open"),
 };
 
 function initBoard(dir) {
@@ -454,6 +471,20 @@ try {
     permissions: ["clipboard-read", "clipboard-write"],
   });
   const page = await mainContext.newPage();
+  // O1–O5：录制控制台 window.open 的目标 URL，但不真开窗（落地验证另起干净上下文 goto 录到的 URL）。
+  // 返回值必须是 truthy：实现用 null 判断「被浏览器拦截」，QA 返回哑 WindowProxy 替身以免误触提示。
+  await page.addInitScript(() => {
+    const urls = [];
+    Object.defineProperty(window, "__qaOpenUrls", { value: urls, configurable: true });
+    window.open = function (url) {
+      try {
+        urls.push(String(url ?? ""));
+      } catch {
+        /* ignore */
+      }
+      return { closed: false, focus() {}, opener: null };
+    };
+  });
   page.on("console", (msg) => {
     if (msg.type() !== "error") return;
     const text = msg.text();
@@ -1731,6 +1762,319 @@ try {
     },
   );
 
+  // ── O1–O5: 从控制台打开自带口令（stoa-console-open-with-key design §4）──────
+  const qaOpenedUrls = () => page.evaluate(() => [...(window.__qaOpenUrls ?? [])]);
+  const resetQaOpenedUrls = () =>
+    page.evaluate(() => {
+      if (Array.isArray(window.__qaOpenUrls)) window.__qaOpenUrls.length = 0;
+    });
+  const waitOpenedUrl = async (label) => {
+    const ok = await waitFor(
+      () => page.evaluate(() => (window.__qaOpenUrls?.length ?? 0) > 0),
+      10_000,
+      label,
+    );
+    const urls = ok ? await qaOpenedUrls() : [];
+    return { ok, url: String(urls[0] ?? "") };
+  };
+
+  // O1（390）：点「打开」→ 目标 URL 自带 #key=；新上下文直达板面（无登录门、地址栏 hash 已抹除）。
+  await setViewport(page, 390, 844);
+  const o1Live = await ensureServiceRunning(page, serviceA, "O1");
+  if (!o1Live.ok) throw new Error(`O1 precheck: board-a not running (${o1Live.detail})`);
+  const o1Secret = await fetchJson(`${daemonUrl}/api/daemon/services/${serviceA.id}/secret`);
+  const o1Key = String(o1Secret?.key ?? "");
+  await waitToastsGone(page);
+  await resetQaOpenedUrls();
+  // 连点两次：第二次必须被 1s 去抖吞掉（S2-2 判据），只录到一个 open。
+  await page.getByTestId(`daemon-open-${serviceA.id}`).click();
+  await page.getByTestId(`daemon-open-${serviceA.id}`).click();
+  const o1Open = await waitOpenedUrl("O1 window.open");
+  await sleep(600);
+  const o1OpenCount = (await qaOpenedUrls()).length;
+  const o1Expect = o1Key
+    ? `${new URL(`${serviceA.url}/`).href}#key=${encodeURIComponent(o1Key)}`
+    : "";
+  const o1Attached = Boolean(o1Expect) && o1Open.url === o1Expect;
+
+  // before 复现「改动前的落点」：同一服务、同一隔离 daemon，用不带 key 的原 URL 打开 → 登录门。
+  const o1BeforeCtx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const o1BeforePage = await o1BeforeCtx.newPage();
+  await o1BeforePage.goto(`${serviceA.url}/`, { waitUntil: "domcontentloaded" });
+  const o1BeforeGate = await o1BeforePage
+    .waitForSelector('[data-testid="login-secret"]', { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  const imgO1Before = await shot(o1BeforePage, "open-before-login-390.png");
+  await o1BeforeCtx.close();
+
+  const o1AfterCtx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const o1AfterPage = await o1AfterCtx.newPage();
+  const o1PageErrors = [];
+  o1AfterPage.on("pageerror", (err) => o1PageErrors.push(String(err)));
+  await o1AfterPage.goto(o1Open.url || "about:blank", { waitUntil: "domcontentloaded" });
+  const o1Board = await o1AfterPage
+    .waitForSelector('[data-testid="app-root-view"]', { timeout: 20_000 })
+    .then(() => true)
+    .catch(() => false);
+  const o1Login = await o1AfterPage.getByTestId("login-secret").count();
+  const o1Hash = new URL(o1AfterPage.url()).hash;
+  const imgO1After = await shot(o1AfterPage, "open-after-board-390.png");
+  await o1AfterCtx.close();
+  check(
+    "O1 390 从控制台「打开」自带口令：目标 URL 以 #key= 结尾、连点去抖只开一个；新上下文直达板面（无登录门、hash 已抹除）",
+    o1Open.ok &&
+      o1Attached &&
+      o1OpenCount === 1 &&
+      o1BeforeGate &&
+      o1Board &&
+      o1Login === 0 &&
+      !o1Hash.includes("key=") &&
+      o1PageErrors.length === 0,
+    `mode=${o1Secret?.mode} attached=${o1Attached} opens=${o1OpenCount} beforeGate=${o1BeforeGate} board=${o1Board} login=${o1Login} hash=${o1Hash || "(none)"} errors=${o1PageErrors.length} target=${redactUrl(o1Open.url)}`,
+    {
+      id: "O1",
+      group: "openkey",
+      expect:
+        "点击「打开」→ GET /secret → 目标 URL 为 service.url + '#key=<口令>'（fragment）；连点仅一次；全新上下文落地板面且地址栏无 key=",
+      image: imgO1After,
+      imageWidth: "390×844",
+      imageBefore: imgO1Before,
+      beforeWidth: "390×844",
+    },
+  );
+
+  // O2（1280）：公网入口携带 publicUrl + #key=（publicUrl 为登记 fixture，不真实解析；只验目标 URL 形态）。
+  const publicFixture = "https://public.stoa.test/board-a";
+  await fetch(`${daemonUrl}/api/daemon/services/${serviceA.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ publicUrl: publicFixture }),
+  });
+  const o2Live = await ensureServiceRunning(page, serviceA, "O2");
+  if (!o2Live.ok) throw new Error(`O2 precheck: board-a not running (${o2Live.detail})`);
+  await setViewport(page, 1280, 900);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("text=Stoa Daemon", { timeout: 10_000 });
+  const o2Entry = await waitFor(
+    () => page.locator(`[data-testid="daemon-entry-public-${serviceA.id}"]`).count().then((n) => n > 0),
+    15_000,
+    "O2 public entry",
+  );
+  const o2LinkHref = await page
+    .getByTestId(`daemon-entry-public-${serviceA.id}`)
+    .getAttribute("href")
+    .catch(() => null);
+  await waitToastsGone(page);
+  await resetQaOpenedUrls();
+  await page.getByTestId(`daemon-entry-public-${serviceA.id}`).click();
+  const o2Open = await waitOpenedUrl("O2 window.open");
+  const o2Expect = `${publicFixture}#key=${encodeURIComponent(o1Key)}`;
+  const o2PublicKeyed =
+    Boolean(o1Key) && o2Open.url.startsWith(publicFixture) && o2Open.url === o2Expect;
+
+  const o2BeforeCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const o2BeforePage = await o2BeforeCtx.newPage();
+  await o2BeforePage.goto(`${serviceA.url}/`, { waitUntil: "domcontentloaded" });
+  const o2BeforeGate = await o2BeforePage
+    .waitForSelector('[data-testid="login-secret"]', { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false);
+  const imgO2Before = await shot(o2BeforePage, "open-before-login-1280.png");
+  await o2BeforeCtx.close();
+
+  const o2AfterCtx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const o2AfterPage = await o2AfterCtx.newPage();
+  await o2AfterPage.goto(o1Expect || "about:blank", { waitUntil: "domcontentloaded" });
+  const o2Board = await o2AfterPage
+    .waitForSelector('[data-testid="app-root-view"]', { timeout: 20_000 })
+    .then(() => true)
+    .catch(() => false);
+  const o2Login = await o2AfterPage.getByTestId("login-secret").count();
+  const o2Hash = new URL(o2AfterPage.url()).hash;
+  const imgO2After = await shot(o2AfterPage, "open-after-board-1280.png");
+  await o2AfterCtx.close();
+  check(
+    "O2 1280 行内「公网入口」自带口令：目标 URL 以 publicUrl 开头且携带 #key=；落地无登录门",
+    o2Entry &&
+      o2LinkHref === publicFixture &&
+      o2PublicKeyed &&
+      o2BeforeGate &&
+      o2Board &&
+      o2Login === 0 &&
+      !o2Hash.includes("key="),
+    `entry=${o2Entry} href=${o2LinkHref} keyed=${o2PublicKeyed} beforeGate=${o2BeforeGate} board=${o2Board} login=${o2Login} hash=${o2Hash || "(none)"} target=${redactUrl(o2Open.url)}`,
+    {
+      id: "O2",
+      group: "openkey",
+      expect:
+        "行内公网入口点击 → GET /secret → 目标 URL = publicUrl + '#key=<口令>'；落地板面（1280×900 一组 before/after）",
+      image: imgO2After,
+      imageWidth: "1280×900",
+      imageBefore: imgO2Before,
+      beforeWidth: "1280×900",
+    },
+  );
+  // 清除 publicUrl fixture（后续步骤按原状登记）。
+  await fetch(`${daemonUrl}/api/daemon/services/${serviceA.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ publicUrl: null }),
+  });
+
+  // O3：真实开放模式服务（fixture：init 后抹除 STOA_AUTH，standalone 起服务由 daemon 收编）→ 打开不带 key。
+  // 13680-13699 段在本机常被其它会话占满：第 5 个端口到 O3 才认领（此时 B/C 已释放），
+  // 不预留会因「5 个并发空闲端口」而在拥挤环境直接失败（实测 16 个可用端口只剩 4 个）。
+  const portD = await pickFreePort(13680, 13699, new Set([...RESERVED_PORTS, daemonPort, portA]));
+  qaPorts.push(portD);
+  initBoard(dirs.open);
+  const openEnvPath = join(dirs.open, ".env");
+  const openEnvKept = readFileSync(openEnvPath, "utf8")
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(?:export\s+)?(?:STOA_AUTH|FDE2E_REPORT_AUTH)\s*=/.test(line));
+  writeFileSync(openEnvPath, `${openEnvKept.join("\n").replace(/\n+$/, "")}\n`);
+  const openStandalone = spawn(
+    BUN,
+    [CLI, "serve", "--standalone", "--data-dir", dirs.open, "--port", String(portD)],
+    {
+      cwd: REPO_ROOT,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, STOA_DAEMON_STATE_DIR: stateDir },
+    },
+  );
+  spawned.push(openStandalone);
+  const openOut = [];
+  openStandalone.stdout.on("data", (chunk) => openOut.push(chunk.toString()));
+  const openPrinted = await waitFor(
+    () => openOut.join("").includes("REPORT_URL="),
+    20_000,
+    "O3 open standalone",
+  );
+  const openHealth = await fetchJson(`http://127.0.0.1:${portD}/healthz`);
+  const adoptRes = await fetch(`${daemonUrl}/api/daemon/services`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ dataDir: dirs.open, port: portD, name: "open-board" }),
+  });
+  const adoptBody = await adoptRes.json().catch(() => null);
+  const openRecord = adoptBody?.service ?? null;
+  if (openRecord?.pid) pids.services.push(Number(openRecord.pid));
+  const openModeReady = await waitFor(
+    async () => {
+      const view = await fetchJson(`${daemonUrl}/api/daemon/services/${openRecord?.id ?? ""}/secret`);
+      return view?.mode === "open" && (view?.key ?? null) === null;
+    },
+    15_000,
+    "O3 open mode secret",
+  );
+  await setViewport(page, 390, 844);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForSelector("text=Stoa Daemon", { timeout: 10_000 });
+  const o3Row = await waitFor(
+    () => page.locator(`[data-testid="daemon-open-${openRecord?.id ?? ""}"]`).count().then((n) => n > 0),
+    20_000,
+    "O3 open row",
+  );
+  await waitToastsGone(page);
+  await resetQaOpenedUrls();
+  await page.getByTestId(`daemon-open-${openRecord?.id ?? ""}`).click();
+  const o3Open = await waitOpenedUrl("O3 window.open");
+  const o3Toast = await page
+    .locator('[data-slot="toast"]')
+    .filter({ hasText: "未附带口令" })
+    .count()
+    .then((n) => n > 0)
+    .catch(() => false);
+  const imgO3Toast = await shot(page, "open-no-key-toast-390.png");
+  await waitToastsGone(page);
+  check(
+    "O3 开放模式（mode=open）服务：点「打开」不带 #key=（目标 URL 等于 service.url），并提示未附带口令",
+    openPrinted &&
+      openHealth?.ok === true &&
+      openModeReady &&
+      openRecord?.status === "running" &&
+      o3Row &&
+      o3Open.url === openRecord?.url &&
+      !o3Open.url.includes("#key=") &&
+      o3Toast,
+    `printed=${openPrinted} health=${openHealth?.ok} modeOpen=${openModeReady} status=${openRecord?.status} target=${redactUrl(o3Open.url)} toast=${o3Toast}`,
+    {
+      id: "O3",
+      group: "openkey",
+      expect:
+        "真实开放模式服务（init 后移除 STOA_AUTH、daemon 收编）：GET /secret mode=open → 打开无 key URL；界面提示「未附带口令」",
+      image: imgO3Toast,
+      imageWidth: "390×844",
+    },
+  );
+
+  // O4：/secret 注入 500 → 仍打开不带 key 的原 URL，且有可见提示（不静默失败）。
+  const failSecretRoute = async (route) => {
+    if (route.request().method() !== "GET") return route.continue().catch(() => undefined);
+    return route
+      .fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, error: "QA 注入：口令读取失败" }),
+      })
+      .catch(() => undefined);
+  };
+  await waitToastsGone(page);
+  injectedFailures += 1;
+  await page.route(`**/api/daemon/services/${serviceA.id}/secret`, failSecretRoute);
+  await resetQaOpenedUrls();
+  await page.getByTestId(`daemon-open-${serviceA.id}`).click();
+  const o4Open = await waitOpenedUrl("O4 window.open");
+  const o4Toast = await page
+    .locator('[data-slot="toast"]')
+    .filter({ hasText: "未附带口令" })
+    .count()
+    .then((n) => n > 0)
+    .catch(() => false);
+  const imgO4 = await shot(page, "open-secret-failed-toast-390.png");
+  await page.unroute(`**/api/daemon/services/${serviceA.id}/secret`, failSecretRoute);
+  injectedFailures = Math.max(0, injectedFailures - 1);
+  await waitToastsGone(page);
+  check(
+    "O4 口令读取失败兜底：/secret 注入 500 时仍打开不带 key 的原 URL，并出现「未附带口令」提示",
+    o4Open.ok && o4Open.url === serviceA.url && !o4Open.url.includes("#key=") && o4Toast,
+    `opened=${o4Open.ok} target=${redactUrl(o4Open.url)} noKey=${!o4Open.url.includes("#key=")} toast=${o4Toast}`,
+    {
+      id: "O4",
+      group: "openkey",
+      expect: "GET /secret 500 → window.open(service.url)（无 #key=）+ warning toast；不阻断打开",
+      image: imgO4,
+      imageWidth: "390×844",
+    },
+  );
+
+  // O5：打码纪律未退化——完整口令不在页面文本/title/aria-label/常驻链接 href 中。
+  const o5Probe = await page.evaluate((needle) => {
+    const innerText = needle ? document.body.innerText.includes(needle) : false;
+    let attrHits = 0;
+    for (const el of document.querySelectorAll("[title], [aria-label]")) {
+      const title = el.getAttribute("title") ?? "";
+      const label = el.getAttribute("aria-label") ?? "";
+      if (needle && (title.includes(needle) || label.includes(needle))) attrHits += 1;
+    }
+    const keyedHrefs = [...document.querySelectorAll("a[href]")].filter((el) =>
+      String(el.getAttribute("href") ?? "").includes("#key="),
+    ).length;
+    return { innerText, attrHits, keyedHrefs };
+  }, o1Key);
+  check(
+    "O5 界面纪律：完整口令不出现在页面文本 / title / aria-label / 常驻链接 href（打码态不退化）",
+    o1Key.length > 0 && !o5Probe.innerText && o5Probe.attrHits === 0 && o5Probe.keyedHrefs === 0,
+    `keyLen=${o1Key.length} inText=${o5Probe.innerText} attrHits=${o5Probe.attrHits} keyedHrefs=${o5Probe.keyedHrefs}`,
+    {
+      id: "O5",
+      group: "openkey",
+      expect:
+        "口令只存在于「复制」与「打开」动作的目标 URL；界面文本/title/aria-label/常驻 href 均不含真值",
+    },
+  );
+  await setViewport(page, 390, 844);
+
   // ── S5: serve --stop（daemon 感知）与 daemon stop 全回收 ───────────────────
   const stopA = cliJson(["serve", "--stop", "--data-dir", dirs.a, "--state-dir", stateDir]);
   check(
@@ -1821,10 +2165,14 @@ try {
     15_000,
     "service shutdown",
   );
+  // 确定式等待：healthz 消失早于进程完全退出（还要逐个收掉挂载服务）；等 pid 真正退出再断言，
+  // 避免在收尸尾段采样（本机拥挤/多服务时是真实的时序窗口，不是 UI 缺陷）。
+  const daemonPidExited = await waitFor(() => !pidAlive(pids.daemon), 20_000, "daemon pid exit");
+  const servicePidExited = await waitFor(() => !pidAlive(serviceA3.pid), 15_000, "service pid exit");
   check(
     "S5-2 控制台「关闭 daemon」：header 菜单 → 对话框确认 → daemon 退出并连带停止全部挂载服务",
-    daemonGone && serviceGone && !pidAlive(pids.daemon) && !pidAlive(serviceA3.pid),
-    `daemon pid ${pids.daemon} alive=${pidAlive(pids.daemon)}；service pid ${serviceA3.pid} alive=${pidAlive(serviceA3.pid)}`,
+    daemonGone && serviceGone && daemonPidExited && servicePidExited && !pidAlive(pids.daemon) && !pidAlive(serviceA3.pid),
+    `daemon pid ${pids.daemon} alive=${pidAlive(pids.daemon)} exited=${daemonPidExited}；service pid ${serviceA3.pid} alive=${pidAlive(serviceA3.pid)} exited=${servicePidExited}`,
     {
       id: "S5-2",
       group: "shutdown",
@@ -1976,29 +2324,46 @@ try {
     join(REPORT_DIR, "steps.json"),
     JSON.stringify(
       {
-        title: "stoa-daemon-console-layout — 控制台布局重做（触发式 Sheet / 操作层级 / 390·1280 状态矩阵）E2E 验收",
-        brand: "Stoa（人机公示板）· stoa-daemon-console-layout 交付报告",
+        title:
+          "stoa-console-open-with-key — 控制台「打开」自带口令（daemon 全量 E2E 回归）",
+        brand: "Stoa（人机公示板）· stoa-console-open-with-key 交付报告",
         subtitle:
-          "挂载入口从常驻表单卡改为官方 Sheet（header 主按钮 + 空态 CTA）；服务列表成为首屏主角：身份+状态 → 入口 → 元信息 → 操作，「打开」唯一主操作、口令次级、停止/移除收进 ⋯ 菜单并二次确认；stopped 行去饱和且无「打开」；表单错误就地；daemon 关闭入口收进 header ⋯ 菜单并新增「daemon 已停止」态。",
-        meta: `2026-11-11 · ${checks.length} 断言 / ${failedChecks.length} FAIL · 390×844 + 1280×900 · 隔离 stateDir=${stateDir} · 真实 daemon/服务进程全程回收 · 端口 ${qaPorts.join("/") || "—"}`,
+          "服务行「打开」主操作与行内入口（本地/公网）点击时按需读取口令，把 `#key=<口令>` 附为 fragment 后打开——从控制台打开服务不再落到登录门；开放模式/无口令/读取失败退回无 key URL 并给出可见提示；界面展示仍打码。",
+        meta: `2026-11-11 · ${checks.length} 断言 / ${failedChecks.length} FAIL · 390×844 + 1280×900 · 隔离 stateDir=${stateDir} · 真实 daemon/服务进程全程回收 · 端口 ${[...new Set(qaPorts)].join("/") || "—"}`,
         thesis:
           failedChecks.length === 0
-            ? "结论：触发式挂载 Sheet（390 底部抽屉 / 1280 右侧 440px）、首屏无表单、表单错误就地、关闭重置、空态单主路径、操作层级（打开主/口令次/停止移除经菜单+二次确认）、stopped 去饱和、daemon 已停止态与全回收路径全部实测通过；浏览器零 console error。"
-            : `结论：${failedChecks.length} 项断言失败（见 FAIL 步骤），不得视为交付。` +
-              (failedChecks.some((item) => item.name.startsWith("L10-3"))
-                ? ` 其中 L10-3 为 daemon 停止态的确定性竞态探针（关闭后迟到响应的丢弃守卫，DaemonConsolePage.tsx:790/795）。其余 ${checks.length - failedChecks.length} 项全 PASS。`
-                : ""),
+            ? "结论：控制台「打开」与行内本地/公网入口均自带口令（O1/O2：目标 URL 携带 #key=，新上下文直达板面、地址栏 hash 已抹除，连点去抖只开一个）；开放模式与 /secret 读取失败时退回无 key 且有可见提示（O3/O4）；界面文本/title/aria-label 不含完整口令（O5）。既有 62 项布局/会话/回收断言全量回归通过；浏览器零 console error。"
+            : `结论：${failedChecks.length} 项断言失败（见 FAIL 步骤），不得视为交付。其余 ${checks.length - failedChecks.length} 项全 PASS。`,
         env: [
           ["隔离沙箱", sandbox],
           ["daemon", `state-dir=${stateDir}（STOA_DAEMON_STATE_DIR；端口 ${qaPorts[0] ?? "?"}，13680-13699 探测认领）`],
           ["HOME（会话根）", `${sandboxHome}（自动会话 → $HOME/.stoa/sessions；与真实主目录隔离）`],
           ["目录选择器", `测试钩子 STOA_DIR_PICKER_RESULT=${pickedDir}（真实原生对话框为人工验收项）`],
-          ["data-dir", `${dirs.a} / ${dirs.b} / ${dirs.c}（init 真实 CLI）`],
+          ["data-dir", `${dirs.a} / ${dirs.b} / ${dirs.c} / ${dirs.open}（init 真实 CLI）`],
           ["视口", "390×844（移动，hasTouch）／1280×900（桌面）；Chrome"],
           ["生产板/真实 daemon", "127.0.0.1:13689 与默认 state-dir 零接触"],
           ["刷新态/竞态取证", "GET /api/daemon/services：刷新态注入 1.5s 延迟；L10-3 探针在关闭前抓取真实响应、延迟 6s 回灌（模拟慢回包；均走真实 daemon）"],
-          ["before 图来源", "取自旧报告 .agents/reports/manager/stoa-daemon/（旧版 UI；沙箱/端口/数据与本次不同，仅作同视口同状态的布局对比，不作行为断言）"],
-          ["未覆盖项（如实登记）", "暗色主题；遮罩/关闭按钮关闭 Sheet；Tab 序；390 虚拟键盘；真实原生目录弹窗（自动化用 STOA_DIR_PICKER_RESULT 钩子验证接线）"],
+          [
+            "覆盖表 · src/ui/pages/DaemonConsolePage.tsx",
+            "行内「打开」主按钮 → O1（390 before/after）；行内「本地入口」→ O1 同一链路；行内「公网入口」→ O2（1280 before/after）；开放模式 → O3（toast 截图）；/secret 500 兜底 → O4（toast 截图）；打码纪律 → O5。UNCOVERED=0",
+          ],
+          [
+            "覆盖表 · scripts/qa/stoa-daemon.mjs",
+            "QA harness 本身（测试工具，无视觉面——显式登记，三类豁免之①）",
+          ],
+          [
+            "覆盖表 · openspec/changes/stoa-console-open-with-key/tasks.md",
+            "规格/任务台账（文档，无视觉面——显式登记，三类豁免之①）",
+          ],
+          ["UNCOVERED", "0（改动文件均有对应步骤；未覆盖项见下）"],
+          [
+            "before/after 图来源",
+            "本 change 的 before/after 图（O1/O2）均由本次脚本在同一隔离 daemon、同一服务上生成（非旧版 UI 截图，数据/端口/状态一致）：before＝不带 key 的原 URL 在全新上下文打开（复现改动前的落点＝登录门）；after＝同服务带 #key= 打开后直达板面。其余既有步骤的 before 图沿用旧报告 .agents/reports/manager/stoa-daemon/（旧版 UI，仅作布局对比，沙箱/端口/数据与本次不同）。O2 的 publicUrl 为登记 fixture（public.stoa.test），仅验证目标 URL 形态，before/after 仍取本地原 URL 以保持同状态可比。",
+          ],
+          [
+            "未覆盖项（如实登记）",
+            "口令读取慢响应/超时（仅注入 500）；window.open 被浏览器真实拦截的提示路径（QA 用录制替身，未模拟真实弹窗拦截）；中键/Cmd+点击的原生新标签行为（代码保留默认语义，未做浏览器级断言）；暗色主题；真实原生目录弹窗（自动化用 STOA_DIR_PICKER_RESULT 钩子验证接线）；S4-1 版本/tag/CI 发布（由编排方统一处理，不在本子任务）",
+          ],
           ...(knownBoundaries.length
             ? [["已知边界（如实登记，不阻塞本 change）", knownBoundaries.join(" ｜ ")]]
             : []),
@@ -2032,12 +2397,17 @@ try {
             steps: byGroup(["mount"]),
           },
           {
-            title: "6 · 关闭 daemon 与 daemon 已停止态（S5-2/L10）",
+            title: "6 · 从控制台打开自带口令（O1–O5）",
+            note: "「打开」/本地入口/公网入口点击 → GET /secret → #key= fragment；390/1280 各一组 before/after；开放模式无 key；/secret 500 兜底 + 提示；界面文本仍打码。before＝同服务原 URL（无 key）落登录门，after＝带 key 直达板面。",
+            steps: byGroup(["openkey"]),
+          },
+          {
+            title: "7 · 关闭 daemon 与 daemon 已停止态（S5-2/L10）",
             note: "header ⋯ 菜单 → 关闭 daemon 确认 → daemon 退出并连带停止服务；页面转为 stopped 横幅 + 概览（L10-1/L10-2 PASS）。L10-3 是确定性竞态探针：关闭前抓取真实 GET 响应、关闭后 6s 经 route.fulfill 回灌，模拟「5s 轮询请求在关闭瞬间仍在飞」；实现已在 refresh 的 setServices/setLoadError 前置 daemonDownRef 守卫（DaemonConsolePage.tsx:790/795），迟到旧响应被丢弃，横幅与行状态保持 stopped——本步 PASS。",
             steps: byGroup(["shutdown"]),
           },
           {
-            title: "7 · 回收与浏览器零错误（S6/S7）",
+            title: "8 · 回收与浏览器零错误（S6/S7）",
             note: "零 console error；daemon/服务进程与端口全部回收；沙箱删除。",
             steps: byGroup(["recycle"]),
           },

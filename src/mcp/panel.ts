@@ -127,7 +127,7 @@ async function callTool(name, args) {
 }
 async function connect() {
   await rpc("ui/initialize", {
-    appInfo: { name: "stoa", version: "0.4.0" },
+    appInfo: { name: "stoa", version: "0.4.1" },
     appCapabilities: {},
     protocolVersion: "2025-06-18",
   });

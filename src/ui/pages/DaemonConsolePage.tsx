@@ -9,7 +9,9 @@
  *   - 服务列表成为首屏主角：身份+状态 → 入口 → 元信息 → 操作 分层；
  *     「打开」唯一主操作，口令次级，停止/移除收进菜单 + 二次确认；
  *   - stopped 行去饱和（不是整体降透明），不提供失效的「打开」；
- *   - 表单错误就地显示，端口校验错误在重新输入时清除。
+ *   - 表单错误就地显示，端口校验错误在重新输入时清除；
+ *   - 「打开」与行内入口（本地/公网）点击时按需读取口令并把 `#key=` 附为 fragment
+ *     （stoa-console-open-with-key design §2）：从控制台打开服务不再落到登录门。
  */
 import {
   useCallback,
@@ -193,6 +195,26 @@ function redactKeyLink(link: string | null): string {
 /** 行内口令链接恒短形态：`口令 ••••••`（6 圆点，永不被列宽截断；全链接只在复制/口令面板）。 */
 const KEY_MASK = "••••••";
 
+/** 「打开」/行内入口的目标：local＝service.url，public＝service.publicUrl。 */
+type OpenTarget = "local" | "public";
+
+/** 同一行入口的重复点击去抖窗口（连点不连开多标签）。 */
+const OPEN_DEBOUNCE_MS = 1000;
+
+/**
+ * 把口令附到目标 URL 的 fragment 上（`#key=<口令>`）：
+ * fragment 不进服务端请求行/Referer；保留原 path/query（stoa-console-open-with-key design §2）。
+ */
+function withKeyFragment(base: string, key: string): string {
+  try {
+    const url = new URL(base);
+    url.hash = `#key=${encodeURIComponent(key)}`;
+    return url.toString();
+  } catch {
+    return `${base.replace(/#.*$/, "")}#key=${encodeURIComponent(key)}`;
+  }
+}
+
 function LocationIcon({ location }: { location?: Location }) {
   const Icon = location === "path" ? MapPinIcon : location === "temp" ? ClockIcon : FolderIcon;
   return <Icon className="size-3.5 shrink-0" aria-hidden="true" />;
@@ -232,6 +254,7 @@ function useWideSheet(): boolean {
 function ServiceRow({
   service,
   busy,
+  onOpen,
   onSecret,
   onStop,
   onRemove,
@@ -239,6 +262,7 @@ function ServiceRow({
 }: {
   service: DaemonService;
   busy: boolean;
+  onOpen: (service: DaemonService, target: OpenTarget) => void;
   onSecret: (service: DaemonService) => void;
   onStop: (service: DaemonService) => void;
   onRemove: (service: DaemonService) => void;
@@ -251,6 +275,20 @@ function ServiceRow({
   const timeTitle = `pid ${service.pid ?? "—"} · 启动于 ${fullTime(service.startedAt)}${
     stoppedAt ? ` · 停止于 ${fullTime(stoppedAt)}` : ""
   }`;
+
+  /**
+   * 普通左键走「读口令→附 #key=→打开」；修饰键（Cmd/Ctrl/Shift/Alt）不拦截，
+   * 保留浏览器原生「新标签/新窗口」语义（stoa-console-open-with-key design §2）。
+   */
+  const openOnClick =
+    (target: OpenTarget) =>
+    (event: ReactMouseEvent<HTMLAnchorElement>) => {
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      onOpen(service, target);
+    };
 
   return (
     <Card
@@ -309,6 +347,8 @@ function ServiceRow({
                 target="_blank"
                 rel="noreferrer"
                 title={service.url}
+                data-testid={`daemon-entry-local-${service.id}`}
+                onClick={openOnClick("local")}
               >
                 {service.url}
               </a>
@@ -335,6 +375,8 @@ function ServiceRow({
                 target="_blank"
                 rel="noreferrer"
                 title={service.publicUrl}
+                data-testid={`daemon-entry-public-${service.id}`}
+                onClick={openOnClick("public")}
               >
                 {service.publicUrl}
               </a>
@@ -397,7 +439,14 @@ function ServiceRow({
       <div className="order-2 flex shrink-0 items-center justify-end gap-1.5 @min-[720px]:order-none @min-[720px]:ml-auto">
         {running && service.url ? (
           <Button
-            render={<a href={service.url} target="_blank" rel="noreferrer" />}
+            render={
+              <a
+                href={service.url}
+                target="_blank"
+                rel="noreferrer"
+                onClick={openOnClick("local")}
+              />
+            }
             data-testid={`daemon-open-${service.id}`}
             title={`打开 ${service.url}`}
           >
@@ -848,6 +897,60 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
       description: ok ? undefined : "请手动选择文本复制",
       timeout: 2200,
     });
+  }, []);
+
+  /** 每行最近一次「打开」的时刻（去抖：连点不连开多标签）。 */
+  const openClickAt = useRef(new Map<string, number>());
+
+  /**
+   * 从控制台打开服务（stoa-console-open-with-key design §2）：
+   * 点击时按需读取口令 → `#key=<口令>` 附为 fragment → 新标签打开。
+   * 开放模式/无口令/读取失败一律退回不带 key 的原 URL，并给出可见提示（不阻断）。
+   */
+  const openWithKey = useCallback(async (service: DaemonService, target: OpenTarget) => {
+    const base = ((target === "public" ? service.publicUrl : service.url) ?? "").trim();
+    if (!base) return;
+    const now = Date.now();
+    if (now - (openClickAt.current.get(service.id) ?? 0) < OPEN_DEBOUNCE_MS) return;
+    openClickAt.current.set(service.id, now);
+
+    let url = base;
+    let note: string | null = null;
+    try {
+      const out = await daemonApi<SecretView & { ok: boolean }>(
+        `/api/daemon/services/${service.id}/secret`,
+      );
+      const secret = (out.key ?? "").trim();
+      if (out.mode === "auth" && secret) {
+        url = withKeyFragment(base, secret);
+      } else {
+        note = out.mode === "open" ? "该服务为开放模式（无口令）。" : "未找到该服务的口令。";
+      }
+    } catch (err) {
+      note = `口令读取失败（${(err as Error).message}）。`;
+    }
+
+    // 规范：features 含 noopener 的 window.open 恒返回 null，无法区分「被拦截」。
+    // 这里普通打开后立即断开 opener（同等安全），保留可检测的返回值。
+    const opened = window.open(url, "_blank");
+    if (opened) opened.opener = null;
+    if (!opened) {
+      toast.add({
+        type: "error",
+        title: "新标签被浏览器拦截",
+        description: "请在「口令」面板复制口令链接后手动打开。",
+        timeout: 4200,
+      });
+      return;
+    }
+    if (note) {
+      toast.add({
+        type: "warning",
+        title: "已打开（未附带口令）",
+        description: note,
+        timeout: 3600,
+      });
+    }
   }, []);
 
   const resetMountForm = useCallback(() => {
@@ -1304,6 +1407,7 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
                   key={service.id}
                   service={service}
                   busy={busyId === service.id}
+                  onOpen={(item, target) => void openWithKey(item, target)}
                   onSecret={(item) => setSecretFor(item)}
                   onStop={(item) => setConfirm({ kind: "stop", service: item })}
                   onRemove={(item) => setConfirm({ kind: "remove", service: item })}
