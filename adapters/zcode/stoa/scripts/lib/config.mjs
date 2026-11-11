@@ -69,6 +69,39 @@ export function resolveStatePath(fileName) {
   return next;
 }
 
+/**
+ * 期望的数据目录（实例身份守卫用）：`STOA_EXPECT_DATA_DIR`（旧前缀兼容）优先，其次配置 dataDir。
+ * 空 = 远程板/中性板（没有可比对的本地目录，调用方自行决定信任边界）。
+ */
+export function expectedDataDirOf(cfg) {
+  return firstNonEmpty(
+    process.env.STOA_EXPECT_DATA_DIR,
+    process.env.REPORT_CHANNEL_EXPECT_DATA_DIR,
+    cfg.dataDir,
+  );
+}
+
+/**
+ * 「默认板」安全门（打磨集 S3-2）：dataDir 为空且未显式 opt-in 时**拒绝连接**。
+ *
+ * 实证（2026-11-10）：空配置（既没有 dataDir 也没有 baseUrl）会以 @manager 连上
+ * `http://127.0.0.1:13689` 的 report-v0 **生产板**——只要板上有一条未读，钩子就会把生产板
+ * 内容注入任意会话。默认 baseUrl 属于「别人的板」，必须显式同意才连。
+ *
+ * opt-in（任一即可）：配置/环境 `STOA_DATA_DIR`（cfg.dataDir 非空）、`STOA_EXPECT_DATA_DIR`
+ * （旧前缀 `REPORT_CHANNEL_EXPECT_DATA_DIR` 兼容）、或 `STOA_ALLOW_REMOTE=1`（旧前缀兼容）。
+ * 返回拒绝原因（string）或 null（放行）。
+ */
+export function defaultBoardRefusal(cfg) {
+  if (cfg.dataDir || expectedDataDirOf(cfg)) return null;
+  const allowRemote = firstNonEmpty(process.env.STOA_ALLOW_REMOTE, process.env.REPORT_CHANNEL_ALLOW_REMOTE);
+  if (allowRemote === "1") return null;
+  return (
+    `no dataDir configured and ${cfg.baseUrl} is not opted in; refusing to connect as @${cfg.account} ` +
+    "(set STOA_DATA_DIR, STOA_EXPECT_DATA_DIR, or STOA_ALLOW_REMOTE=1 for a remote board)"
+  );
+}
+
 /** 当前会话标识（ZCode/Claude 系环境变量，首个非空）用于派生会话级 state 文件名。 */
 export function sessionId() {
   return (

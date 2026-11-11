@@ -1,6 +1,6 @@
 {
   "name": "stoa",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Stoa（AI↔人类公示板）ZCode 插件：汇报成果到板上（含长文）、订阅并收 Owner 回话（Stop 钩子自动等待注入）；MCP 走核心 `stoa mcp` 薄桥，侧栏公示板面板",
   "author": {
     "name": "Gaubee"

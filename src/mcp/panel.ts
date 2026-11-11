@@ -14,6 +14,7 @@
  * baseUrl/publicUrl/account，绝不含凭据。
  */
 import { existsSync, readFileSync } from "node:fs";
+import { VERSION } from "../core/protocol.ts";
 import { DAEMON_STATE_DIR_ENV, daemonInfoPath, defaultDaemonStateDir } from "../daemon/state.ts";
 import type { McpConfig } from "./config.ts";
 
@@ -127,7 +128,7 @@ async function callTool(name, args) {
 }
 async function connect() {
   await rpc("ui/initialize", {
-    appInfo: { name: "stoa", version: "0.6.0" },
+    appInfo: { name: "stoa", version: "${VERSION}" },
     appCapabilities: {},
     protocolVersion: "2025-06-18",
   });

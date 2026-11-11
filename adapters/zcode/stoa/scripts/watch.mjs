@@ -5,13 +5,14 @@
  * 两种订阅模式：
  *   1. 本地游标（默认，多会话安全）：
  *      node scripts/watch.mjs [--max-seconds 1500] [--poll-seconds 15] [--state-file <path>]
- *      - 每个会话一个 state 文件（默认 ~/.local/state/stoa/report-channel/<hash(baseUrl|account)>.json；
- *        旧目录 ~/.local/state/fde2e/report-channel/ 的同名文件按存在性回退，游标零迁移）；
+ *      - 每个会话一个 state 文件（默认**会话级**：`<hash(baseUrl|account)>[-<hash(会话)>].json`，
+ *        与 state-path.mjs / stop-wait.mjs 同一派生——有 ZCODE_SESSION_ID 时每会话独立，
+ *        没有会话 ID 才回退同账号共享；旧目录 ~/.local/state/fde2e/report-channel/ 的同名文件
+ *        按存在性回退，游标零迁移）；
  *        首次运行无状态文件时，先取账号当前 cursor 作为起点（不回溯旧消息）并写入；
  *        之后用 board_peek(cursor=last) 轮询（peek=1，不消费、不 ack、绝不推进账号游标）。
  *      - 有事件：更新 last（本页最大 seq）→ 打印事件 → 退出 0。
- *      - 多个会话同用默认路径会订阅同一段事件（不会互相偷消息，但会重复看到）；
- *        要严格独立，就用 --state-file 给每个会话一个不同路径，并记住它用于续臂。
+ *      - 要完全独立（install 缓存、无会话 ID 的宿主），用 --state-file 显式给路径并记住它用于续臂。
  *   2. 消费式（旧行为，只允许一个「主会话」用）：
  *      node scripts/watch.mjs --consume [--max-seconds 1500] [--poll-seconds 40]
  *      - 走 board_inbox（消费并 ack，推进账号级游标）。其他会话不得使用，否则会偷走主会话的消息。
@@ -24,6 +25,10 @@
  * （远程板/中性板）时**跳过**守卫、信任 baseUrl。`STOA_EXPECT_DATA_DIR`（旧前缀
  * `REPORT_CHANNEL_EXPECT_DATA_DIR` 兼容）可显式指定期望 dataDir（优先于配置）。
  *
+ * 默认板安全门（打磨集 S3-2）：dataDir 为空且未设 `STOA_EXPECT_DATA_DIR` / `STOA_ALLOW_REMOTE=1`
+ * 时**直接拒绝连接**（退出 2，stderr 一行原因）——空配置会以 @manager 连上默认 127.0.0.1:13689
+ * 的生产板，必须先显式 opt-in 才允许连别人的板。
+ *
  * 并发：本地游标模式把「读 last → poll → 写 last」整段放在 `<state>.lock` 互斥锁里
  * （见 lib/state-lock.mjs）——常驻 watcher 与 Stop 钩子共用同一游标时不会重复投递；
  * 等锁超时则降级为无锁（stderr 一行说明）保活性。
@@ -32,11 +37,17 @@
  * （stop-wait）会推进同一 state 文件；内存旧游标在下一轮会把同一批事件再投递一次。
  * 现在**每轮进锁后都重读磁盘游标并取 max(memory, disk)**，poll 始终用两路中较新的游标。
  */
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { api, firstNonEmpty, loadConfig, resolveStatePath } from "./lib/config.mjs";
+import {
+  api,
+  defaultBoardRefusal,
+  expectedDataDirOf,
+  loadConfig,
+  resolveStatePath,
+  sessionStateFileName,
+} from "./lib/config.mjs";
 import { acquireStateLock } from "./lib/state-lock.mjs";
 import { callTool } from "./lib/tools.mjs";
 
@@ -63,6 +74,11 @@ const maxSeconds = numberFlag("max-seconds", 1500);
 const pollSeconds = Math.min(numberFlag("poll-seconds", consume ? 40 : 15), 120);
 
 const cfg = loadConfig();
+const refusal = defaultBoardRefusal(cfg);
+if (refusal) {
+  process.stderr.write(`[stoa] watch: refusing to connect — ${refusal}\n`);
+  process.exit(2);
+}
 const deadline = Date.now() + maxSeconds * 1000;
 let failures = 0;
 
@@ -71,9 +87,8 @@ const expandHome = (path) => {
   if (path.startsWith("~/")) return join(homedir(), path.slice(2));
   return path;
 };
-const stateHash = createHash("sha1").update(`${cfg.baseUrl}|${cfg.account}`).digest("hex").slice(0, 16);
-// 默认 state：新目录主用、旧目录按文件回退（stoa-adapters 迁移，零迁移承诺）。
-const defaultStatePath = resolveStatePath(`${stateHash}.json`);
+// 默认 state：会话级（与 state-path.mjs / stop-wait.mjs 同一派生；旧目录按文件回退，零迁移承诺）。
+const defaultStatePath = resolveStatePath(sessionStateFileName(cfg));
 const statePath = consume
   ? null
   : resolve(expandHome(argValue("state-file") || defaultStatePath));
@@ -90,11 +105,7 @@ if (consume && argValue("state-file")) {
  * dataDir 为空（远程板/中性板，配置里根本没有本地数据目录）时跳过守卫——此时没有
  * 「期望的 dataDir」可比，信任 baseUrl；需要强校验时用 `STOA_EXPECT_DATA_DIR` 显式给出。
  */
-const expectedDataDir = firstNonEmpty(
-  process.env.STOA_EXPECT_DATA_DIR,
-  process.env.REPORT_CHANNEL_EXPECT_DATA_DIR,
-  cfg.dataDir,
-);
+const expectedDataDir = expectedDataDirOf(cfg);
 
 async function assertInstance() {
   const health = await api(cfg, "/healthz", { timeoutMs: 5000 });

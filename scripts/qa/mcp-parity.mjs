@@ -1,6 +1,15 @@
 #!/usr/bin/env bun
 /**
- * mcp-parity — `stoa mcp`（新核心）与旧 ZCode 插件 `mcp-server.mjs` 的接入面 parity 证据。
+ * mcp-parity — **历史脚本，已退役（2026-11-12，zcode-stoa-plugin S3-7）**。
+ *
+ * 用途（当年）：`stoa mcp`（新核心）与旧 ZCode 插件 `plugins/report-channel/scripts/mcp-server.mjs`
+ * 的接入面 parity 取证。旧插件已退役并从所有检出移除，本脚本默认路径同步指向现行适配器
+ * （`adapters/zcode/stoa`，其内不再有 `mcp-server.mjs`），因此默认运行会明确报「已退役」。
+ *
+ * 现行门禁（请用这两个）：
+ *   - `node scripts/qa/check-tools-parity.mjs`（MCP 工具面逐字漂移门）
+ *   - `bash scripts/qa/zcode-adapter-smoke.sh`（适配器全链路冒烟，内含漂移门）
+ * 只有在持有历史旧插件副本时（`OLD_PLUGIN_DIR=/path/to/plugins/report-channel`）才需要本脚本。
  *
  * 同一隔离后端（qa-serve，固定端口 13687，绝不动生产板）下：
  *   1. 旧服务 `node <主仓插件>/scripts/mcp-server.mjs`（REPORT_CHANNEL_* 旧 env）
@@ -82,11 +91,15 @@ function normalizePanelBrand(html) {
   return out;
 }
 
+/**
+ * 旧插件定位（历史脚本）：默认指向现行适配器目录 `adapters/zcode/stoa`（已无
+ * `scripts/mcp-server.mjs`）→ 默认运行会明确报「已退役」。只有 `OLD_PLUGIN_DIR`
+ * 指向旧插件副本时才能跑完整平权。
+ */
 function findOldPlugin() {
   const candidates = [
     process.env.OLD_PLUGIN_DIR,
-    resolve(REPO_ROOT, "../../plugins/report-channel"), // worktree 布局：<main>/.worktrees/<name>
-    resolve(REPO_ROOT, "../../plugins/report-channel"),
+    join(REPO_ROOT, "adapters/zcode/stoa"),
     "/Users/kzf/Development/GitHub/jixoai/fde2e/plugins/report-channel",
   ].filter((p) => typeof p === "string");
   for (const dir of candidates) {
@@ -210,8 +223,14 @@ function parseResponses(stdout, label) {
 async function main() {
   const oldPlugin = findOldPlugin();
   if (!oldPlugin) {
-    bad("定位旧插件 mcp-server.mjs", "可用 OLD_PLUGIN_DIR 指定主仓 plugins/report-channel");
-    return 1;
+    // SKIP（不是 FAIL）：退役是既成事实，不是功能回归——现行门禁见 check-tools-parity /
+    // zcode-adapter-smoke.sh；只有 OLD_PLUGIN_DIR 指向旧插件副本时才跑完整平权。
+    console.log(
+      "SKIP 历史脚本，已退役 — 旧插件 plugins/report-channel（scripts/mcp-server.mjs）已从检出移除；" +
+        "现行门禁＝`node scripts/qa/check-tools-parity.mjs` 与 `bash scripts/qa/zcode-adapter-smoke.sh`；" +
+        "需要历史取证时用 OLD_PLUGIN_DIR 指向旧插件副本。",
+    );
+    return 0;
   }
   console.log(`-- 旧插件（只读来源）: ${oldPlugin}`);
   console.log(`-- 新核心: ${CLI} mcp`);

@@ -29,9 +29,16 @@ description: 激活公示板通道（状态检查 → 未读浏览 → 后台订
 !`node "${CLAUDE_PLUGIN_ROOT}/scripts/state-path.mjs" --command`
 
 把展开出来的那一行作为**后台任务**运行（`--max-seconds 1500` 可按需改）。若上面没有展开成一条
-`node ...watch.mjs...` 命令，就改用本会话自拟的稳定短标识显式传入：
-`node "${CLAUDE_PLUGIN_ROOT}/scripts/watch.mjs" --state-file "$HOME/.local/state/stoa/report-channel/<会话短标识>.json" --max-seconds 1500`
-（标识取工作目录名 + 你为本会话起的短名，不要用实时变化的 PID；选定后记住，续臂复用同一路径）。
+`node ...watch.mjs...` 命令，**必须**用 `state-path.mjs` 的输出作 `--state-file`（不要自拟路径）：
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/state-path.mjs"
+# → 打印本会话的 state 路径；把它原样传给 watch（续臂复用同一路径）
+node "${CLAUDE_PLUGIN_ROOT}/scripts/watch.mjs" --state-file "<上一条命令打印的路径>" --max-seconds 1500
+```
+
+裸 `watch.mjs` 的默认 state 已是会话级（有 `ZCODE_SESSION_ID` 时无需显式传）；显式传只是为了让
+「本会话用的是哪个文件」可见、可续臂。
 
 - 退出 0：有新事件（stdout JSON，含 `events` / `cursor_before` / `cursor_after` / `state_file`），
   处理事件；或因到 `--max-seconds` 输出续臂提示，用原路径重新挂一次。
@@ -58,5 +65,8 @@ description: 激活公示板通道（状态检查 → 未读浏览 → 后台订
 - **身份守卫**：state 文件与当前 baseUrl/账号不符时 watch 拒绝继续（退出 2）；配置了 `dataDir`
   时还校验 `/healthz.dataDir`（不符退出 2），`dataDir` 为空（远程板）则跳过、信任 baseUrl
   （需要强校验时用 `STOA_EXPECT_DATA_DIR`）。换正确配置或换正确的 state 文件后重试，不要绕过守卫。
+- **refusing to connect（默认板安全门）**：`dataDir` 为空且未 opt-in（`STOA_EXPECT_DATA_DIR` /
+  `STOA_ALLOW_REMOTE=1`）时 watch 与 session-start **拒绝连接**默认 `127.0.0.1:13689`（生产板）——
+  让用户配 `dataDir`（自有板）或对远程板显式 opt-in；这是刻意行为，不要绕过。
 - **state 文件写不进**：确认 `~/.local/state/stoa/report-channel/` 可写（文件以 0600 原子写入；
   旧目录 `~/.local/state/fde2e/report-channel/` 同名文件自动回退）。
