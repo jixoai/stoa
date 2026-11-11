@@ -10,7 +10,9 @@ build/
 *.tsbuildinfo
 
 # 运行时数据（数据目录本体不入库；模板见 docs 或 --help）
-data/
+data/*
+# 例外：dsh 会话模式的姓名池是随包分发的静态资产（非运行时数据）
+!data/names.json
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm

@@ -21,7 +21,8 @@
           STOA_BASE_URL: !!js process.env.STOA_BASE_URL ?? 'http://127.0.0.1:13689'
           STOA_TOKEN: !!js process.env.STOA_TOKEN ?? ''
 
-    # dsh UI 插件面：包根 index.js 是 host 半边（空实现），左侧栏入口与右栏
-    # 控制台由 client.js 注册（dsh.client + exports["./client"]）。
+    # dsh UI 插件面：包根 index.js 是 host 半边——注册 /stoa 会话模式
+    # （会话级实例 + SSE 自动注入 + stoa_* 工具 + 子代理账号，见 README「会话模式」）；
+    # 左侧栏入口与右栏控制台由 client.js 注册（dsh.client + exports["./client"]）。
     - id: stoa-daemon-ui
       name: '@jixoai/stoa'
