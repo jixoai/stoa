@@ -17,17 +17,18 @@
  *   ③ 已安装的 npm 包 + `node`：`@jixoai/stoa` 的 `dist/mcp/server.mjs`
  *      （`require.resolve("@jixoai/stoa/package.json")` 优先，其次 cwd/插件根的
  *        `node_modules/@jixoai/stoa`）→ `node <pkg>/dist/mcp/server.mjs`；
- *   ④ **node 原生 npm 兜底**：`npx -y --package @jixoai/stoa stoa-mcp`
+ *   ④ **node 原生 npm 兜底（钉版本）**：`npx -y --package @jixoai/stoa@<核心版本> stoa-mcp`
  *      （npm 包的 `bin.stoa-mcp` = 预构建 `dist/mcp/server.mjs`，自带
  *        `#!/usr/bin/env node`；`STOA_NPX` 可注入替代命令——smoke 用 fake npx 免网络）。
  * 全部失败 → stderr 一行明确错误、退出 2（不打印任何凭据）。
  *
  * 为什么第③/④档用 node 而不是 bun：插件被市场安装后位于宿主的缓存目录，核心的 TS 源码
  * 不在插件内；`dist/mcp/server.mjs` 是 `bun build --target=node` 的预构建产物，
- * node ≥18 直接可跑。npx 一行同时完成「解析/安装/执行」，且只用 node 生态（npm 自带），
+ * node ≥22 直接可跑（`@jixoai/stoa@0.6.0` 的 `engines.node = ">=22"`）。npx 一行同时完成
+ * 「解析/安装/执行」，且只用 node 生态（npm 自带），
  * 是拷贝形态不需要 bun 的稳定路径；自行猜 node_modules 布局会引入「装在哪」的隐含契约。
  *
- * 运行时：①② 前置 bun（② 只用 node + 仓内 dist）；③④ 前置 node ≥18（npx 来自 npm）。
+ * 运行时：①② 前置 bun（② 只用 node + 仓内 dist）；③④ 前置 node ≥22（npx 来自 npm）。
  *
  * npx 档的中立 cwd（缺陷修复 2026-11-12）：npm/npx 会从 cwd **向上找最近的 package.json**
  * 并执行 `devEngines.packageManager` 校验——任何 pin 了 pnpm 的项目（本仓即是）会让 npx
@@ -46,6 +47,14 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = join(HERE, "..");
+
+/**
+ * tier④ 的 npm 包规格：**钉核心版本**，避免 `@latest` 漂移（新核心可能带不兼容变更）。
+ * 版本与 `src/core/protocol.ts` 的 `VERSION`（＝仓根 `package.json.version`）**同源**：
+ * 发版/改核心版本时**同一批**改这里。smoke 用仓根 `package.json.version` 断言实际参数
+ * （`-y --package @jixoai/stoa@<version> stoa-mcp`），漏改会直接 FAIL。
+ */
+const NPM_PACKAGE_SPEC = "@jixoai/stoa@0.6.0";
 
 /** PATH 查找（无第三方依赖；支持绝对路径直给）。 */
 function which(command) {
@@ -112,7 +121,7 @@ function planFromNpx() {
   return {
     tier: "npx",
     bin: process.env.STOA_NPX || "npx",
-    args: ["-y", "--package", "@jixoai/stoa", "stoa-mcp"],
+    args: ["-y", "--package", NPM_PACKAGE_SPEC, "stoa-mcp"],
   };
 }
 
@@ -142,8 +151,8 @@ if (plan.tier === "npx") {
 }
 
 const fallbackHint =
-  "tried repo bun TS, repo dist, installed @jixoai/stoa, and " +
-  `npx (${plan.tier === "npx" ? plan.bin : process.env.STOA_NPX || "npx"} -y --package @jixoai/stoa stoa-mcp); ` +
+  "tried repo bun TS, repo dist, installed package, and " +
+  `npx (${plan.tier === "npx" ? plan.bin : process.env.STOA_NPX || "npx"} -y --package ${NPM_PACKAGE_SPEC} stoa-mcp); ` +
   "set STOA_REPO to the Stoa repo root (with bun or dist/mcp/server.mjs), or install node+npm for the npm package.";
 
 const child = spawn(spawnBin, plan.args, spawnOptions);

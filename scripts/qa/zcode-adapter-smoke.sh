@@ -17,8 +17,10 @@
 #      api() 带 x-report-account 头、state 文件按存在性回退旧目录；
 #   5. 薄桥冒烟：核心 `stoa mcp` 直跑 + 插件启动器（相对/STOA_REPO）+ **独立漂移门**
 #      `scripts/qa/check-tools-parity.mjs`（核心 tools/list 与适配器 TOOLS 逐字 deep-diff）；
-#      四档回退证据：①仓+bun ②仓内 dist+node（无 bun）③（跳过：本仓未安装自身包）
-#      ④npx 兜底（fake npx 免网络；**拷贝形态在 PATH 无 bun 时 tools/list 仍与核心逐字一致**）；
+#      四档回退证据（每档都有守卫）：①仓+bun ②仓内 dist+node（无 bun）
+#      ③已安装包 node（临时 node_modules 放真实 dist，STOA_NPX 指向必失败假命令 → 证明优先于 npx）
+#      ④npx 兜底（fake npx 免网络；**钉核心版本** `-y --package @jixoai/stoa@<VERSION> stoa-mcp`；
+#      拷贝形态在 PATH 无 bun 时 tools/list 仍与核心逐字一致）；
 #      **npx 中立 cwd 回归**（分发落地缺陷 2026-11-12）：fake npx 模拟 npm 11 的 devEngines 校验，
 #      负控（cwd=带 devEngines 的项目 → EBADDEVENGINES）＋正测（桥把 npx 子进程 cwd 放中立目录 →
 #      initialize/tools/list 成功）＋ `STOA_BRIDGE_CWD` 覆盖；
@@ -114,6 +116,9 @@ skip() { SKIPPED=$((SKIPPED + 1)); echo "SKIP $1 ${2:-}"; }
 BASE_PATH="$(dirname "${NODE}"):$(dirname "${BUN}"):/usr/bin:/bin:/usr/sbin:/sbin"
 PKG_VERSION="$(env -i PATH="${BASE_PATH}" "${NODE}" -e 'console.log(require(process.argv[1]).version)' \
   "${REPO}/package.json" 2>/dev/null || true)"
+# tier④ 期望的 npx 参数：包规格**钉核心版本**（= 仓根 package.json.version，与 src/core/protocol.ts
+# 的 VERSION 同源）。桥里若漏改（回退成 @latest / 旧版本），下面 tier④ 断言直接 FAIL。
+EXPECT_NPX_ARGS="-y --package @jixoai/stoa@${PKG_VERSION} stoa-mcp"
 # 沙箱执行器：环境白名单（无 STOA_*/REPORT_CHANNEL_*/ZCODE_* 泄漏）、HOME 指向沙箱。
 sandbox() {
   local home="$1"
@@ -587,9 +592,33 @@ else
   bad "启动器 tier②" "rc=${T2_RC} parity='${T2_PARITY}' bun_called=$([ -f "${SB}/tier2-bun.marker" ] && echo yes || echo no) err=$(head -1 "${SB}/tier2.err")"
 fi
 
+# tier③：cwd 的 node_modules 里已装 @jixoai/stoa（dist 来自真实构建）→ node 直接跑，
+# **优先于 npx**。把 STOA_NPX 指向「必失败」的假命令：若错走 npx 档，marker 出现且会失败。
+INSTALLED_APP="${SB}/installed-app"
+mkdir -p "${INSTALLED_APP}/node_modules/@jixoai/stoa/dist/mcp"
+cp "${MCP_DIST}" "${INSTALLED_APP}/node_modules/@jixoai/stoa/dist/mcp/server.mjs"
+cat >"${SB}/fake-npx-refuse" <<'EOF'
+#!/bin/sh
+printf '%s' "$*" > "$FAKE_NPX_MARKER"
+exit 9
+EOF
+chmod +x "${SB}/fake-npx-refuse"
+rm -f "${SB}/tier3-npx.marker"
+( cd "${INSTALLED_APP}" && printf '%s\n' "${BRIDGE_IN}" | env -i PATH="${NOBUN_PATH}" HOME="${HOME4}" \
+    STOA_NPX="${SB}/fake-npx-refuse" FAKE_NPX_MARKER="${SB}/tier3-npx.marker" \
+    "${NODE}" "${ISOLATED}/mcp-bridge.mjs" >"${SB}/tier3.out" 2>"${SB}/tier3.err" )
+T3_RC=$?
+T3_PARITY="$(sandbox /tmp "${NODE}" "${PARITY}" --core-out "${SB}/tier3.out" 2>&1)"
+if [ "${T3_RC}" -eq 0 ] && [ "${T3_PARITY#true }" != "${T3_PARITY}" ] \
+  && [ ! -f "${SB}/tier3-npx.marker" ]; then
+  ok "启动器 tier③（已安装包 node 优先于 npx）：tools/list 与核心逐字一致，npx 未被调用"
+else
+  bad "启动器 tier③（已安装包 node）" "rc=${T3_RC} parity='${T3_PARITY}' npx_called=$([ -f "${SB}/tier3-npx.marker" ] && echo yes || echo no) err=$(head -1 "${SB}/tier3.err")"
+fi
+
 # tier④：市场拷贝形态（无 STOA_REPO、PATH 无可用 bun）→ npx 兜底（fake npx 执行预构建
 # dist，免网络）；判据同 tier②：tools/list 与核心逐字一致 + 参数恰为
-# `-y --package @jixoai/stoa stoa-mcp` + fake bun 未被调用。
+# `${EXPECT_NPX_ARGS}`（钉核心版本）+ fake bun 未被调用。
 # fake npx 同时**模拟 npm 11 的 devEngines 校验**（cwd 的 package.json 里有 devEngines 就
 # 以 EBADDEVENGINES 退出）并把 `$PWD` 记到 marker——用来验证桥给 npx 的是中立 cwd。
 cat >"${SB}/fake-npx-ok" <<'EOF'
@@ -620,7 +649,7 @@ T4_NEUTRAL="$(realpath_of "${T4_NEUTRAL_RAW}")"
 T4_PWD_REAL="$(realpath_of "${T4_PWD}")"
 T4_PARITY="$(sandbox /tmp "${NODE}" "${PARITY}" --core-out "${SB}/tier4.out" 2>&1)"
 if [ "${T4_RC}" -eq 0 ] && [ "${T4_PARITY#true }" != "${T4_PARITY}" ] \
-  && [ "${T4_ARGS}" = "-y --package @jixoai/stoa stoa-mcp" ] \
+  && [ "${T4_ARGS}" = "${EXPECT_NPX_ARGS}" ] \
   && [ -n "${T4_PWD_REAL}" ] && [ "${T4_PWD_REAL}" = "${T4_NEUTRAL}" ] \
   && [ ! -f "${SB}/tier4-bun.marker" ]; then
   ok "启动器 tier④（拷贝形态，PATH 无 bun）：npx 兜底 + tools/list 逐字一致 + 子进程 cwd=中立目录（${T4_PWD_REAL}）"
@@ -640,7 +669,7 @@ printf '{"name":"proj","devEngines":{"packageManager":{"name":"pnpm","version":"
 ( cd "${PROJ_CWD}" && env -i PATH="${NOBUN_PATH}" HOME="${HOME4}" TMPDIR="${TMP_ROOT}" \
     STOA_TEST_NODE="${NODE}" STOA_TEST_MCP_SERVER="${MCP_DIST}" \
     FAKE_NPX_MARKER="${SB}/neg.marker" FAKE_NPX_PWD_MARKER="${SB}/neg.pwd" \
-    "${SB}/fake-npx-ok" -y --package @jixoai/stoa stoa-mcp </dev/null \
+    "${SB}/fake-npx-ok" -y --package "@jixoai/stoa@${PKG_VERSION}" stoa-mcp </dev/null \
     >"${SB}/neg.out" 2>"${SB}/neg.err" )
 NEG_RC=$?
 if [ "${NEG_RC}" -ne 0 ] && grep -q "EBADDEVENGINES" "${SB}/neg.err"; then
@@ -694,8 +723,8 @@ NPM_RC=$?
 NPX_ARGS="$(cat "${SB}/npx-fail.marker" 2>/dev/null || true)"
 case "${NPM_OUT}" in
   *"core MCP exited 7"*"[tier npx]"*)
-    if [ "${NPM_RC}" -eq 2 ] && [ "${NPX_ARGS}" = "-y --package @jixoai/stoa stoa-mcp" ]; then
-      ok "启动器 npx 档失败：尝试 -y --package @jixoai/stoa stoa-mcp → rc 2 + stderr 原因"
+    if [ "${NPM_RC}" -eq 2 ] && [ "${NPX_ARGS}" = "${EXPECT_NPX_ARGS}" ]; then
+      ok "启动器 npx 档失败：尝试 ${EXPECT_NPX_ARGS} → rc 2 + stderr 原因"
     else
       bad "启动器 npx 档失败语义" "rc=${NPM_RC} args='${NPX_ARGS}'"
     fi ;;

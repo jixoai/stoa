@@ -15,24 +15,28 @@ schema 由冒烟的漂移守卫与核心逐字比对）。
 | 形态 | 做法 | 仓根解析 |
 | --- | --- | --- |
 | **仓内直用**（`plugins.dirs`） | 项目级 `.zcode/config.json` 的 `plugins.dirs` 指向本目录（`<stoa-repo>/adapters/zcode/stoa`），源码直加载 | 启动器按插件内相对路径 `<插件根>/../../../../src/cli/main.ts` 找到核心 |
-| **复制/安装到缓存目录** | 插件被拷到别处（含 ZCode 的安装缓存）时插件内已不含核心：先试 `STOA_REPO` 指回 Stoa 仓根，再回退 npm 包 `npx -y --package @jixoai/stoa stoa-mcp`（**node 原生，不需要 bun**） | 见下「仓根解析三档」 |
+| **复制/安装到缓存目录** | 插件被拷到别处（含 ZCode 的安装缓存）时插件内已不含核心：先试 `STOA_REPO` 指回 Stoa 仓根，再回退已安装包 / npm 包 `npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`（**node 原生，不需要 bun**） | 见下「仓根解析四档」 |
 
-**运行时依赖**：仓内直用形态（tier1/tier2）**需要 `bun`**（核心一律 bun 直跑 TypeScript，见仓根
-README；`STOA_BIN` 可覆盖可执行文件）。市场/缓存拷贝形态（tier3）走 npm 包的 node 入口
-（`bin.stoa-mcp` → `dist/mcp/server.mjs`），只需 **node ≥18（自带 npm/npx），不需要 bun**；
-`STOA_NPX` 可覆盖 npx 可执行文件。三档都找不到核心时会在 stderr 明确报错并以非 0 退出（不打印凭据）。
+**运行时依赖**：仓内直用形态（tier①②）**需要 `bun`**（核心一律 bun 直跑 TypeScript，见仓根
+README；`STOA_BIN` 可覆盖可执行文件）。市场/缓存拷贝形态（tier③④）走 npm 包的 node 入口
+（`bin.stoa-mcp` → `dist/mcp/server.mjs`），只需 **node ≥22（自带 npm/npx），不需要 bun**
+（依据 `@jixoai/stoa@0.6.0` 的 `engines.node = ">=22"`；仓根 package.json 亦为 >=22.12）；
+`STOA_NPX` 可覆盖 npx 可执行文件。四档都找不到核心时会在 stderr 明确报错并以非 0 退出（不打印凭据）。
 **npx 档以中立 cwd 启动子进程**（默认 `os.tmpdir()`，`STOA_BRIDGE_CWD` 可覆盖）：npm/npx 会读取
 cwd 上层 `package.json` 的 `devEngines.packageManager`，pin 了 pnpm 的项目（含本仓）会让 npx 直接
 `EBADDEVENGINES` 拒绝执行；桥在中立目录启动 npx 即可绕开。该档下 `board_post { file }` 的
-**相对路径请改写绝对路径**（tier1/tier2 不受影响，仍按宿主 cwd 解析）。
+**相对路径请改写绝对路径**（tier①② 不受影响，仍按宿主 cwd 解析）。
 
-### 仓根解析三档（`scripts/mcp-bridge.mjs`，先到先得）
+### 仓根解析四档（`scripts/mcp-bridge.mjs`，先到先得、可逐档回退）
 
-1. `STOA_REPO`（绝对路径，指向 Stoa 仓根）→ `bun <仓根>/src/cli/main.ts mcp`；
-2. 插件内相对解析：`<插件根>/../../../../src/cli/main.ts`（仓内 `adapters/zcode/stoa` 直用形态，同样走 bun）；
-3. **node 原生 npm 回退**：`npx -y --package @jixoai/stoa stoa-mcp`（npm 包的 bin＝预构建
-   `dist/mcp/server.mjs`，自带 `#!/usr/bin/env node`；市场安装缓存形态无需 `STOA_REPO`、无需 bun；
-   子进程以**中立 cwd** 启动，避免项目 `devEngines` 让 npx 拒绝执行，见上「运行时依赖」）。
+1. `STOA_REPO`（绝对路径，指向 Stoa 仓根）+ bun → `bun <仓根>/src/cli/main.ts mcp`；
+2. 同一仓根 + `<仓根>/dist/mcp/server.mjs` 存在 → `node <dist>/mcp/server.mjs`（无 bun 也能跑）；
+   插件内相对解析（`<插件根>/../../../../src/cli/main.ts`）也走 ①② 这两档；
+3. **已安装包 + node**：cwd / 插件根 `node_modules/@jixoai/stoa/dist/mcp/server.mjs`
+   （或 `require.resolve("@jixoai/stoa/package.json")`）→ `node <pkg>/dist/mcp/server.mjs`；
+4. **node 原生 npm 兜底（钉版本）**：`npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`（npm 包的
+   bin＝预构建 `dist/mcp/server.mjs`，自带 `#!/usr/bin/env node`；市场安装缓存形态无需 `STOA_REPO`、
+   无需 bun；子进程以**中立 cwd** 启动，避免项目 `devEngines` 让 npx 拒绝执行，见上「运行时依赖」）。
 
 **桌面用户设置 env 的方式**：ZCode 桌面版从 GUI 启动时通常拿不到 shell 里的 export，
 在「设置 → 环境变量/Env」（或项目 `.zcode/config.json` 的 env 段，若宿主支持）里加
@@ -46,7 +50,7 @@ CLI 用户直接 `export STOA_REPO=...` 即可。`STOA_BASE_URL` / `STOA_ACCOUNT
 | --- | --- |
 | `.zcode-plugin/plugin.json` | 插件清单（plugin-creator 标准：name `stoa`、version `0.2.0`；components 只声明真实资源；`ui.surfaces.server="stoa"`） |
 | `.mcp.json` | MCP server 注册为 `stoa` → 薄桥启动器 `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-bridge.mjs` |
-| `scripts/mcp-bridge.mjs` | 薄桥启动器：stdio 直通核心 `stoa mcp`（三档解析；tier1/tier2 走 bun，tier3 走 node+npx；**适配器零业务实现**；工具与 `resources/read` 面板都由核心提供） |
+| `scripts/mcp-bridge.mjs` | 薄桥启动器：stdio 直通核心 `stoa mcp`（**四档解析**：①仓根+bun ②仓根 dist+node ③已安装包+node ④npx 钉版本兜底；**适配器零业务实现**；工具与 `resources/read` 面板都由核心提供） |
 | `scripts/watch.mjs` | 看板常驻脚本：**默认本地游标**（`board_peek(cursor=last)`，不消费；默认 state 为**会话级**）；`--consume` 保留旧的消费式 `board_inbox`（仅唯一主会话） |
 | `scripts/stop-wait.mjs` | **Stop 钩子**：回合结束时做有界等待（`STOA_STOP_WAIT_SECONDS`，默认 20s、上限 120）——有新回话则输出 `{"decision":"block","reason":…}` 让会话**自动续跑注入**（模型零学习）；无消息空输出放行 |
 | `scripts/state-path.mjs` | 按当前 ZCode 会话 ID 派生独立 state 路径（`--command` 输出可直接后台运行的订阅命令） |
@@ -212,11 +216,12 @@ node scripts/report-to-article.mjs <evidence-dir> --upload --out /tmp/report.md
 ## 冒烟
 
 ```bash
-# 适配器全程沙箱冒烟（隔离板 13686、HOME 沙箱、双启动器路径、tools 漂移门、
+# 适配器全程沙箱冒烟（隔离板端口从 13680~13699 自动挑空闲、永不使用 13689 生产板；
+# HOME 沙箱每次唯一、四档启动器（含 npx 钉版本/中立 cwd/已装包优先级）、tools 漂移门、
 # 默认板 opt-in 拒绝、无 dataDir 远程形态（显式 opt-in）、Stop 钩子两态、
 # state 锁并发与陈旧阈值注入、B5 时序、session-start 游标/不可信横幅/身份校验；
 # 不碰真实目录与生产板；结束删除沙箱——SMOKE_KEEP=1 可保留排查；
-# 并行跑另一份冒烟时用 SMOKE_PORT=13688 SMOKE_SANDBOX=/tmp/stoa-adapters-polish 错开）
+# 并行跑另一份冒烟时用 QA_PORT=13688 SMOKE_SANDBOX=/tmp/stoa-adapters-polish 错开）
 bash scripts/qa/zcode-adapter-smoke.sh
 
 # 独立漂移门（脚本自己起核心 `bun src/cli/main.ts mcp`，与适配器 TOOLS 逐字比对）
@@ -240,7 +245,8 @@ printf '{"hook_event_name":"Stop","stop_hook_active":false}' \
 ## 版本
 
 - **0.2.0**（2026-11-12，change `zcode-stoa-plugin` 打磨集 S3）：市场拷贝形态去 bun 依赖
-  （启动器 tier3 改 node 原生 `npx -y --package @jixoai/stoa stoa-mcp`）；**npx 档中立 cwd 修复**
+  （启动器 tier④ 改 node 原生 `npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`，**钉核心版本**
+  避免 `@latest` 漂移）；**npx 档中立 cwd 修复**
   （npm/npx 会读 cwd 上层 `package.json` 的 `devEngines.packageManager`，pin 了 pnpm 的项目会让
   npx 直接 `EBADDEVENGINES` 拒绝执行——桥把 npx 子进程放 `os.tmpdir()`，`STOA_BRIDGE_CWD` 可覆盖；
   该档下 `board_post { file }` 用绝对路径）；默认板安全 opt-in
