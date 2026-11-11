@@ -19,6 +19,9 @@
 #      `scripts/qa/check-tools-parity.mjs`（核心 tools/list 与适配器 TOOLS 逐字 deep-diff）；
 #      四档回退证据：①仓+bun ②仓内 dist+node（无 bun）③（跳过：本仓未安装自身包）
 #      ④npx 兜底（fake npx 免网络；**拷贝形态在 PATH 无 bun 时 tools/list 仍与核心逐字一致**）；
+#      **npx 中立 cwd 回归**（分发落地缺陷 2026-11-12）：fake npx 模拟 npm 11 的 devEngines 校验，
+#      负控（cwd=带 devEngines 的项目 → EBADDEVENGINES）＋正测（桥把 npx 子进程 cwd 放中立目录 →
+#      initialize/tools/list 成功）＋ `STOA_BRIDGE_CWD` 覆盖；
 #      mcp-parity.mjs 明确 SKIP「历史脚本，已退役」；
 #   6. **默认板安全门**：空 HOME + 空配置 + 无 opt-in → watch 退出 2 / session-start exit 0
 #      零 stdout（stderr 明确拒绝），且本地记录器 **0 连接、0 个 Authorization 头**；
@@ -116,6 +119,14 @@ sandbox() {
   local home="$1"
   shift
   env -i PATH="${BASE_PATH}" HOME="${home}" TMPDIR="${TMPDIR:-/tmp}" "$@"
+}
+
+# 物理路径（macOS /var ↔ /private/var 符号链接）：比较 cwd 前统一 realpath。
+realpath_of() {
+  if [ -z "${1:-}" ]; then echo ""; return 0; fi
+  sandbox /tmp "${NODE}" -e '
+try { console.log(require("fs").realpathSync(process.argv[1])); } catch { console.log(process.argv[1]); }
+' "$1" 2>/dev/null || echo "$1"
 }
 
 cleanup() {
@@ -579,26 +590,95 @@ fi
 # tier④：市场拷贝形态（无 STOA_REPO、PATH 无可用 bun）→ npx 兜底（fake npx 执行预构建
 # dist，免网络）；判据同 tier②：tools/list 与核心逐字一致 + 参数恰为
 # `-y --package @jixoai/stoa stoa-mcp` + fake bun 未被调用。
+# fake npx 同时**模拟 npm 11 的 devEngines 校验**（cwd 的 package.json 里有 devEngines 就
+# 以 EBADDEVENGINES 退出）并把 `$PWD` 记到 marker——用来验证桥给 npx 的是中立 cwd。
 cat >"${SB}/fake-npx-ok" <<'EOF'
 #!/bin/sh
 printf '%s' "$*" > "$FAKE_NPX_MARKER"
+printf '%s' "$PWD" > "$FAKE_NPX_PWD_MARKER"
+if [ -f "$PWD/package.json" ] && grep -q '"devEngines"' "$PWD/package.json"; then
+  echo 'npm error code EBADDEVENGINES' >&2
+  echo 'npm error EBADDEVENGINES Invalid name "pnpm" does not match "npm" for "packageManager" (simulated)' >&2
+  exit 1
+fi
 exec "$STOA_TEST_NODE" "$STOA_TEST_MCP_SERVER"
 EOF
 chmod +x "${SB}/fake-npx-ok"
-rm -f "${SB}/npx.marker" "${SB}/tier4-bun.marker"
-printf '%s\n' "${BRIDGE_IN}" | env -i PATH="${NOBUN_PATH}" HOME="${HOME4}" \
+rm -f "${SB}/npx.marker" "${SB}/npx.pwd" "${SB}/tier4-bun.marker"
+printf '%s\n' "${BRIDGE_IN}" | env -i PATH="${NOBUN_PATH}" HOME="${HOME4}" TMPDIR="${TMP_ROOT}" \
   STOA_NPX="${SB}/fake-npx-ok" STOA_TEST_NODE="${NODE}" STOA_TEST_MCP_SERVER="${MCP_DIST}" \
-  FAKE_NPX_MARKER="${SB}/npx.marker" FAKE_BUN_MARKER="${SB}/tier4-bun.marker" \
+  FAKE_NPX_MARKER="${SB}/npx.marker" FAKE_NPX_PWD_MARKER="${SB}/npx.pwd" \
+  FAKE_BUN_MARKER="${SB}/tier4-bun.marker" \
   "${NODE}" "${ISOLATED}/mcp-bridge.mjs" >"${SB}/tier4.out" 2>"${SB}/tier4.err"
 T4_RC=$?
 T4_ARGS="$(cat "${SB}/npx.marker" 2>/dev/null || true)"
+T4_PWD="$(cat "${SB}/npx.pwd" 2>/dev/null || true)"
+# macOS：$PWD 是物理路径（/private/var/...），os.tmpdir() 是逻辑路径（/var/...）——
+# 统一 realpath 后比较，避免符号链接造成字面不等（假红）。
+T4_NEUTRAL_RAW="$(sandbox /tmp env TMPDIR="${TMP_ROOT}" "${NODE}" -e 'console.log(require("os").tmpdir())' 2>/dev/null || echo "${TMP_ROOT}")"
+T4_NEUTRAL="$(realpath_of "${T4_NEUTRAL_RAW}")"
+T4_PWD_REAL="$(realpath_of "${T4_PWD}")"
 T4_PARITY="$(sandbox /tmp "${NODE}" "${PARITY}" --core-out "${SB}/tier4.out" 2>&1)"
 if [ "${T4_RC}" -eq 0 ] && [ "${T4_PARITY#true }" != "${T4_PARITY}" ] \
   && [ "${T4_ARGS}" = "-y --package @jixoai/stoa stoa-mcp" ] \
+  && [ -n "${T4_PWD_REAL}" ] && [ "${T4_PWD_REAL}" = "${T4_NEUTRAL}" ] \
   && [ ! -f "${SB}/tier4-bun.marker" ]; then
-  ok "启动器 tier④（拷贝形态，PATH 无 bun）：npx 兜底 + tools/list 与核心逐字一致"
+  ok "启动器 tier④（拷贝形态，PATH 无 bun）：npx 兜底 + tools/list 逐字一致 + 子进程 cwd=中立目录（${T4_PWD_REAL}）"
 else
-  bad "启动器 tier④（拷贝形态无 bun）" "rc=${T4_RC} args='${T4_ARGS}' parity='${T4_PARITY}' bun_called=$([ -f "${SB}/tier4-bun.marker" ] && echo yes || echo no) err=$(head -1 "${SB}/tier4.err")"
+  bad "启动器 tier④（拷贝形态无 bun）" "rc=${T4_RC} args='${T4_ARGS}' pwd='${T4_PWD_REAL}' expect='${T4_NEUTRAL}' parity='${T4_PARITY}' bun_called=$([ -f "${SB}/tier4-bun.marker" ] && echo yes || echo no) err=$(head -1 "${SB}/tier4.err")"
+fi
+
+# 缺陷回归（2026-11-12，分发落地实证）：宿主 cwd 是**带 devEngines.packageManager: pnpm 的
+# 用户项目**时，npm/npx 直接 EBADDEVENGINES 拒绝执行——桥必须让 npx 子进程跑在中立 cwd。
+# 1) 负控：直接跑 fake npx（cwd=项目目录）→ 必须失败（证明模拟是真的）；
+# 2) 正测：在同一个项目 cwd 启动桥 → npx 子进程 PWD=中立目录、initialize/tools/list 成功；
+# 3) STOA_BRIDGE_CWD 覆盖生效。
+PROJ_CWD="${SB}/project-devengines"
+mkdir -p "${PROJ_CWD}"
+printf '{"name":"proj","devEngines":{"packageManager":{"name":"pnpm","version":"12.10.0","onFail":"download"}}}\n' \
+  >"${PROJ_CWD}/package.json"
+( cd "${PROJ_CWD}" && env -i PATH="${NOBUN_PATH}" HOME="${HOME4}" TMPDIR="${TMP_ROOT}" \
+    STOA_TEST_NODE="${NODE}" STOA_TEST_MCP_SERVER="${MCP_DIST}" \
+    FAKE_NPX_MARKER="${SB}/neg.marker" FAKE_NPX_PWD_MARKER="${SB}/neg.pwd" \
+    "${SB}/fake-npx-ok" -y --package @jixoai/stoa stoa-mcp </dev/null \
+    >"${SB}/neg.out" 2>"${SB}/neg.err" )
+NEG_RC=$?
+if [ "${NEG_RC}" -ne 0 ] && grep -q "EBADDEVENGINES" "${SB}/neg.err"; then
+  ok "缺陷负控：fake npx 在 devEngines 项目 cwd 下拒绝执行（EBADDEVENGINES 模拟真实 npm）"
+else
+  bad "缺陷负控（模拟未生效）" "rc=${NEG_RC} err=$(head -1 "${SB}/neg.err")"
+fi
+rm -f "${SB}/proj.marker" "${SB}/proj.pwd"
+( cd "${PROJ_CWD}" && printf '%s\n' "${BRIDGE_IN}" | env -i PATH="${NOBUN_PATH}" HOME="${HOME4}" \
+    TMPDIR="${TMP_ROOT}" STOA_NPX="${SB}/fake-npx-ok" STOA_TEST_NODE="${NODE}" \
+    STOA_TEST_MCP_SERVER="${MCP_DIST}" FAKE_NPX_MARKER="${SB}/proj.marker" \
+    FAKE_NPX_PWD_MARKER="${SB}/proj.pwd" \
+    "${NODE}" "${ISOLATED}/mcp-bridge.mjs" >"${SB}/proj.out" 2>"${SB}/proj.err" )
+PROJ_RC=$?
+PROJ_PWD="$(realpath_of "$(cat "${SB}/proj.pwd" 2>/dev/null || true)")"
+PROJ_PARITY="$(sandbox /tmp "${NODE}" "${PARITY}" --core-out "${SB}/proj.out" 2>&1)"
+if [ "${PROJ_RC}" -eq 0 ] && [ "${PROJ_PARITY#true }" != "${PROJ_PARITY}" ] \
+  && [ -n "${PROJ_PWD}" ] && [ "${PROJ_PWD}" = "${T4_NEUTRAL}" ] \
+  && [ "${PROJ_PWD}" != "$(realpath_of "${PROJ_CWD}")" ]; then
+  ok "缺陷修复：devEngines 项目 cwd 下启动桥仍成功（npx 子进程 cwd=${PROJ_PWD}，不是项目目录）"
+else
+  bad "缺陷修复（devEngines 项目 cwd）" "rc=${PROJ_RC} pwd='${PROJ_PWD}' expect='${T4_NEUTRAL}' parity='${PROJ_PARITY}' err=$(head -2 "${SB}/proj.err" | tr '\n' ' ')"
+fi
+BRIDGE_CWD="${SB}/bridge-neutral-cwd"
+mkdir -p "${BRIDGE_CWD}"
+rm -f "${SB}/override.pwd"
+( cd "${PROJ_CWD}" && printf '%s\n' "${BRIDGE_IN}" | env -i PATH="${NOBUN_PATH}" HOME="${HOME4}" \
+    TMPDIR="${TMP_ROOT}" STOA_BRIDGE_CWD="${BRIDGE_CWD}" STOA_NPX="${SB}/fake-npx-ok" \
+    STOA_TEST_NODE="${NODE}" STOA_TEST_MCP_SERVER="${MCP_DIST}" \
+    FAKE_NPX_MARKER="${SB}/override.marker" FAKE_NPX_PWD_MARKER="${SB}/override.pwd" \
+    "${NODE}" "${ISOLATED}/mcp-bridge.mjs" >"${SB}/override.out" 2>"${SB}/override.err" )
+OVERRIDE_RC=$?
+OVERRIDE_PWD="$(realpath_of "$(cat "${SB}/override.pwd" 2>/dev/null || true)")"
+if [ "${OVERRIDE_RC}" -eq 0 ] && [ -n "${OVERRIDE_PWD}" ] \
+  && [ "${OVERRIDE_PWD}" = "$(realpath_of "${BRIDGE_CWD}")" ]; then
+  ok "STOA_BRIDGE_CWD 覆盖生效（npx 子进程 cwd=${OVERRIDE_PWD}）"
+else
+  bad "STOA_BRIDGE_CWD 覆盖" "rc=${OVERRIDE_RC} pwd='${OVERRIDE_PWD}' expect='$(realpath_of "${BRIDGE_CWD}")' err=$(head -1 "${SB}/override.err")"
 fi
 
 # npx 档失败语义：fake npx 退出 7（模拟 npm 包不可用）→ rc 2 + 明确提示（不静默）。

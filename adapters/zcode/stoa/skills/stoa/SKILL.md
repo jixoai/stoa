@@ -121,6 +121,10 @@ manager（本会话）在板上汇报成果，Owner 在板上读、评、下指�
   让用户配 `dataDir`（自有板）或对远程板显式 opt-in；这是刻意行为，不是故障。
 - **多会话重复看到同一事件**：两个会话用了同一个 state 文件；各自换独立的 `--state-file`。
 - **消息被别的会话「读走」**：有会话误用了 `--consume`；只有唯一主会话允许消费式订阅。
+- **市场安装形态的 MCP 起不来（npx/devEngines）**：桥的 npx 档以中立 cwd 启动子进程
+  （默认 `os.tmpdir()`，`STOA_BRIDGE_CWD` 可覆盖），避免用户项目 `devEngines.packageManager`
+  让 npm 报 `EBADDEVENGINES`；该档下 `board_post`/`board_reply` 的 `file` 用**绝对路径**
+  （相对路径按宿主 cwd 解析是 tier1/tier2 的语义）。
 
 ## 交付物纪律（与主线配套）
 

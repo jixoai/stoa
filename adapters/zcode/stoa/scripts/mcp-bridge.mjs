@@ -28,11 +28,20 @@
  * 是拷贝形态不需要 bun 的稳定路径；自行猜 node_modules 布局会引入「装在哪」的隐含契约。
  *
  * 运行时：①② 前置 bun（② 只用 node + 仓内 dist）；③④ 前置 node ≥18（npx 来自 npm）。
+ *
+ * npx 档的中立 cwd（缺陷修复 2026-11-12）：npm/npx 会从 cwd **向上找最近的 package.json**
+ * 并执行 `devEngines.packageManager` 校验——任何 pin 了 pnpm 的项目（本仓即是）会让 npx
+ * 直接 `EBADDEVENGINES` 拒绝执行，市场拷贝形态（tier② 不可用、tier③ 未装包 → 落到 npx）
+ * 在用户项目目录里必挂。故 **npx 子进程以中立目录启动**（默认 `os.tmpdir()`，
+ * `STOA_BRIDGE_CWD` 可覆盖）。tier①/②/③ 不经过 npm、保持宿主 cwd——core 的
+ * `board_post { file }` 相对路径按 `process.cwd()` 解析，全部改中立会把相对路径语义
+ * 挪到 /tmp（真实回归）；npx 档下 `file` 请用绝对路径（README 已注明）。
  */
 import { spawn } from "node:child_process";
 import { accessSync, constants, existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { delimiter, dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -109,15 +118,38 @@ function planFromNpx() {
 
 const plan = planFromRepo() ?? planFromInstalledPackage() ?? planFromNpx();
 
+/**
+ * npx 档的中立 cwd：避开 cwd 上层 package.json 的 `devEngines.packageManager` 校验
+ * （见文件头）。`STOA_BRIDGE_CWD` 可覆盖（不存在时回退 `os.tmpdir()` 并 stderr 一行说明）。
+ */
+function neutralNpmCwd() {
+  const override = (process.env.STOA_BRIDGE_CWD ?? "").trim();
+  if (override) {
+    if (existsSync(override)) return override;
+    process.stderr.write(
+      `[stoa] mcp-bridge: STOA_BRIDGE_CWD=${override} does not exist; using ${tmpdir()}\n`,
+    );
+  }
+  return tmpdir();
+}
+
+const spawnOptions = { stdio: "inherit" };
+let spawnBin = plan.bin;
+if (plan.tier === "npx") {
+  spawnOptions.cwd = neutralNpmCwd();
+  // 显式 STOA_NPX 用相对路径时，先按宿主 cwd 解析成绝对路径（否则改 cwd 后找不到）。
+  if (spawnBin.includes("/") && !spawnBin.startsWith("/")) spawnBin = resolve(process.cwd(), spawnBin);
+}
+
 const fallbackHint =
   "tried repo bun TS, repo dist, installed @jixoai/stoa, and " +
   `npx (${plan.tier === "npx" ? plan.bin : process.env.STOA_NPX || "npx"} -y --package @jixoai/stoa stoa-mcp); ` +
   "set STOA_REPO to the Stoa repo root (with bun or dist/mcp/server.mjs), or install node+npm for the npm package.";
 
-const child = spawn(plan.bin, plan.args, { stdio: "inherit" });
+const child = spawn(spawnBin, plan.args, spawnOptions);
 child.once("error", (error) => {
   process.stderr.write(
-    mergeEnvelope(`mcp-bridge: cannot start ${plan.bin} [tier ${plan.tier}] (${error.code ?? error.message})`),
+    mergeEnvelope(`mcp-bridge: cannot start ${spawnBin} [tier ${plan.tier}] (${error.code ?? error.message})`),
   );
   process.exit(2);
 });

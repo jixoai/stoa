@@ -21,13 +21,18 @@ schema 由冒烟的漂移守卫与核心逐字比对）。
 README；`STOA_BIN` 可覆盖可执行文件）。市场/缓存拷贝形态（tier3）走 npm 包的 node 入口
 （`bin.stoa-mcp` → `dist/mcp/server.mjs`），只需 **node ≥18（自带 npm/npx），不需要 bun**；
 `STOA_NPX` 可覆盖 npx 可执行文件。三档都找不到核心时会在 stderr 明确报错并以非 0 退出（不打印凭据）。
+**npx 档以中立 cwd 启动子进程**（默认 `os.tmpdir()`，`STOA_BRIDGE_CWD` 可覆盖）：npm/npx 会读取
+cwd 上层 `package.json` 的 `devEngines.packageManager`，pin 了 pnpm 的项目（含本仓）会让 npx 直接
+`EBADDEVENGINES` 拒绝执行；桥在中立目录启动 npx 即可绕开。该档下 `board_post { file }` 的
+**相对路径请改写绝对路径**（tier1/tier2 不受影响，仍按宿主 cwd 解析）。
 
 ### 仓根解析三档（`scripts/mcp-bridge.mjs`，先到先得）
 
 1. `STOA_REPO`（绝对路径，指向 Stoa 仓根）→ `bun <仓根>/src/cli/main.ts mcp`；
 2. 插件内相对解析：`<插件根>/../../../../src/cli/main.ts`（仓内 `adapters/zcode/stoa` 直用形态，同样走 bun）；
 3. **node 原生 npm 回退**：`npx -y --package @jixoai/stoa stoa-mcp`（npm 包的 bin＝预构建
-   `dist/mcp/server.mjs`，自带 `#!/usr/bin/env node`；市场安装缓存形态无需 `STOA_REPO`、无需 bun）。
+   `dist/mcp/server.mjs`，自带 `#!/usr/bin/env node`；市场安装缓存形态无需 `STOA_REPO`、无需 bun；
+   子进程以**中立 cwd** 启动，避免项目 `devEngines` 让 npx 拒绝执行，见上「运行时依赖」）。
 
 **桌面用户设置 env 的方式**：ZCode 桌面版从 GUI 启动时通常拿不到 shell 里的 export，
 在「设置 → 环境变量/Env」（或项目 `.zcode/config.json` 的 env 段，若宿主支持）里加
@@ -235,7 +240,10 @@ printf '{"hook_event_name":"Stop","stop_hook_active":false}' \
 ## 版本
 
 - **0.2.0**（2026-11-12，change `zcode-stoa-plugin` 打磨集 S3）：市场拷贝形态去 bun 依赖
-  （启动器 tier3 改 node 原生 `npx -y --package @jixoai/stoa stoa-mcp`）；默认板安全 opt-in
+  （启动器 tier3 改 node 原生 `npx -y --package @jixoai/stoa stoa-mcp`）；**npx 档中立 cwd 修复**
+  （npm/npx 会读 cwd 上层 `package.json` 的 `devEngines.packageManager`，pin 了 pnpm 的项目会让
+  npx 直接 `EBADDEVENGINES` 拒绝执行——桥把 npx 子进程放 `os.tmpdir()`，`STOA_BRIDGE_CWD` 可覆盖；
+  该档下 `board_post { file }` 用绝对路径）；默认板安全 opt-in
   （dataDir 为空且未 `STOA_EXPECT_DATA_DIR`/`STOA_ALLOW_REMOTE=1` → watch/session-start 拒连）；
   session-start 补 `/healthz` 身份校验、改**会话语义游标**（同一未读每轮 prompt 不再重复注入）、
   不可信横幅置顶；裸 `watch.mjs` 默认 state 改会话级；面板 `appInfo.version` 改用核心 `VERSION`；
