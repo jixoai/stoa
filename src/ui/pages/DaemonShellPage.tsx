@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -121,40 +122,44 @@ export function DaemonShellPage({ boot }: { boot: ShellBoot }) {
                 aria-label="daemon 快捷菜单"
                 title="daemon 快捷菜单"
                 data-testid="daemon-shell-ball"
-              />
+              >
+                <ServerIcon className="size-5" aria-hidden="true" />
+              </Button>
             }
-          >
-            <ServerIcon className="size-5" aria-hidden="true" />
-          </DropdownMenuTrigger>
+          />
           <DropdownMenuContent align="end" side="top" className="w-60">
-            <DropdownMenuLabel className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
-              <span className="truncate">当前：{current.name}</span>
-            </DropdownMenuLabel>
-            <DropdownMenuItem
-              onClick={() => window.location.assign("/")}
-              data-testid="daemon-shell-home"
-            >
-              <ArrowLeftIcon />
-              回到 daemon
-            </DropdownMenuItem>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="flex items-center gap-2 text-xs font-normal text-muted-foreground">
+                <span className="truncate">当前：{current.name}</span>
+              </DropdownMenuLabel>
+              <DropdownMenuItem
+                onClick={() => window.location.assign("/")}
+                data-testid="daemon-shell-home"
+              >
+                <ArrowLeftIcon />
+                回到 daemon
+              </DropdownMenuItem>
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-              切换实例
-            </DropdownMenuLabel>
-            {others.length === 0 ? (
-              <DropdownMenuItem disabled>没有其它运行中的实例</DropdownMenuItem>
-            ) : (
-              others.map((instance) => (
-                <DropdownMenuItem
-                  key={instance.id}
-                  onClick={() => switchTo(instance)}
-                  data-testid={`daemon-shell-switch-${instance.slug}`}
-                >
-                  <ServerIcon />
-                  <span className="truncate">{instance.name}</span>
-                </DropdownMenuItem>
-              ))
-            )}
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+                切换实例
+              </DropdownMenuLabel>
+              {others.length === 0 ? (
+                <DropdownMenuItem disabled>没有其它运行中的实例</DropdownMenuItem>
+              ) : (
+                others.map((instance) => (
+                  <DropdownMenuItem
+                    key={instance.id}
+                    onClick={() => switchTo(instance)}
+                    data-testid={`daemon-shell-switch-${instance.slug}`}
+                  >
+                    <ServerIcon />
+                    <span className="truncate">{instance.name}</span>
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={refresh} data-testid="daemon-shell-refresh">
               <RefreshCwIcon />

@@ -46,7 +46,7 @@
 ## S6. QA 与迁移面
 
 - [ ] S6-1. QA 脚本新增（另：`test/e2e-cli.sh` S12 陈旧多页断言已按 v0.6+ 单文件导出现代化，187 PASS / 0 FAIL）：登录/首启/退出、路由矩阵、SSE 实时、502、壳/小球/切换、`/i/*/healthz` 免登录、`/preview/*` 非回环需登录、旧 `?ep` 仅 standalone、CLI `daemon account`；既有断言零回归（daemon 相关 75 处 port 断言同步迁移）。
-- [ ] S6-2. 报告 `.agents/reports/manager/daemon-unified-port/`（before/after：多端口清单→单端口壳+小球；登录/壳/菜单截图；Host 模式 cookie 浏览器实测结论；UNCOVERED=0）。
+- [x] S6-2. 报告 `.agents/reports/manager/daemon-unified-port/`（before/after：多端口清单→单端口壳+小球；登录/壳/菜单截图；Host 模式 cookie 浏览器实测结论；UNCOVERED=0）。
 
 ## S7. 收口与发布门
 
