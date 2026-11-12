@@ -1375,31 +1375,39 @@ s12_export() {
 
   check_file "12.2 index.html 存在" "$OUT/index.html"
   check_nonempty_file "12.3 index.html 非空" "$OUT/index.html"
-  check_file "12.4 assets/app.js 存在" "$OUT/assets/app.js"
-  check_file "12.5 assets/app.css 存在" "$OUT/assets/app.css"
-  check_file "12.6 who.html 存在" "$OUT/who.html"
-  check_file "12.7 search.html 存在" "$OUT/search.html"
+
+  # v0.6+ 单文件导出：复用生产前端构建（资产带内容散列），无 who/search/p 多页。
+  APP_JS="$(ls "$OUT"/assets/app-*.js 2>/dev/null | head -1)"
+  if [ -n "$APP_JS" ]; then
+    pass "12.4 散列资产 app-*.js 存在"
+  else
+    fail "12.4 散列资产 app-*.js 存在" "assets/ 下无 app-*.js（应有生产构建散列名）"
+  fi
+  STYLE_CSS="$(ls "$OUT"/assets/style-*.css 2>/dev/null | head -1)"
+  if [ -n "$STYLE_CSS" ]; then
+    pass "12.5 散列资产 style-*.css 存在"
+  else
+    fail "12.5 散列资产 style-*.css 存在" "assets/ 下无 style-*.css"
+  fi
+  if [ ! -e "$OUT/who.html" ] && [ ! -e "$OUT/search.html" ] && [ ! -d "$OUT/p" ]; then
+    pass "12.6 单文件导出：无 who/search/p 多页残留"
+  else
+    fail "12.6 单文件导出：无 who/search/p 多页残留" "存在旧多页产物（who.html/search.html/p/）"
+  fi
+  check_contains_file "12.7 index.html 内联快照容器" "$OUT/index.html" 'id="report-snapshot"'
 
   check_contains_file "12.8 数据内联为 <script type=\"application/json\">" \
     "$OUT/index.html" '<script type="application/json"'
-  check_contains_file "12.9 经典脚本 assets/app.js 被引用" "$OUT/index.html" 'assets/app.js'
+  check_contains_file "12.9 index.html 引用散列脚本 ./assets/app-" "$OUT/index.html" './assets/app-'
 
-  THREAD_PAGE="$OUT/p/$ROOT9.html"
-  THREAD_PAGE_OK=0
   if [ -z "$ROOT9" ]; then
-    skip "12.10-12.11 线程页" "S9 未取得根帖 id"
-  elif [ -f "$THREAD_PAGE" ]; then
-    pass "12.10 线程页 p/<id>.html 存在"
-    check_contains_file "12.11 线程页含根帖正文" "$THREAD_PAGE" "$BODY9R"
-    THREAD_PAGE_OK=1
-  elif [ -f "$OUT/p/$ROOT9/index.html" ]; then
-    pass "12.10 线程页 p/<id>/index.html 存在"
-    check_contains_file "12.11 线程页含根帖正文" "$OUT/p/$ROOT9/index.html" "$BODY9R"
-    THREAD_PAGE="$OUT/p/$ROOT9/index.html"
-    THREAD_PAGE_OK=1
+    skip "12.10-12.11 根帖正文内联" "S9 未取得根帖 id"
+  elif [ -f "$OUT/index.html" ] && grep -Fq -- "$BODY9R" "$OUT/index.html"; then
+    pass "12.10 根帖正文内联于 index.html"
+    pass "12.11 线程页由 hash 路由承载（无独立 p/ 页）"
   else
-    fail "12.10 线程页 p/<id>.html 存在" "缺少 $THREAD_PAGE"
-    skip "12.11 线程页含根帖正文"
+    fail "12.10 根帖正文内联于 index.html" "index.html 不含 S9 根帖正文"
+    skip "12.11 线程页由 hash 路由承载"
   fi
 
   if [ -f "$OUT/index.html" ] && grep -Fq -- "$BODY8B" "$OUT/index.html"; then
@@ -1410,11 +1418,14 @@ s12_export() {
 
   check_not_match_file "12.13 index.html 不使用 ES module" "$OUT/index.html" 'type="module"'
   check_not_match_file "12.14 index.html 不用 fetch/XHR 取数据" "$OUT/index.html" 'fetch[[:space:]]*\(|XMLHttpRequest'
-  check_not_match_file "12.15 app.js 不用 fetch/XHR 取数据" "$OUT/assets/app.js" 'fetch[[:space:]]*\(|XMLHttpRequest'
+  if [ ! -e "$OUT/assets/app.js" ]; then
+    pass "12.15 无旧经典脚本 assets/app.js 残留"
+  else
+    fail "12.15 无旧经典脚本 assets/app.js 残留" "assets/app.js 不应再产出"
+  fi
 
   ASOF=0
   if [ -f "$OUT/index.html" ] && grep -Eiq 'as[-_ ]?of' "$OUT/index.html"; then ASOF=1; fi
-  if [ "$ASOF" = "0" ] && [ "$THREAD_PAGE_OK" = "1" ] && grep -Eiq 'as[-_ ]?of' "$THREAD_PAGE"; then ASOF=1; fi
   if [ "$ASOF" = "1" ]; then
     pass "12.16 导出内嵌 as-of seq"
   else

@@ -114,9 +114,10 @@ SHALL NOT 把实例 token 下发浏览器。实例自身口令 / `#key=` 链接 
 
 ### Requirement: 单端口虚拟主机与路由
 
-daemon SHALL 单端口承载 daemon 自身与全部实例，按以下优先级路由：① Host 为 daemon host →
-daemon app；② Host 精确命中实例 `hostnames[]` → 代理该实例；③ 路径前缀 `/i/<idOrSlug>/` →
-剥前缀后代理，`/i/<idOrSlug>`（无尾斜杠）302 补斜杠；④ 其它 → daemon app。
+daemon SHALL 单端口承载 daemon 自身与全部实例，按以下优先级路由：① Host 精确命中实例
+`hostnames[]` → 代理该实例；② 路径前缀 `/i/<idOrSlug>/` → 剥前缀后代理（**对任何 Host 生效，
+含 daemon host**；`/i/<idOrSlug>` 无尾斜杠 302 补斜杠）；③ Host 为 daemon host →
+daemon app；④ 其它 → daemon app。
 `slug` SHALL 为 `[a-z0-9][a-z0-9-]{1,31}` 且唯一（冲突自动加后缀，保留字 `api|assets|login|
 logout|shell|i|preview|healthz|favicon.ico` 不得占用）；`hostnames` SHALL 按 host 语法校验且跨实例唯一。
 实例以 UDS 监听，`/api/daemon/services` 中 `port` 为 null 且无 TCP 监听。
@@ -128,8 +129,8 @@ logout|shell|i|preview|healthz|favicon.ico` 不得占用）；`hostnames` SHALL 
 
 #### Scenario: 路由优先级与补斜杠
 
-- **WHEN** 分别请求 daemon host 根、实例 hostname 根、`/i/<id>`（无尾斜杠）、未知路径
-- **THEN** 依次返回 daemon app、实例界面、302 到 `/i/<id>/`、daemon app 的 404/控制台
+- **WHEN** 分别请求实例 hostname 根、daemon host 根、daemon host 上的 `/i/<id>`（无尾斜杠）、未知路径
+- **THEN** 依次返回实例界面、daemon app、302 到 `/i/<id>/`、daemon app 的 404/控制台
 
 #### Scenario: slug 冲突与保留字
 

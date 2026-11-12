@@ -76,11 +76,17 @@ MCP 默认通道：读 `daemon.json` → 首个运行服务的 **`socket`（UDS�
 
 ## §2 路由（单入口）
 
-1. `Host`（小写、去端口、去尾点）∈ daemon host 集合（`127.0.0.1`/`localhost`/`[::1]`/`--host` 值/
-   可选 `stoa.localhost`）→ daemon app。
-2. `Host` 精确命中某实例 `hostnames[]` → 代理该实例（路径原样透传）。
-3. 路径前缀 `/i/<idOrSlug>/` → 剥前缀代理；`/i/<idOrSlug>`（无尾斜杠）→ 302 补斜杠。
-4. 其它 → daemon app（SPA fallback / 404）。
+1. `Host`（小写、去端口、去尾点）精确命中某实例 `hostnames[]` → 代理该实例（路径原样透传）。
+2. 路径前缀 `/i/<idOrSlug>/` → 剥前缀代理；`/i/<idOrSlug>`（无尾斜杠）→ 302 补斜杠。
+   **对任何 Host 都生效（含 daemon host）**——路径模式在主入口
+   `http://127.0.0.1:13679/i/<slug>/` 必须可达；「daemon host → daemon app」只适用于
+   未命中 `/i/` 的其余路径。
+3. `Host` ∈ daemon host 集合（`127.0.0.1`/`localhost`/`[::1]`/`--host` 值/可选 `stoa.localhost`）
+   → daemon app（控制台/API）。
+4. 其它（未知 Host、非 `/i/` 路径）→ daemon app（SPA fallback / 404）。
+
+> 实现偏差备案（P1 实测）：初版把「daemon host → app」排在路径模式之前，会让默认入口上的
+> `/i/<slug>/` 永远进不了实例——已按上面顺序修正，spec 场景同步。
 
 - `slug`：`[a-z0-9][a-z0-9-]{1,31}`，由独立实现生成（**不复用** `sessions.ts` 的 `slugify`，
   它会产出 1 字符与尾随 `-`）：name 小写、非 `[a-z0-9]` 折 `-`、压缩、去首尾 `-`、

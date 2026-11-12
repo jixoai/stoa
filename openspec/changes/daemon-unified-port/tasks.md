@@ -10,13 +10,13 @@
 
 ## S2. P1 单端口虚拟主机与 UDS（daemon + serve + 发现）
 
-- [ ] S2-1. `serve`：daemon 托管实例 UDS 监听（`<stateDir>/sockets/<id>.sock`，目录 0700）；`--standalone` 保留 TCP；UDS 模式跳过 `verifyOwnership`；超长路径 fallback 短目录。
-- [ ] S2-2. `server.json`/`ServerInfo` 契约：`port: number|null` + `unix?`；`readServerInfo` 放宽（port/unix 至少一个）；新增 `instanceFetch(info,…)`——**单一实现用 `node:http`/`https` 的 `socketPath`（不用全局 `fetch({unix})`：Node 会静默忽略并拨 80）**，返回 `new Response(Readable.toWeb(res),…)`，ENOENT→不可达；**`status ∈ {204,205,304}` 与 HEAD 时 body 必须传 `null`**（Node 对带 body 的 204 抛 TypeError，Bun 不抛）；判据含「bun 与 node 两 runtime 都通」。
-- [ ] S2-3. 消费者改接 `instanceFetch`：CLI 全部命令、`serve --stop`、daemon adopt/健康/`serviceAuthMode`/`tryLogin`、dsh `lib/host/session.js` **与 `lib/host/watcher.js`（SSE `/api/stream` + ticket，注入 UDS-aware `fetchImpl`）**、MCP 默认通道（daemon.json → 首个运行服务的 **`socket`**；`?ep` 链接用 `logicalUrl`；无 daemon 记录回退 13689）。
-- [ ] S2-4. 路由四优先级（daemon host → hostname → `/i/<slug>/` → app）＋`/i/<idOrSlug>` 302；`--host` 与可选 `stoa.localhost`；尽力加 `[::1]:13679`。
-- [ ] S2-5. 服务记录：`slug`（独立生成，保留字/冲突后缀）/`hostnames[]`（RFC1123，跨实例唯一）/`socket`/逻辑 `url`/`authAccount`；`port` 兼容 null。
-- [ ] S2-6. 反代：剥前缀；GET/HEAD 不传 body；头处理顺序（删 hop-by-hop → 删客户端 authorization/x-report-account/cookie/x-stoa-* → 注入实例凭据 → `x-stoa-service`/`x-stoa-daemon-proxy`）；响应删 `content-encoding`/`content-length`；**不注入 CORS**。
-- [ ] S2-7. SSE/流式不缓冲（含 ticket 两次请求）、hub 503 原样；普通请求 60s、SSE/下载不限；实例不可达 502 可读。
+- [x] S2-1. `serve`：daemon 托管实例 UDS 监听（`<stateDir>/sockets/<id>.sock`，目录 0700）；`--standalone` 保留 TCP；UDS 模式跳过 `verifyOwnership`；超长路径 fallback 短目录。
+- [x] S2-2. `server.json`/`ServerInfo` 契约：`port: number|null` + `unix?`；`readServerInfo` 放宽（port/unix 至少一个）；新增 `instanceFetch(info,…)`——**单一实现用 `node:http`/`https` 的 `socketPath`（不用全局 `fetch({unix})`：Node 会静默忽略并拨 80）**，返回 `new Response(Readable.toWeb(res),…)`，ENOENT→不可达；**`status ∈ {204,205,304}` 与 HEAD 时 body 必须传 `null`**（Node 对带 body 的 204 抛 TypeError，Bun 不抛）；判据含「bun 与 node 两 runtime 都通」。
+- [x] S2-3. 消费者改接 `instanceFetch`：CLI 全部命令、`serve --stop`、daemon adopt/健康/`serviceAuthMode`/`tryLogin`、dsh `lib/host/session.js` **与 `lib/host/watcher.js`（SSE `/api/stream` + ticket，注入 UDS-aware `fetchImpl`）**、MCP 默认通道（daemon.json → 首个运行服务的 **`socket`**；`?ep` 链接用 `logicalUrl`；无 daemon 记录回退 13689）。
+- [x] S2-4. 路由四优先级（实际顺序：hostname → `/i/<slug>/`（任何 Host，含 daemon host）→ daemon app；初版「daemon host 优先」会让主入口路径模式不可达，已按实测修正并同步 spec）＋`/i/<idOrSlug>` 302；`--host` 与可选 `stoa.localhost`；尽力加 `[::1]:13679`。
+- [x] S2-5. 服务记录：`slug`（独立生成，保留字/冲突后缀）/`hostnames[]`（RFC1123，跨实例唯一）/`socket`/逻辑 `url`/`authAccount`；`port` 兼容 null。
+- [x] S2-6. 反代：剥前缀；GET/HEAD 不传 body；头处理顺序（删 hop-by-hop → 删客户端 authorization/x-report-account/cookie/x-stoa-* → 注入实例凭据 → `x-stoa-service`/`x-stoa-daemon-proxy`）；响应删 `content-encoding`/`content-length`；**不注入 CORS**。
+- [x] S2-7. SSE/流式不缓冲（含 ticket 两次请求）、hub 503 原样；普通请求 60s、SSE/下载不限；实例不可达 502 可读。
   - 判据：单测/集成——路由矩阵、slug 冲突/保留字、`server.json` 新旧兼容、`instanceFetch` 双通道、头语义（content-encoding 剔除/authorization 覆盖/无 CORS/GET 无 body）、SSE 实时（无缓冲）、502；`lsof -iTCP` 无实例端口。
 
 ## S3. P2 daemon 账号、会话与凭据注入
@@ -45,7 +45,7 @@
 
 ## S6. QA 与迁移面
 
-- [ ] S6-1. QA 脚本新增：登录/首启/退出、路由矩阵、SSE 实时、502、壳/小球/切换、`/i/*/healthz` 免登录、`/preview/*` 非回环需登录、旧 `?ep` 仅 standalone、CLI `daemon account`；既有断言零回归（daemon 相关 75 处 port 断言同步迁移）。
+- [ ] S6-1. QA 脚本新增（另：`test/e2e-cli.sh` S12 陈旧多页断言已按 v0.6+ 单文件导出现代化，187 PASS / 0 FAIL）：登录/首启/退出、路由矩阵、SSE 实时、502、壳/小球/切换、`/i/*/healthz` 免登录、`/preview/*` 非回环需登录、旧 `?ep` 仅 standalone、CLI `daemon account`；既有断言零回归（daemon 相关 75 处 port 断言同步迁移）。
 - [ ] S6-2. 报告 `.agents/reports/manager/daemon-unified-port/`（before/after：多端口清单→单端口壳+小球；登录/壳/菜单截图；Host 模式 cookie 浏览器实测结论；UNCOVERED=0）。
 
 ## S7. 收口与发布门
