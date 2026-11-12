@@ -61,6 +61,21 @@ describe("daemon console preview entry (S4-1)", () => {
     expect(html).toContain("生成预览");
   });
 
+  test("row addresses instances by /i/<slug>/ (single port) and lists custom hostnames", () => {
+    const html = renderRow({
+      status: "running",
+      pid: 4242,
+      slug: "board",
+      port: null,
+      hostnames: ["board.localhost"],
+      url: "http://127.0.0.1:13679/i/board/",
+    });
+    expect(html).toContain("/i/board/");
+    expect(html).toContain("board.localhost");
+    // daemon 托管实例不占 TCP：没有端口 chip
+    expect(html).not.toContain("端口");
+  });
+
   test("running row keeps 打开 as primary action and keeps the inline preview off", () => {
     const html = renderRow({
       status: "running",

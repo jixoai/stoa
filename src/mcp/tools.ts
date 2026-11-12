@@ -219,7 +219,9 @@ interface RawPost {
 /** 帖子 canonical 链接（report-longform D13/§6.2）：article → `#/a/<id>`，note → `#/p/<id>`。 */
 export function postUrl(cfg: McpConfig, postId: string, kind = "note"): string {
   const path = kind === "article" ? "a" : "p";
-  return `${cfg.publicUrl}/?ep=${encodeURIComponent(cfg.baseUrl)}#/${path}/${encodeURIComponent(postId)}`;
+  // 链接通道：浏览器可达的 logicalUrl（daemon 托管为 /i/<slug>/）；socket 是机器通道，绝不能进链接。
+  const ep = cfg.logicalUrl || cfg.baseUrl;
+  return `${cfg.publicUrl}/?ep=${encodeURIComponent(ep)}#/${path}/${encodeURIComponent(postId)}`;
 }
 
 export function summarizePost(cfg: McpConfig, post: RawPost): Record<string, unknown> {
@@ -271,6 +273,8 @@ export async function callTool(
     baseUrl: cfg.baseUrl,
     account: cfg.account,
     token: loadToken(cfg, env),
+    // 机器通道：发现 daemon socket 时走 UDS（Node 下也成立），否则回退 baseUrl 的 TCP fetch。
+    endpoint: cfg.socket ? { unix: cfg.socket } : null,
   });
   switch (name) {
     case "board_post": {

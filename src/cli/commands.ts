@@ -44,6 +44,7 @@ import {
   type ParsedArgs,
 } from "./args.ts";
 import { ApiClient, CliError, fetchAuthMode } from "./client.ts";
+import { endpointOfInfo, type InstanceEndpoint } from "../server/instance-client.ts";
 import { emit, emitError, emitHuman, formatTime, postLine, summarizePost, writeLineSync } from "./output.ts";
 import { loadToken, resolveMcpConfig, type McpConfig } from "../mcp/config.ts";
 import { runMcpServer } from "../mcp/server.ts";
@@ -110,7 +111,9 @@ async function makeClient(
   account: string,
 ): Promise<{ client: ApiClient; url: string; authMode: "open" | "auth" }> {
   const info = await discoverServer(ctx.dataDir);
-  const status = await fetchAuthMode(info.url);
+  // UDS 优先（daemon 托管实例不占 TCP）；standalone 回落 TCP origin。
+  const endpoint = endpointOfInfo(info);
+  const status = await fetchAuthMode(info.url, endpoint);
   const token = resolveToken(ctx.env, account);
   if (status.mode === "auth" && !token) {
     fail(
@@ -120,7 +123,7 @@ async function makeClient(
     );
   }
   return {
-    client: new ApiClient({ baseUrl: info.url, account, token }),
+    client: new ApiClient({ baseUrl: info.url, account, token, endpoint }),
     url: info.url,
     authMode: status.mode,
   };
@@ -304,8 +307,9 @@ async function cmdServe(ctx: CliContext): Promise<number> {
   if (hasFlag(args, "status")) return statusCommand(ctx);
   // 兼容旧 `--daemon`：detach 单个 standalone 实例（不进 daemon、不进登记）。
   if (hasFlag(args, "daemon")) return startDaemon(ctx);
-  // `--standalone`：旧默认行为（前台占用终端）。
-  if (hasFlag(args, "standalone")) return serveStandalone(ctx);
+  // `--standalone`（旧默认行为：前台占用终端）或 `--unix`（daemon 托管的 UDS 实例，
+  // 由 daemon 以子进程拉起并持有生命周期）：两者都是前台 serve 语义。
+  if (hasFlag(args, "standalone") || flagValue(args, "unix") !== null) return serveStandalone(ctx);
   // 默认：挂到 daemon（stoa-daemon design §3）——起 daemon（按需）→ 挂载 → 打印两链接 → 释放终端。
   return serveViaDaemon(ctx);
 }
@@ -315,10 +319,14 @@ async function serveStandalone(ctx: CliContext): Promise<number> {
   const args = ctx.args;
   const port = flagInt(args, "port");
   const host = flagValue(args, "host") ?? "127.0.0.1";
+  // `--unix`（daemon 托管）：UDS 监听，不占 TCP；`--url` 是 daemon 注入的逻辑 URL。
+  const unix = flagValue(args, "unix");
   const running = await startServer({
     dataDir: ctx.dataDir,
     port,
     host,
+    unix,
+    logicalUrl: flagValue(args, "url"),
     envFiles: ctx.envFiles,
     expose: hasFlag(args, "expose"),
     allowOpenExpose: hasFlag(args, "allow-open-expose"),
@@ -471,11 +479,16 @@ async function serveViaDaemon(ctx: CliContext): Promise<number> {
       service: {
         id: service.id,
         name: service.name,
+        slug: service.slug,
+        hostnames: service.hostnames,
         data_dir: service.dataDir,
+        // daemon 托管实例不占 TCP：port=null，I/O 通道是 socket，浏览器通道是 url。
         port: service.port,
+        socket: service.socket ?? null,
         pid: service.pid,
         url: service.url,
         status: service.status,
+        auth_account: service.authAccount ?? null,
         log: service.log,
       },
       daemon: {
@@ -501,7 +514,7 @@ async function cmdDaemon(args: ParsedArgs, cwd: string): Promise<number> {
   if (sub === "run") {
     // daemon 自身没有 data-dir/服务端口语义：`--port`（或 `--daemon-port`/env）就是 daemon 端口。
     const port = flagInt(args, "port") ?? daemonPortFromArgs(args) ?? DAEMON_DEFAULT_PORT;
-    return runDaemon({ stateDir, port, cwd });
+    return runDaemon({ stateDir, port, host: flagValue(args, "host") ?? undefined, cwd });
   }
 
   if (sub === "start") {
@@ -815,8 +828,13 @@ async function statusCommand(ctx: CliContext): Promise<number> {
   if (status.running && status.url) {
     const account = flagValue(ctx.args, "as") ?? envValue(ctx.env.values, envKeys("ACCOUNT")) ?? "owner";
     const token = resolveToken(ctx.env, account);
+    const endpoint: InstanceEndpoint = {
+      unix: status.unix ?? null,
+      url: status.url,
+      port: status.port ?? null,
+    };
     try {
-      const client = new ApiClient({ baseUrl: status.url, account, token });
+      const client = new ApiClient({ baseUrl: status.url, account, token, endpoint });
       live = await client.get("/api/status");
     } catch (err) {
       live = { error: (err as Error).message };
@@ -938,7 +956,11 @@ async function cmdAuthStatus(ctx: CliContext): Promise<number> {
   const status = await serverStatus(ctx.dataDir).catch(() => null);
   if (status?.running && status.url) {
     try {
-      serverView = await fetchAuthMode(status.url);
+      serverView = await fetchAuthMode(status.url, {
+        unix: status.unix ?? null,
+        url: status.url,
+        port: status.port ?? null,
+      });
     } catch {
       serverView = null;
     }

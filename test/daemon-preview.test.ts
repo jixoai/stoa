@@ -48,6 +48,8 @@ function previewRecord(dataDir: string, overrides: Partial<ServiceRecord> = {}):
   return {
     id: `svc-preview-${seq.toString(16).padStart(8, "0")}`,
     name: "board",
+    slug: `pboard-${seq.toString(16).padStart(4, "0")}`,
+    hostnames: [],
     dataDir,
     port: 13680,
     pid: null,
@@ -64,6 +66,8 @@ function makeDaemonCtx(uiDir: string): DaemonContext {
     stateDir: tempDir("preview-daemon-state-"),
     version: VERSION,
     startedAt: 1_700_000_000_000,
+    url: "http://127.0.0.1:13679",
+    host: "127.0.0.1",
     entry: { bin: process.execPath, args: [] },
     uiDir,
     log: () => {},

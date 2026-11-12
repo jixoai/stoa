@@ -34,6 +34,9 @@ const VALUE_FLAGS = new Set([
   "state-dir",
   "daemon-port",
   "name",
+  // daemon 托管（UDS）实例的内部开关（由 daemon 传给子进程；也可手动调试）。
+  "unix",
+  "url",
   "attach",
   "quote",
   "draft",
@@ -182,7 +185,8 @@ Usage:
   stoa serve --data-dir D [--port N] [--idle-timeout SEC]
                             [--standalone|--daemon|--stop|--status]
                             [--state-dir S] [--daemon-port N] [--name S]
-  stoa daemon start|status|stop|run [--port N] [--state-dir S]
+                            [--unix SOCKET --url LOGICAL_URL]  (daemon-managed instances)
+  stoa daemon start|status|stop|run [--port N] [--host H] [--state-dir S]
   stoa open --as <acct> --data-dir D
   stoa who --data-dir D
   stoa accounts create <id> [--role agent] [--display S] [--profile S]

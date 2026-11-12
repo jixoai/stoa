@@ -30,7 +30,14 @@ import type { StatusCode } from "hono/utils/http-status";
 import { isReportError } from "../core/errors.ts";
 import { PORT_MAX, PORT_MIN } from "../core/protocol.ts";
 import { DB_FILE_NAME } from "../server/db.ts";
-import { probeHealth, probeHealthBody, readServerInfo } from "../server/discovery.ts";
+import {
+  probeHealth,
+  probeHealthBody,
+  readServerInfo,
+  removeSocketFile,
+  defaultSocketPath,
+} from "../server/discovery.ts";
+import { instanceFetch, endpointOfInfo, endpointOfRecord, type InstanceEndpoint } from "../server/instance-client.ts";
 import { initDataDir } from "../server/init.ts";
 import { isPortInWorkerRange } from "../server/ports.ts";
 import { pickDirectory, pickerSupported } from "./picker.ts";
@@ -46,7 +53,10 @@ import {
 } from "./sessions.ts";
 import type { DaemonHealth } from "./client.ts";
 import {
+  allHostnames,
+  DEFAULT_AUTH_ACCOUNT,
   findServiceByDataDir,
+  findServiceByIdOrSlug,
   newServiceId,
   readDaemonInfo,
   readServices,
@@ -57,6 +67,7 @@ import {
   writeServices,
   type ServiceRecord,
 } from "./state.ts";
+import { RESERVED_SLUGS, serviceSlug, validateHostnames, isValidSlug } from "./slug.ts";
 
 export interface DaemonEntry {
   /** 解释器（bun 的 process.execPath）与 CLI 脚本（process.argv[1]）。 */
@@ -68,6 +79,10 @@ export interface DaemonContext {
   stateDir: string;
   version: string;
   startedAt: number;
+  /** daemon 自己的逻辑基址（`http://host:port`）：生成实例逻辑 URL（`/i/<slug>/`）。 */
+  url: string;
+  /** daemon 绑定/对外 host（并入 daemon host 集合，实例 hostnames 不得占用）。 */
+  host: string;
   entry: DaemonEntry;
   uiDir: string | null;
   log: (line: string) => void;
@@ -133,12 +148,38 @@ async function waitExit(pid: number, timeoutMs: number): Promise<boolean> {
   return !pidAlive(pid);
 }
 
-async function serviceHealthy(record: Pick<ServiceRecord, "dataDir">): Promise<boolean> {
-  const info = readServerInfo(record.dataDir);
-  return info !== null && (await probeHealth(info, 600));
+/** 端点可达性（不带 dataDir/instanceId 归属校验：登记记录的归属由 server.json 决定）。 */
+async function endpointHealthy(endpoint: InstanceEndpoint, timeoutMs = 600): Promise<boolean> {
+  try {
+    const res = await instanceFetch(endpoint, "/healthz", {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { accept: "application/json" },
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
-/** 读取时校正：登记为 running 但服务实际已死（被 `serve --stop`/SIGKILL 掉）→ 降级 stopped。 */
+async function serviceHealthy(
+  record: Pick<ServiceRecord, "dataDir" | "socket" | "url" | "port">,
+): Promise<boolean> {
+  const info = readServerInfo(record.dataDir);
+  if (info) return await probeHealth(info, 600);
+  return await endpointHealthy(endpointOfRecord(record), 600);
+}
+
+/** 记录的当前端点：server.json 最新（重启/换 socket 后仍然准确），否则回退登记值。 */
+function recordEndpoint(record: ServiceRecord): InstanceEndpoint {
+  const info = readServerInfo(record.dataDir);
+  if (info) return endpointOfInfo(info);
+  return endpointOfRecord(record);
+}
+
+/**
+ * 读取时校正：登记为 running 但服务实际已死（被 `serve --stop`/SIGKILL 掉）→ 降级 stopped；
+ * 活着则用 server.json 自报的 socket/逻辑 URL 自愈（重启后 socket 可能变、slug 可能被改）。
+ */
 async function reconcileServices(ctx: DaemonContext): Promise<ServiceRecord[]> {
   const list = readServices(ctx.stateDir);
   let changed = false;
@@ -147,23 +188,72 @@ async function reconcileServices(ctx: DaemonContext): Promise<ServiceRecord[]> {
     if (!(await serviceHealthy(record))) {
       record.status = "stopped";
       record.stoppedAt = Date.now();
+      if (record.socket) {
+        removeSocketFile(record.socket);
+        record.socket = null;
+      }
       changed = true;
+      continue;
+    }
+    const info = readServerInfo(record.dataDir);
+    if (!info) continue;
+    const nextSocket = info.unix ?? null;
+    if (nextSocket !== (record.socket ?? null)) {
+      record.socket = nextSocket;
+      changed = true;
+    }
+    if (nextSocket) {
+      const nextUrl = managedLogicalUrl(ctx, record.slug);
+      if (nextUrl !== record.url) {
+        record.url = nextUrl;
+        changed = true;
+      }
     }
   }
   if (changed) writeServices(ctx.stateDir, list);
   return list;
 }
 
-function buildServeArgs(ctx: DaemonContext, req: MountRequest, dataDir: string): string[] {
-  const args = [...ctx.entry.args, "serve", "--standalone", "--data-dir", dataDir];
-  if (req.port != null) args.push("--port", String(req.port));
-  if (req.host) args.push("--host", req.host);
+function buildServeArgs(
+  ctx: DaemonContext,
+  req: MountRequest,
+  dataDir: string,
+  target: { socketPath: string; logicalUrl: string },
+): string[] {
+  // daemon 托管实例一律 UDS（daemon-unified-port design §1.1）：不再占 TCP 端口。
+  const args = [
+    ...ctx.entry.args,
+    "serve",
+    "--standalone",
+    "--data-dir",
+    dataDir,
+    "--unix",
+    target.socketPath,
+    "--url",
+    target.logicalUrl,
+  ];
   // daemon 持有生命周期：默认不设空闲自尽（请求可显式覆盖）。
   args.push("--idle-timeout", String(Math.round((req.idleTimeoutMs ?? 0) / 1000)));
   if (req.envFiles?.length) args.push("--env-files", req.envFiles.join(","));
   if (req.expose) args.push("--expose");
   if (req.allowOpenExpose) args.push("--allow-open-expose");
   return args;
+}
+
+/** daemon 托管实例的逻辑 URL（浏览器/链接通道）：daemon 基址 + `/i/<slug>/`。 */
+function managedLogicalUrl(ctx: DaemonContext, slug: string): string {
+  return `${ctx.url.replace(/\/+$/, "")}/i/${slug}/`;
+}
+
+/** 实例的逻辑 URL：UDS 实例恒为 `/i/<slug>/`；收编的 TCP 实例用它自己的 origin。 */
+function logicalUrlFor(ctx: DaemonContext, slug: string, endpoint: InstanceEndpoint): string {
+  if (endpoint.unix) return managedLogicalUrl(ctx, slug);
+  return (endpoint.url ?? "").replace(/\/+$/, "");
+}
+
+/** daemon host 集合里的 host（实例 hostnames 不得占用；含 `--host` 值）。 */
+function daemonHostsFor(ctx: DaemonContext): string[] {
+  return [ctx.host].filter(Boolean);
 }
 
 /** 会话目录初始化＋访问口令（新目录/开放模式目录自动上口令；既有口令沿用并提示）。 */
@@ -227,22 +317,40 @@ async function mountService(ctx: DaemonContext, req: MountRequest): Promise<Moun
     }
   };
 
+  const warnings: string[] = [];
+  // daemon 托管模式端口/主机名已退役（实例改 UDS）：显式要端口时给可见提示而不是静默丢弃。
+  if (req.port != null) {
+    warnings.push(
+      `端口 ${req.port} 在 daemon 托管模式下已退役（实例改用 Unix socket，不占 TCP）；该参数已忽略`,
+    );
+  }
+  if (req.host) {
+    warnings.push(`--host ${req.host} 在 daemon 托管模式下无意义（实例不监听 TCP）；该参数已忽略`);
+  }
+
   const list = readServices(ctx.stateDir);
   const existing = findServiceByDataDir(list, dataDir);
   if (existing && existing.status === "running" && (await serviceHealthy(existing))) {
-    return { service: existing, reused: true, adopted: false, warnings: [] };
+    return { service: existing, reused: true, adopted: false, warnings };
   }
   // 收编：daemon 外（或上一个 daemon 死后遗留）已经在跑的实例，统一进登记表管理。
   const info = readServerInfo(dataDir);
   if (info && (await probeHealth(info, 800))) {
     const secret = findAuthKey([join(dataDir, ".env")]);
+    const name = (req.name ?? "").trim() || existing?.name || basename(dataDir);
+    const slug = existing?.slug ?? serviceSlug(name, list.map((item) => item.slug));
+    const endpoint = endpointOfInfo(info);
     const record: ServiceRecord = {
       id: existing?.id ?? newServiceId(),
-      name: (req.name ?? "").trim() || existing?.name || basename(dataDir),
+      name,
+      slug,
+      hostnames: existing?.hostnames ?? [],
       dataDir,
       port: info.port,
       pid: info.pid,
-      url: info.url,
+      url: existing?.url ?? logicalUrlFor(ctx, slug, endpoint),
+      socket: info.unix ?? null,
+      authAccount: existing?.authAccount ?? DEFAULT_AUTH_ACCOUNT,
       log: existing?.log ?? null,
       startedAt: info.startedAt ?? Date.now(),
       status: "running",
@@ -254,7 +362,7 @@ async function mountService(ctx: DaemonContext, req: MountRequest): Promise<Moun
     };
     upsertService(ctx.stateDir, record);
     ctx.log(`adopted running service ${record.id} (${record.url}) for ${dataDir}`);
-    return { service: record, reused: true, adopted: true, warnings: [] };
+    return { service: record, reused: true, adopted: true, warnings };
   }
 
   let prepared: { envFiles: string[] | null; secretFile: string | null; warnings: string[] };
@@ -277,10 +385,19 @@ async function mountService(ctx: DaemonContext, req: MountRequest): Promise<Moun
   }
 
   const id = existing?.id ?? newServiceId();
+  const name = (req.name ?? "").trim() || existing?.name || basename(dataDir);
+  const slug = existing?.slug ?? serviceSlug(name, list.map((item) => item.slug));
+  const socketPath = defaultSocketPath(ctx.stateDir, id);
+  const logicalUrl = `${ctx.url.replace(/\/+$/, "")}/i/${slug}/`;
   const logPath = serviceLogPath(ctx.stateDir, id);
   const fd = openSync(logPath, "a", 0o600);
   chmodSync(logPath, 0o600);
-  const args = buildServeArgs(ctx, { ...req, envFiles: prepared.envFiles }, dataDir);
+  const args = buildServeArgs(
+    ctx,
+    { ...req, envFiles: prepared.envFiles },
+    dataDir,
+    { socketPath, logicalUrl },
+  );
   const child = spawn(ctx.entry.bin, args, {
     cwd: dataDir,
     detached: true,
@@ -305,11 +422,16 @@ async function mountService(ctx: DaemonContext, req: MountRequest): Promise<Moun
     if (started && (await probeHealth(started, 800))) {
       const record: ServiceRecord = {
         id,
-        name: (req.name ?? "").trim() || existing?.name || basename(dataDir),
+        name,
+        slug,
+        hostnames: existing?.hostnames ?? [],
         dataDir,
         port: started.port,
         pid: started.pid,
-        url: started.url,
+        url: logicalUrl,
+        // 路径可能因超长 fallback 到 tmpdir：以 server.json 自报的实际 socket 为准。
+        socket: started.unix ?? socketPath,
+        authAccount: existing?.authAccount ?? DEFAULT_AUTH_ACCOUNT,
         log: logPath,
         startedAt: started.startedAt ?? Date.now(),
         status: "running",
@@ -320,7 +442,7 @@ async function mountService(ctx: DaemonContext, req: MountRequest): Promise<Moun
         location,
       };
       upsertService(ctx.stateDir, record);
-      return { service: record, reused: false, adopted: false, warnings: prepared.warnings };
+      return { service: record, reused: false, adopted: false, warnings: [...warnings, ...prepared.warnings] };
     }
     if (child.exitCode !== null || child.signalCode !== null) {
       cleanupEphemeral();
@@ -403,6 +525,9 @@ async function stopService(ctx: DaemonContext, record: ServiceRecord): Promise<S
   }
   current.status = "stopped";
   current.stoppedAt = Date.now();
+  // 残留 socket 清理（正常停机 Bun 会自己 unlink；强杀/崩溃后兜底），登记不再指向死 socket。
+  removeSocketFile(current.socket);
+  current.socket = null;
   if (current.ephemeral) {
     // 临时会话：停止即删（目录是我们建的，删除安全）。
     try {
@@ -445,10 +570,8 @@ function uniquePaths(files: Array<string | null | undefined>): string[] {
 
 /** 服务的认证模式（以服务自身 `/api/auth/status` 为准；不可达返回 null）。 */
 async function serviceAuthMode(record: ServiceRecord): Promise<"auth" | "open" | null> {
-  const base = (record.url ?? "").replace(/\/+$/, "");
-  if (!base) return null;
   try {
-    const res = await fetch(`${base}/api/auth/status`, {
+    const res = await instanceFetch(recordEndpoint(record), "/api/auth/status", {
       signal: AbortSignal.timeout(1200),
       headers: { accept: "application/json" },
     });
@@ -463,10 +586,8 @@ async function serviceAuthMode(record: ServiceRecord): Promise<"auth" | "open" |
 }
 
 async function tryLogin(record: ServiceRecord, key: string): Promise<boolean> {
-  const base = (record.url ?? "").replace(/\/+$/, "");
-  if (!base) return false;
   try {
-    const res = await fetch(`${base}/api/auth/login`, {
+    const res = await instanceFetch(recordEndpoint(record), "/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secret: key }),
@@ -540,7 +661,6 @@ async function writeServiceSecret(
       await stopService(ctx, current);
       const outcome = await mountService(ctx, {
         dataDir: current.dataDir,
-        port: current.port,
         name: current.name,
         envFiles: current.envFiles ?? null,
         publicUrl: current.publicUrl ?? null,
@@ -831,8 +951,11 @@ export function createDaemonApp(ctx: DaemonContext): Hono {
         const body = (typeof raw === "object" && raw !== null ? raw : {}) as {
           publicUrl?: unknown;
           name?: unknown;
+          slug?: unknown;
+          hostnames?: unknown;
         };
-        const record = readServices(ctx.stateDir).find((item) => item.id === id);
+        const list = readServices(ctx.stateDir);
+        const record = list.find((item) => item.id === id);
         if (!record) throw new HttpFail(404, "NOT_FOUND", `no service with id ${id}`);
         if (body.publicUrl !== undefined) {
           const text = typeof body.publicUrl === "string" ? body.publicUrl.trim() : "";
@@ -844,6 +967,49 @@ export function createDaemonApp(ctx: DaemonContext): Hono {
         if (body.name !== undefined) {
           const name = String(body.name ?? "").trim();
           if (name) record.name = name;
+        }
+        if (body.slug !== undefined) {
+          const slug = String(body.slug ?? "").trim().toLowerCase();
+          if (!isValidSlug(slug)) {
+            throw new HttpFail(
+              400,
+              "BAD_SLUG",
+              `slug 必须是 2–32 位 [a-z0-9-]，以字母或数字开头、不以 "-" 结尾（收到 ${JSON.stringify(slug)}）`,
+            );
+          }
+          if (RESERVED_SLUGS.has(slug)) {
+            throw new HttpFail(
+              400,
+              "RESERVED_SLUG",
+              `slug ${slug} 是 daemon 路由的保留字（${[...RESERVED_SLUGS].join(", ")}）`,
+            );
+          }
+          if (list.some((item) => item.id !== id && item.slug === slug)) {
+            throw new HttpFail(409, "CONFLICT", `slug ${slug} 已被其它实例占用`);
+          }
+          if (slug !== record.slug) {
+            record.slug = slug;
+            // 逻辑 URL 跟着 slug 走（daemon 托管实例的浏览器通道就是 /i/<slug>/，运行/停止都一致）。
+            if (record.port === null) record.url = managedLogicalUrl(ctx, slug);
+          }
+        }
+        if (body.hostnames !== undefined) {
+          const input = Array.isArray(body.hostnames)
+            ? body.hostnames.filter((item): item is string => typeof item === "string")
+            : typeof body.hostnames === "string"
+              ? body.hostnames
+              : null;
+          if (input === null) {
+            throw new HttpFail(400, "BAD_HOSTNAMES", "hostnames 必须是字符串或字符串数组");
+          }
+          try {
+            record.hostnames = validateHostnames(input, {
+              daemonHosts: daemonHostsFor(ctx),
+              takenByOthers: allHostnames(list.filter((item) => item.id !== id)),
+            });
+          } catch (err) {
+            throw new HttpFail(400, "BAD_HOSTNAME", (err as Error).message);
+          }
         }
         upsertService(ctx.stateDir, record);
         return { ok: true, service: record };

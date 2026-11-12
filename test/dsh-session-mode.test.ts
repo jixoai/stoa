@@ -8,7 +8,7 @@
  * never has to type plain ESM.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -2212,4 +2212,109 @@ describe("plugin entry (index.js)", () => {
       host.dispose();
     }
   });
+});
+
+describe("UDS 机器通道（daemon-unified-port P1）", () => {
+  test("probeInstance 优先走 socket（daemon 托管实例没有 TCP），缺 socket 返回 null", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "stoa-dsh-uds-"));
+    const socketPath = join(dir, "i.sock");
+    const server = Bun.serve({
+      unix: socketPath,
+      fetch: () => Response.json({ ok: true, dataDir: dir, via: "unix" }),
+    });
+    try {
+      const health = await session.probeInstance({
+        socket: socketPath,
+        // 故意给一个不可达的 TCP 地址：命中 socket 时它绝不能被拨号。
+        baseUrl: "http://127.0.0.1:1",
+      });
+      expect(health).toMatchObject({ ok: true, via: "unix" });
+      expect(
+        await session.probeInstance({
+          socket: join(dir, "missing.sock"),
+          baseUrl: "http://127.0.0.1:1",
+        }),
+      ).toBeNull();
+      // 旧形态（只有 baseUrl）仍然走 fetch 通道
+      expect(await session.probeInstance("http://127.0.0.1:1")).toBeNull();
+    } finally {
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("UDS 机器通道 · watcher（ticket + SSE 同一 socket）", () => {
+  test("board 的 ticket 申请与 SSE 事件流都走 socket，baseUrl（TCP）绝不被拨号", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "stoa-dsh-uds-sse-"));
+    const socketPath = join(dir, "i.sock");
+    let tickets = 0;
+    let streams = 0;
+    const server = Bun.serve({
+      unix: socketPath,
+      fetch: (req) => {
+        const url = new URL(req.url);
+        if (url.pathname === "/api/stream/ticket") {
+          tickets += 1;
+          return Response.json({ ok: true, ticket: "tk-1" });
+        }
+        if (url.pathname === "/api/stream") {
+          streams += 1;
+          const body = new ReadableStream({
+            start(controller) {
+              const line = {
+                seq: 1,
+                type: "post.created",
+                actor: "peer",
+                post_id: "p1",
+                payload: {},
+              };
+              controller.enqueue(
+                new TextEncoder().encode(`event: hub\nid: 1\ndata: ${JSON.stringify(line)}\n\n`),
+              );
+              controller.close();
+            },
+          });
+          return new Response(body, { headers: { "content-type": "text/event-stream" } });
+        }
+        if (url.pathname === "/api/posts/p1") {
+          return Response.json({ ok: true, post: { body_md: "正文" } });
+        }
+        return Response.json({ ok: false }, { status: 404 });
+      },
+    });
+    try {
+      const board = session.createBoardClient({
+        baseUrl: "http://127.0.0.1:1",
+        socket: socketPath,
+        token: "t",
+        timers: globalThis,
+        account: "manager",
+      });
+      const injected: string[] = [];
+      const watcher = watcherMod.createWatcher({
+        baseUrl: "http://127.0.0.1:1",
+        socket: socketPath,
+        board,
+        selfId: "manager",
+        log: createLogger(),
+        mergeWindowMs: 5,
+        inject: (text: string) => injected.push(text),
+        excerpt: async (_item: any, postId: string) => `${postId} 的正文`,
+      });
+      watcher.start();
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && injected.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      watcher.stop();
+      expect(tickets).toBeGreaterThan(0);
+      expect(streams).toBeGreaterThan(0);
+      expect(injected.length).toBeGreaterThan(0);
+      expect(injected[0]).toContain("#p1");
+    } finally {
+      server.stop(true);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 10_000);
 });

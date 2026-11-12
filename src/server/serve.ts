@@ -15,6 +15,8 @@ import {
   assertSafeDataDir,
   clearServerInfo,
   markServerClosed,
+  prepareSocketPath,
+  removeSocketFile,
   probeHealthBody,
   readServerInfo,
   writeServerInfo,
@@ -38,6 +40,16 @@ export interface StartServerOptions {
   dataDir: string;
   port?: number | null;
   host?: string;
+  /**
+   * daemon 托管：监听 Unix domain socket（不占 TCP，daemon-unified-port design §1.1）。
+   * 传了它就不再用 `port`；父目录由 serve 自己建（0700）。
+   */
+  unix?: string | null;
+  /**
+   * UDS 模式下的逻辑 URL（daemon 注入，如 `http://127.0.0.1:13679/i/<slug>/`）。
+   * 只用于展示/链接生成与 `server.json` 的 `url` 字段；机器通道始终是 socket。
+   */
+  logicalUrl?: string | null;
   envFiles: string[];
   expose?: boolean;
   allowOpenExpose?: boolean;
@@ -50,7 +62,10 @@ export interface StartServerOptions {
 
 export interface RunningServer {
   url: string;
-  port: number;
+  /** TCP 端口；UDS 模式为 `null`。 */
+  port: number | null;
+  /** UDS 模式的实际监听路径；standalone 为 `null`。 */
+  unix: string | null;
   instanceId: string;
   startedAt: number;
   info: ServerInfo;
@@ -151,6 +166,9 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     startedAt,
     openExposed: exposed && mode === "open",
     port: null as number | null,
+    /** daemon 托管（UDS）时非 null——P2 的 proxied 判定与后续代理逻辑都读它。 */
+    unix: null as string | null,
+    logicalUrl: null as string | null,
     uiDir: join(import.meta.dir, "..", "..", "dist"),
     // Assigned once the lease exists; createApp reads it lazily per request.
     lease: null as IdleLease | null,
@@ -163,6 +181,8 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
    * 绑定成功 ≠ 端口归我们：本机实测（macOS/Bun 1.4）两个进程可以同时 bind 同一回环端口，
    * 后 bind 者接走全部连接。用 `/healthz` 自证归属（instanceId），不通过就换端口；
    * 显式 `--port` 被他人占用时直接 CONFLICT，绝不静默共享端口。
+   *
+   * UDS 模式整段跳过（design §1.1）：重复 bind 直接 EADDRINUSE，「bind 成功≠归属」不存在。
    */
   const verifyOwnership = async (port: number): Promise<boolean> => {
     if (!isLoopbackHost(host)) return true; // 非回环地址无法用 127.0.0.1 自证
@@ -179,42 +199,70 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     }
   };
 
-  let listening;
+  /**
+   * 请求处理器：显式接住 `Bun.serve` 的第二个参数（server 引用）。
+   * 现在用不到，但先把签名定下来——P2 的 proxied 判定/连接数统计要用时不必再改两处调用点。
+   */
+  const fetchHandler = (req: Request, _server?: Server<undefined>): Response | Promise<Response> =>
+    app.fetch(req);
+
+  const unixRequested = (opts.unix ?? "").trim() || null;
+  let server: Server<undefined>;
+  let listenPort: number | null = null;
+  let socketPath: string | null = null;
   try {
-    for (let attempt = 0; ; attempt++) {
-      listening = await listenInRange({
-        host,
-        port: opts.port ?? null,
-        fetch: (req) => app.fetch(req),
-        idleTimeout: 60,
+    if (unixRequested) {
+      // 父目录不存在时 Bun.serve({unix}) 直接 ENOENT，必须先建（0700）。
+      // UDS 不接受 TCP 专属选项（idleTimeout 等）：socket 连接没有空闲超时。
+      socketPath = prepareSocketPath(unixRequested);
+      server = Bun.serve({
+        unix: socketPath,
+        fetch: fetchHandler,
       });
-      if (await verifyOwnership(listening.port)) break;
-      try {
-        listening.server.stop(true);
-      } catch {
-        // already stopped
+    } else {
+      let listening: Awaited<ReturnType<typeof listenInRange>> | undefined;
+      for (let attempt = 0; ; attempt++) {
+        listening = await listenInRange({
+          host,
+          port: opts.port ?? null,
+          fetch: fetchHandler,
+          idleTimeout: 60,
+        });
+        if (await verifyOwnership(listening.port)) break;
+        try {
+          listening.server.stop(true);
+        } catch {
+          // already stopped
+        }
+        listening = undefined;
+        if (opts.port !== undefined && opts.port !== null) {
+          fail(
+            "CONFLICT",
+            `port ${opts.port} is served by another process on this machine ` +
+              `(bind succeeded but /healthz answered a different instance)`,
+          );
+        }
+        if (attempt >= 8) {
+          fail("UNAVAILABLE", "could not find a port owned by this instance (ports appear shared)");
+        }
       }
-      listening = undefined;
-      if (opts.port !== undefined && opts.port !== null) {
-        fail(
-          "CONFLICT",
-          `port ${opts.port} is served by another process on this machine ` +
-            `(bind succeeded but /healthz answered a different instance)`,
-        );
-      }
-      if (attempt >= 8) {
-        fail("UNAVAILABLE", "could not find a port owned by this instance (ports appear shared)");
-      }
+      server = listening!.server;
+      listenPort = listening!.port;
     }
   } catch (err) {
     lock.release();
     db.close();
     throw err;
   }
-  const url = `http://127.0.0.1:${listening.port}`;
-  deps.port = listening.port;
+  const url = socketPath
+    ? (opts.logicalUrl ?? "").trim() || `unix://${socketPath}`
+    : `http://127.0.0.1:${listenPort}`;
+  deps.port = listenPort;
+  deps.unix = socketPath;
+  deps.logicalUrl = url;
   const info: ServerInfo = {
-    port: listening.port,
+    port: listenPort,
+    unix: socketPath,
     pid: process.pid,
     url,
     startedAt,
@@ -240,7 +288,7 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
         : ""),
     `auth     : ${authStatus.mode === "auth" ? "ON (STOA_AUTH set)" : "OPEN MODE"}` +
       (authStatus.open_mode_warning ? ` — ${authStatus.open_mode_warning}` : ""),
-    `listen   : ${host}:${listening.port}`,
+    socketPath ? `listen   : unix ${socketPath}` : `listen   : ${host}:${listenPort}`,
     `url      : ${url}`,
   ].join("\n");
 
@@ -271,10 +319,12 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
     try {
       // No idle shutdown ever runs with a request in flight, but `stop(true)`
       // also covers an in-flight request racing the signal path.
-      listening.server.stop(true);
+      // UDS 模式：Bun 在 stop 时自动 unlink socket 文件（design §1.1）。
+      server.stop(true);
     } catch {
       // already stopped
     }
+    if (socketPath) removeSocketFile(socketPath);
     if (!closeOpts?.keepServerJson) clearServerInfo(dataDir, instanceId);
     lock.release();
     try {
@@ -317,13 +367,14 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
 
   return {
     url,
-    port: listening.port,
+    port: listenPort,
+    unix: socketPath,
     instanceId,
     startedAt,
     info,
     store,
     auth,
-    server: listening.server,
+    server,
     banner,
     closed: closedPromise,
     close,
@@ -333,7 +384,9 @@ export async function startServer(opts: StartServerOptions): Promise<RunningServ
 export interface ServeStatus {
   running: boolean;
   url?: string;
-  port?: number;
+  /** UDS 实例为 null（daemon 托管）；standalone 为真实 TCP 端口。 */
+  port?: number | null;
+  unix?: string | null;
   pid?: number;
   dataDir: string;
   instanceId?: string;
@@ -355,6 +408,7 @@ export async function serverStatus(dataDir: string): Promise<ServeStatus> {
       dataDir,
       url: info.url,
       port: info.port,
+      unix: info.unix ?? null,
       pid: info.pid,
       instanceId: info.instanceId,
       startedAt: info.startedAt,
@@ -366,6 +420,7 @@ export async function serverStatus(dataDir: string): Promise<ServeStatus> {
     dataDir,
     url: info.url,
     port: info.port,
+    unix: info.unix ?? null,
     pid: info.pid,
     instanceId: info.instanceId,
     startedAt: info.startedAt,

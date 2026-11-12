@@ -265,6 +265,7 @@ export function createStoaHost(ctx, overrides = {}) {
     if (!client) {
       client = createBoardClient({
         baseUrl: entry.record.baseUrl,
+        socket: entry.record.socket ?? null,
         token,
         fetchImpl,
         timers,
@@ -293,7 +294,7 @@ export function createStoaHost(ctx, overrides = {}) {
   async function managerCredentials(record) {
     const token = readAccountToken(record.dataDir, "manager");
     if (token) return { token, mode: "auth" };
-    const probe = createBoardClient({ baseUrl: record.baseUrl, token: null, fetchImpl, timers, account: "manager" });
+    const probe = createBoardClient({ baseUrl: record.baseUrl, socket: record.socket ?? null, token: null, fetchImpl, timers, account: "manager" });
     try {
       const status = await probe.get("/api/auth/status", DAEMON_TIMEOUT_MS);
       if (status?.mode === "open") return { token: null, mode: "open" };
@@ -435,6 +436,7 @@ export function createStoaHost(ctx, overrides = {}) {
       // somebody else's and injected back (self-feedback loop).
       entry.board = createBoardClient({
         baseUrl: entry.record.baseUrl,
+        socket: entry.record.socket ?? null,
         token: credentials.token,
         fetchImpl,
         timers,
@@ -447,6 +449,7 @@ export function createStoaHost(ctx, overrides = {}) {
       });
       const watcher = createWatcher({
         baseUrl: entry.record.baseUrl,
+        socket: entry.record.socket ?? null,
         board: entry.board,
         selfId: "manager",
         fetchImpl,

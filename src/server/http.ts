@@ -29,6 +29,14 @@ export interface AppDeps {
   startedAt: number;
   openExposed: boolean;
   port: number | null;
+  /**
+   * daemon 托管（UDS）实例的 socket 路径；standalone 为 `null`。
+   * P2 的 proxied 判定链以此为「本实例经 daemon 反代」的物理依据（UDS 上
+   * `requestIP()` 返回 null，不能用 peer IP 判）。
+   */
+  unix?: string | null;
+  /** UDS 逻辑 URL（daemon 注入）；仅展示/链接用。 */
+  logicalUrl?: string | null;
   /** built static UI (same-origin); served when present */
   uiDir?: string | null;
   /** idle lease (design §1); absent in unit-test apps and when disabled */
@@ -37,6 +45,22 @@ export interface AppDeps {
   hub?: Hub;
   /** preview plugin service (worker/scan); absent in unit-test apps */
   previews?: PreviewService | null;
+}
+
+/** daemon 反代标记头（daemon 注入；客户端自带的同名头会被 daemon 删除防冒充）。 */
+export const DAEMON_PROXY_HEADER = "x-stoa-daemon-proxy";
+
+/**
+ * 请求是否经 daemon 反代而来（P1 只提供判定函数，不实现 auth status 字段）：
+ * 判据 = 请求带 `x-stoa-daemon-proxy` 头**且本实例自身以 UDS 监听**。
+ * standalone（`deps.unix == null`）恒为 false——TCP 直连的来源无法自证。
+ */
+export function isDaemonProxiedRequest(
+  req: Pick<Request, "headers">,
+  deps: Pick<AppDeps, "unix">,
+): boolean {
+  if (!deps.unix) return false;
+  return Boolean(req.headers.get(DAEMON_PROXY_HEADER));
 }
 
 /**

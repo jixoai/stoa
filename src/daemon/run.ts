@@ -12,6 +12,7 @@ import { fail } from "../core/errors.ts";
 import { VERSION } from "../core/protocol.ts";
 import { probeDaemon } from "./client.ts";
 import { createDaemonApp, defaultDaemonUiDir, shutdownAll, type DaemonContext, type DaemonEntry } from "./server.ts";
+import { createDaemonRouter } from "./router.ts";
 import {
   appendDaemonLog,
   assertDaemonPort,
@@ -65,12 +66,16 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
   const startedAt = Date.now();
   const url = `http://${host}:${port}`;
   let server: Server<undefined> | null = null;
+  /** `[::1]:<port>` 次监听（尽力而为；失败为 null）。 */
+  let secondary: Server<undefined> | null = null;
   let shuttingDown = false;
 
   const ctx: DaemonContext = {
     stateDir,
     version: VERSION,
     startedAt,
+    url,
+    host,
     entry: opts.entry ?? daemonEntryFromProcess(),
     uiDir: opts.uiDir === undefined ? defaultDaemonUiDir() : opts.uiDir,
     log: (line) => appendDaemonLog(stateDir, line),
@@ -90,6 +95,11 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
     }
     removeDaemonInfo(stateDir);
     try {
+      secondary?.stop(true);
+    } catch {
+      // already stopped
+    }
+    try {
       server?.stop(true);
     } catch {
       // already stopped
@@ -99,16 +109,40 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
   }
 
   const app = createDaemonApp(ctx);
+  // 单入口路由：daemon host → 实例 hostnames → /i/<idOrSlug>/ → daemon app（design §2）。
+  // 反代响应绕过 Hono，因此 daemon 的 CORS 中间件不会作用于实例响应（§3.2）。
+  const route = createDaemonRouter({
+    stateDir,
+    daemonHosts: [host],
+    appFetch: (req) => app.fetch(req),
+    log: ctx.log,
+  });
   try {
     server = Bun.serve({
       hostname: host,
       port,
-      fetch: (req) => app.fetch(req),
+      fetch: (req) => route(req),
       idleTimeout: 0,
       development: false,
     });
   } catch (err) {
     fail("CONFLICT", `cannot bind ${host}:${port}: ${(err as Error).message}`);
+  }
+
+  // 尽力加 `[::1]` 次监听（`localhost` 在部分客户端解析到 IPv6）：失败仅告警，不影响主监听。
+  if (host === "127.0.0.1") {
+    try {
+      secondary = Bun.serve({
+        hostname: "::1",
+        port,
+        fetch: (req) => route(req),
+        idleTimeout: 0,
+        development: false,
+      });
+      ctx.log(`secondary listen on [::1]:${port}`);
+    } catch (err) {
+      ctx.log(`secondary listen on [::1]:${port} skipped: ${(err as Error).message}`);
+    }
   }
 
   // 绑定成功 ≠ 端口归我们（本机 Bun 可静默共享回环端口）：用 /healthz 的 pid 自证。

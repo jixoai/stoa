@@ -36,6 +36,8 @@ function record(overrides: Partial<ServiceRecord> = {}): ServiceRecord {
   return {
     id: "svc-test01",
     name: "board",
+    slug: "board",
+    hostnames: [],
     dataDir: "/tmp/board-a",
     port: 13690,
     pid: 4242,

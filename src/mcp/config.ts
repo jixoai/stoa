@@ -24,8 +24,11 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { accountTokenEnvKey, legacyAccountTokenEnvKey } from "../core/auth.ts";
 import { parseEnv } from "../core/env.ts";
+import { readDaemonInfo, readServices, resolveDaemonStateDir } from "../daemon/state.ts";
 
 export const DEFAULT_BASE_URL = "http://127.0.0.1:13689";
+/** 无 daemon 记录时的逻辑入口回退（standalone 调试兼容；不是机器通道）。 */
+export const DEFAULT_DAEMON_URL = "http://127.0.0.1:13679";
 /** 公示板公网入口默认值（旧插件同值；`postUrl` 用它拼 canonical 链接）。 */
 export const DEFAULT_PUBLIC_URL = "https://report.worker.fde2e.com";
 export const DEFAULT_ACCOUNT = "manager";
@@ -54,6 +57,21 @@ export interface McpConfig {
   /** 生效的配置文件路径：显式指定（--config/STOA_CONFIG/REPORT_CHANNEL_CONFIG）或
    *  第一个存在的候选；全部缺失时为主路径（供 describeConfig 展示「读的是哪份」）。 */
   path: string;
+  /**
+   * 机器通道（I/O）：daemon 托管实例的 Unix socket（`instanceFetch` 直连，不经 daemon 会话）。
+   * 空串＝未发现 daemon 通道（standalone/TCP 或直连 `--base-url`）。
+   */
+  socket: string;
+  /**
+   * 链接通道（浏览器可达）：`?ep=` 深链/面板链接用它，daemon 托管时为
+   * `http://<daemon>/i/<slug>/`；未发现 daemon 时等于 `baseUrl`。
+   */
+  logicalUrl: string;
+  /**
+   * 兼容/展示字段：显式 `--base-url`/`STOA_BASE_URL`/配置文件值，或默认 `13689`。
+   * **注意**：`--base-url http://127.0.0.1:13679/i/<slug>` 是 cookie 通道，
+   * 机器消费者（MCP）用它必定 401——只有明确要模拟浏览器时才手动指定。
+   */
   baseUrl: string;
   dataDir: string;
   account: string;
@@ -120,15 +138,15 @@ export function resolveMcpConfig(opts: ResolveMcpConfigOptions = {}): McpConfig 
   const fileValue = (key: keyof ConfigFileValues): string =>
     firstOf(files.map((file) => file[key]));
 
-  const baseUrl =
-    stripTrailingSlashes(
-      firstOf([
-        flags.baseUrl,
-        env.STOA_BASE_URL,
-        env.REPORT_CHANNEL_BASE_URL,
-        fileValue("baseUrl"),
-      ]),
-    ) || DEFAULT_BASE_URL;
+  const explicitBaseUrl = stripTrailingSlashes(
+    firstOf([flags.baseUrl, env.STOA_BASE_URL, env.REPORT_CHANNEL_BASE_URL, fileValue("baseUrl")]),
+  );
+  // 无显式 baseUrl 时优先发现本机 daemon 的机器通道（UDS）：MCP 在 Node 上跑，
+  // cookie 通道（/i/<slug>/）没有会话必 401，因此默认就是 socket。
+  const channel = explicitBaseUrl ? null : discoverDaemonChannel(opts, env);
+  const baseUrl = explicitBaseUrl || channel?.logicalUrl || DEFAULT_BASE_URL;
+  const logicalUrl = explicitBaseUrl || channel?.logicalUrl || baseUrl;
+  const socket = channel?.socket ?? "";
   const account =
     firstOf([
       flags.account,
@@ -155,6 +173,8 @@ export function resolveMcpConfig(opts: ResolveMcpConfigOptions = {}): McpConfig 
 
   return {
     path: candidates.find((path) => existsSync(path)) ?? candidates[0]!,
+    socket,
+    logicalUrl,
     baseUrl,
     dataDir,
     account,
@@ -162,6 +182,48 @@ export function resolveMcpConfig(opts: ResolveMcpConfigOptions = {}): McpConfig 
     tokenFile,
     explicitToken: firstOf([flags.token]),
     accountOverride: "",
+  };
+}
+
+export interface DaemonChannel {
+  socket: string;
+  logicalUrl: string;
+  serviceId: string;
+  slug: string;
+  daemonUrl: string;
+}
+
+/**
+ * 本机 daemon 的默认机器通道：读 `daemon.json` → 首个 **running** 且带 `socket` 的服务。
+ * 只读文件（与面板的 daemon 入口同一发现口径），不健康探测、不联网。
+ */
+export function discoverDaemonChannel(
+  opts: ResolveMcpConfigOptions = {},
+  env: Record<string, string | undefined> = opts.env ?? process.env,
+): DaemonChannel | null {
+  let stateDir: string;
+  try {
+    stateDir = resolveDaemonStateDir({
+      env,
+      home: opts.home ?? homedir(),
+      cwd: process.cwd(),
+    });
+  } catch {
+    return null;
+  }
+  const info = readDaemonInfo(stateDir);
+  if (!info) return null;
+  const running = readServices(stateDir).find(
+    (service) => service.status === "running" && typeof service.socket === "string" && service.socket,
+  );
+  if (!running?.socket) return null;
+  const daemonUrl = (info.url || DEFAULT_DAEMON_URL).replace(/\/+$/, "");
+  return {
+    socket: running.socket,
+    logicalUrl: `${daemonUrl}/i/${running.slug}/`,
+    serviceId: running.id,
+    slug: running.slug,
+    daemonUrl,
   };
 }
 
@@ -209,6 +271,8 @@ export function describeConfig(
 ): Record<string, unknown> {
   return {
     baseUrl: cfg.baseUrl,
+    logicalUrl: cfg.logicalUrl || cfg.baseUrl,
+    socket: cfg.socket || null,
     dataDir: cfg.dataDir || null,
     account: cfg.account,
     publicUrl: cfg.publicUrl,

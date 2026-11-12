@@ -21,6 +21,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { normalizeHostname, serviceSlug } from "./slug.ts";
 
 export const DAEMON_DEFAULT_PORT = 13679;
 /**
@@ -42,13 +43,29 @@ export interface DaemonInfo {
 
 export type ServiceStatus = "running" | "stopped";
 
+/** 代理注入实例凭据时使用的默认实例账号（P1 只落 schema 与默认值，P2 实现注入）。 */
+export const DEFAULT_AUTH_ACCOUNT = "owner";
+
 export interface ServiceRecord {
   id: string;
   name: string;
+  /**
+   * URL 路径段（daemon-unified-port design §2）：`/i/<slug>/` 与 `x-stoa-service` 注入值。
+   * 生成器见 `slug.ts`（不复用会话目录的 slugify）。
+   */
+  slug: string;
+  /** Host 模式的实例主机名（RFC1123，跨实例唯一，大小写不敏感）。 */
+  hostnames: string[];
   dataDir: string;
-  port: number;
+  /** daemon 托管实例不占 TCP：`null`；收编的 standalone 实例保留真实端口。 */
+  port: number | null;
   pid: number | null;
+  /** 逻辑 URL：daemon 基址 + `/i/<slug>/`；收编实例为它的 TCP origin。 */
   url: string | null;
+  /** UDS 监听路径（daemon 托管实例）；收编的 TCP 实例为 null。 */
+  socket?: string | null;
+  /** 代理注入凭据时使用的实例账号（P1 仅 schema 与默认值）。 */
+  authAccount?: string;
   /** 子进程 stdout/stderr 日志路径（adopt 来的外部实例没有日志）。 */
   log: string | null;
   startedAt: number;
@@ -176,10 +193,38 @@ function isServiceRecord(value: unknown): value is ServiceRecord {
   );
 }
 
+/**
+ * 读登记表并做**向后兼容归一化**（daemon-unified-port design §2/契约迁移）：
+ *   - 旧记录没有 `slug` → 按 name 现场生成（表内去重），下次写入即固化；
+ *   - `hostnames` 缺失 → `[]`；`port` 缺失/非法 → `null`（UDS 实例的合法形态）；
+ *   - `authAccount` 缺失 → `owner`。
+ */
 export function readServices(stateDir: string): ServiceRecord[] {
   const value = readJsonFile<unknown>(servicesPath(stateDir));
   if (!Array.isArray(value)) return [];
-  return value.filter(isServiceRecord);
+  const list = value.filter(isServiceRecord);
+  const usedSlugs = new Set<string>();
+  for (const record of list) {
+    if (typeof record.slug === "string" && record.slug) usedSlugs.add(record.slug.toLowerCase());
+  }
+  for (const record of list) {
+    if (typeof record.name !== "string" || !record.name) record.name = record.id;
+    if (typeof record.slug !== "string" || !record.slug) {
+      record.slug = serviceSlug(record.name, usedSlugs);
+      usedSlugs.add(record.slug);
+    }
+    record.hostnames = Array.isArray(record.hostnames)
+      ? record.hostnames
+          .filter((host): host is string => typeof host === "string")
+          .map((host) => normalizeHostname(host))
+          .filter(Boolean)
+      : [];
+    if (typeof record.port !== "number") record.port = null;
+    if (typeof record.authAccount !== "string" || !record.authAccount) {
+      record.authAccount = DEFAULT_AUTH_ACCOUNT;
+    }
+  }
+  return list;
 }
 
 export function writeServices(stateDir: string, list: ServiceRecord[]): void {
@@ -217,6 +262,29 @@ export function sameDataDir(a: string, b: string): boolean {
 
 export function findServiceByDataDir(list: ServiceRecord[], dataDir: string): ServiceRecord | null {
   return list.find((item) => sameDataDir(item.dataDir, dataDir)) ?? null;
+}
+
+/** 按 id 或 slug 找登记（`/i/<idOrSlug>` 两种写法都认；大小写不敏感）。 */
+export function findServiceByIdOrSlug(list: ServiceRecord[], idOrSlug: string): ServiceRecord | null {
+  const needle = String(idOrSlug ?? "").trim().toLowerCase();
+  if (!needle) return null;
+  return (
+    list.find((item) => item.id.toLowerCase() === needle) ??
+    list.find((item) => item.slug.toLowerCase() === needle) ??
+    null
+  );
+}
+
+/** 某个 hostname 的归属（Host 模式路由用；大小写不敏感）。 */
+export function findServiceByHostname(list: ServiceRecord[], hostname: string): ServiceRecord | null {
+  const needle = normalizeHostname(hostname);
+  if (!needle) return null;
+  return list.find((item) => item.hostnames.some((host) => normalizeHostname(host) === needle)) ?? null;
+}
+
+/** 所有实例已占用的 hostname（跨实例唯一性校验输入）。 */
+export function allHostnames(list: ServiceRecord[]): string[] {
+  return list.flatMap((item) => item.hostnames);
 }
 
 export function newServiceId(): string {

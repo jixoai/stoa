@@ -77,6 +77,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Sheet,
   SheetContent,
@@ -101,10 +102,20 @@ export interface DaemonBoot {
 export interface DaemonService {
   id: string;
   name: string;
+  /** 路径段：实例入口是 `/i/<slug>/`（不再按端口区分）。 */
+  slug?: string;
+  /** Host 模式的实例自定义主机名（RFC 1123，跨实例唯一）。 */
+  hostnames?: string[];
   dataDir: string;
-  port: number;
+  /** daemon 托管实例不占 TCP：null（兼容字段）。 */
+  port: number | null;
   pid: number | null;
+  /** 逻辑 URL（daemon 基址 + /i/<slug>/）。 */
   url: string | null;
+  /** 机器通道：daemon 托管实例的 Unix socket。 */
+  socket?: string | null;
+  /** 代理注入凭据时使用的实例账号（P1 仅展示默认值）。 */
+  authAccount?: string;
   log: string | null;
   startedAt: number;
   status: "running" | "stopped";
@@ -262,6 +273,7 @@ export function ServiceRow({
   onStop,
   onRemove,
   onCopyPath,
+  onEditAddress,
 }: {
   service: DaemonService;
   busy: boolean;
@@ -270,6 +282,7 @@ export function ServiceRow({
   onStop: (service: DaemonService) => void;
   onRemove: (service: DaemonService) => void;
   onCopyPath: (path: string) => void;
+  onEditAddress?: (service: DaemonService) => void;
 }) {
   const running = service.status === "running";
   const stoppedAt = service.stoppedAt;
@@ -423,10 +436,28 @@ export function ServiceRow({
 
       {/* 元信息 */}
       <div className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground @min-[720px]:order-none @min-[720px]:w-[230px] @min-[720px]:flex-none">
-        <span className="inline-flex items-center gap-1 whitespace-nowrap">
-          <PlugIcon className="size-3.5 shrink-0" aria-hidden="true" />
-          端口 <span className="font-mono">{service.port}</span>
+        <span
+          className="inline-flex items-center gap-1 whitespace-nowrap"
+          title={service.url ?? undefined}
+        >
+          <GlobeIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          路径 <span className="font-mono">/i/{service.slug ?? service.id}/</span>
         </span>
+        {typeof service.port === "number" ? (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <PlugIcon className="size-3.5 shrink-0" aria-hidden="true" />
+            端口 <span className="font-mono">{service.port}</span>
+          </span>
+        ) : null}
+        {service.hostnames && service.hostnames.length > 0 ? (
+          <span
+            className="inline-flex min-w-0 items-center gap-1"
+            title={service.hostnames.join(", ")}
+          >
+            <ServerIcon className="size-3.5 shrink-0" aria-hidden="true" />
+            <span className="truncate font-mono">{service.hostnames.join(", ")}</span>
+          </span>
+        ) : null}
         <span className="inline-flex items-center gap-1" title={timeTitle}>
           <ClockIcon className="size-3.5 shrink-0" aria-hidden="true" />
           <span className="whitespace-nowrap">
@@ -502,6 +533,16 @@ export function ServiceRow({
             {busy ? <Spinner /> : <MoreHorizontalIcon />}
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
+            {onEditAddress ? (
+              <DropdownMenuItem
+                disabled={busy}
+                onClick={() => onEditAddress(service)}
+                data-testid={`daemon-address-${service.id}`}
+              >
+                <GlobeIcon />
+                编辑访问地址
+              </DropdownMenuItem>
+            ) : null}
             {running ? (
               <>
                 <DropdownMenuItem
@@ -844,6 +885,12 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
   const [daemonDown, setDaemonDown] = useState(false);
   const [secretFor, setSecretFor] = useState<DaemonService | null>(null);
   const [confirm, setConfirm] = useState<ConfirmTarget | null>(null);
+  // 访问地址编辑（slug + 自定义 hostnames；daemon-unified-port P1 的最小增量）
+  const [editFor, setEditFor] = useState<DaemonService | null>(null);
+  const [editSlug, setEditSlug] = useState("");
+  const [editHostnames, setEditHostnames] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const [mountOpen, setMountOpen] = useState(false);
   const [location, setLocation] = useState<Location>("auto");
@@ -922,6 +969,38 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
   const mountDisabledReason = daemonDown
     ? "daemon 未运行：先重新执行 stoa serve"
     : "服务列表加载失败：请先重试";
+
+  /** 打开「编辑访问地址」：预填当前 slug 与 hostnames。 */
+  const openEditAddress = useCallback((service: DaemonService) => {
+    setEditFor(service);
+    setEditSlug(service.slug ?? "");
+    setEditHostnames((service.hostnames ?? []).join("\n"));
+    setEditError(null);
+  }, []);
+
+  /** 保存 slug + hostnames（PATCH；服务端校验形状/保留字/跨实例唯一）。 */
+  const submitEditAddress = useCallback(async () => {
+    if (!editFor) return;
+    setEditBusy(true);
+    setEditError(null);
+    try {
+      const hostnames = editHostnames
+        .split(/[\s,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const out = await daemonApi<{ service: DaemonService }>(
+        `/api/daemon/services/${editFor.id}`,
+        { method: "PATCH", body: { slug: editSlug.trim().toLowerCase(), hostnames } },
+      );
+      setServices((prev) => prev.map((item) => (item.id === out.service.id ? out.service : item)));
+      setEditFor(null);
+      toast.add({ type: "success", title: "访问地址已更新", timeout: 2400 });
+    } catch (err) {
+      setEditError((err as Error).message);
+    } finally {
+      setEditBusy(false);
+    }
+  }, [editFor, editHostnames, editSlug]);
 
   const copy = useCallback(async (text: string, label: string) => {
     const ok = await copyText(text);
@@ -1446,6 +1525,7 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
                   onStop={(item) => setConfirm({ kind: "stop", service: item })}
                   onRemove={(item) => setConfirm({ kind: "remove", service: item })}
                   onCopyPath={(path) => void copy(path, "目录路径")}
+                  onEditAddress={(item) => openEditAddress(item)}
                 />
               ))
             )}
@@ -1637,6 +1717,85 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
           </form>
         </SheetContent>
       </Sheet>
+
+      {editFor ? (
+        <Dialog open onOpenChange={(open) => (open ? undefined : setEditFor(null))}>
+          <DialogContent
+            data-testid="daemon-address-dialog"
+            className="grid-cols-[minmax(0,1fr)]"
+          >
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <GlobeIcon className="size-4" />
+                访问地址
+              </DialogTitle>
+              <DialogDescription className="break-all">
+                {editFor.name} · 路径与主机名共同决定实例入口（同一个 daemon 端口，不再占用新端口）
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="daemon-address-slug">路径（slug）</Label>
+                <Input
+                  id="daemon-address-slug"
+                  value={editSlug}
+                  onChange={(event) => {
+                    setEditSlug(event.target.value);
+                    setEditError(null);
+                  }}
+                  placeholder="board"
+                  className="font-mono"
+                  data-testid="daemon-address-slug"
+                />
+                <p className="text-xs text-muted-foreground">
+                  访问地址：
+                  <span className="break-all font-mono">
+                    {`${
+                      typeof window === "undefined" ? "" : window.location.origin
+                    }/i/${editSlug.trim() || "…"}/`}
+                  </span>
+                </p>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="daemon-address-hosts">自定义主机名（可选）</Label>
+                <Textarea
+                  id="daemon-address-hosts"
+                  value={editHostnames}
+                  onChange={(event) => {
+                    setEditHostnames(event.target.value);
+                    setEditError(null);
+                  }}
+                  placeholder={"board.localhost\nboard.example.com"}
+                  className="font-mono"
+                  rows={3}
+                  data-testid="daemon-address-hosts"
+                />
+                <p className="text-xs text-muted-foreground">
+                  RFC 1123 主机名，逗号或换行分隔；Host 精确匹配即路由到本实例（跨实例唯一）。
+                </p>
+              </div>
+              {editError ? (
+                <Alert variant="destructive">
+                  <CircleAlertIcon />
+                  <AlertTitle>保存失败</AlertTitle>
+                  <AlertDescription className="break-all">{editError}</AlertDescription>
+                </Alert>
+              ) : null}
+            </div>
+            <DialogFooter>
+              <DialogClose render={<Button variant="outline">取消</Button>} />
+              <Button
+                disabled={editBusy}
+                onClick={() => void submitEditAddress()}
+                data-testid="daemon-address-save"
+              >
+                {editBusy ? <Spinner /> : null}
+                保存
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
 
       {confirmCopy ? (
         <Dialog open onOpenChange={(open) => (open ? undefined : setConfirm(null))}>

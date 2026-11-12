@@ -1,18 +1,20 @@
 /**
- * daemon 真实进程集成（stoa-daemon design §5）：
- *   daemon run → mount（spawn `serve --standalone`）→ 服务 /healthz 200 → 列表 →
- *   serve --stop（daemon 感知）→ DELETE 登记 → daemon shutdown；以及 CLI 默认
- *   `serve` 的 detached 语义（stdout 单行 JSON、终端立即返回）。
+ * daemon 真实进程集成（daemon-unified-port design §1/§2，P1）：
+ *   daemon run → mount（spawn `serve --unix …`，**不占 TCP 端口**）→ 服务 healthz（经 UDS）→
+ *   列表（slug/socket/逻辑 URL）→ serve --stop（daemon 感知）→ DELETE 登记 → daemon shutdown；
+ *   以及 CLI 默认 `serve` 的 detached 语义（stdout 单行 JSON、终端立即返回）。
  *
  * 隔离纪律：全部状态写进 mkdtemp 的 state-dir（STOA_DAEMON_STATE_DIR），
- * 端到端回收（daemon 与所有子服务进程）后才删目录；绝不触碰真实 daemon。
+ * 端到端回收（daemon 与所有子服务进程）后才删目录；绝不触碰真实 daemon 或生产板端口。
  */
 import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { daemonRequest, probeDaemon } from "../src/daemon/client.ts";
 import { readDaemonInfo, readServices, type ServiceRecord } from "../src/daemon/state.ts";
+import { readServerInfo } from "../src/server/discovery.ts";
+import { instanceFetch } from "../src/server/instance-client.ts";
 import { BUN, CLI, initWorkspace, runCli, type TestWorkspace } from "./helpers.ts";
 import { portIsListening } from "../src/server/ports.ts";
 
@@ -60,11 +62,16 @@ function pidAlive(pid: number | null): boolean {
   }
 }
 
-/** 把一个 workspace+state-dir 的整套资源（含任何残留进程）注册进 afterAll 回收。 */
+/**
+ * 把一个 workspace+state-dir 的整套资源（含任何残留进程）注册进 afterAll 回收。
+ * `readDaemonInfo` 里的 daemon 也要杀：CLI 默认 `serve` 会 **detached** 拉起 daemon，
+ * 测试中途失败时它不会随子进程退出（2026-11-12 实证：失败跑残留两个孤儿 daemon 占端口）。
+ */
 function registerCleanup(ws: TestWorkspace, stateDir: string, alsoPids: Array<number | null>): void {
   cleanups.push(() => {
     const pids = [
       ...readServices(stateDir).flatMap((service) => [service.pid]),
+      readDaemonInfo(stateDir)?.pid ?? null,
       ...alsoPids,
     ];
     for (const pid of pids) {
@@ -82,12 +89,13 @@ function registerCleanup(ws: TestWorkspace, stateDir: string, alsoPids: Array<nu
 }
 
 test(
-  "daemon lifecycle: run → mount → healthz → list → stop → delete → shutdown",
+  "daemon lifecycle: run → mount(UDS) → healthz via socket → list → stop → delete → shutdown",
   async () => {
     const ws = initWorkspace({ open: true });
     const stateDir = mkdtempSync(join(tmpdir(), "stoa-daemon-state-"));
     const daemonPort = await pickFreePort(13670, 13679, RESERVED);
-    const servicePort = await pickFreePort(13680, 13699, new Set([...RESERVED, daemonPort]));
+    // 兼容参数：daemon 托管模式下端口已退役，显式给值必须被忽略并提示（不静默失败）。
+    const retiredPort = await pickFreePort(13680, 13699, new Set([...RESERVED, daemonPort]));
     const url = `http://127.0.0.1:${daemonPort}`;
 
     const proc = Bun.spawn({
@@ -101,29 +109,71 @@ test(
 
     await waitFor(async () => Boolean(await probeDaemon(url, 400)), 15_000, "daemon healthz");
 
-    // mount
-    const mounted = await daemonRequest<{ service: ServiceRecord; reused: boolean; adopted: boolean }>(
-      url,
-      "/api/daemon/services",
-      { method: "POST", body: { dataDir: ws.dataDir, port: servicePort, name: "it-board" } },
-    );
+    // mount：daemon 托管实例只监听 UDS（不占 TCP），slug/逻辑 URL/socket 三件套齐备。
+    const mounted = await daemonRequest<{
+      service: ServiceRecord;
+      reused: boolean;
+      adopted: boolean;
+      warnings: string[];
+    }>(url, "/api/daemon/services", {
+      method: "POST",
+      body: { dataDir: ws.dataDir, port: retiredPort, name: "it-board" },
+    });
     expect(mounted.reused).toBe(false);
     expect(mounted.adopted).toBe(false);
     expect(mounted.service.name).toBe("it-board");
-    expect(mounted.service.port).toBe(servicePort);
-    expect(mounted.service.status).toBe("running");
-    const health = (await (await fetch(`${mounted.service.url}/healthz`)).json()) as {
+    expect(mounted.service.slug).toBe("it-board");
+    expect(mounted.service.hostnames).toEqual([]);
+    expect(mounted.service.authAccount).toBe("owner");
+    // 端口已退役：记录为 null，且给出可见提示（显式请求不静默丢失）
+    expect(mounted.service.port).toBeNull();
+    expect(mounted.warnings.join(" ")).toContain("已退役");
+    // socket 落在 `<stateDir>/sockets/<id>.sock`；tmpdir 深路径超 90 字符会 fallback 到
+    // `os.tmpdir()/stoa-sock-<hash>/<id>.sock`（design §1.1）——两种情况都以 server.json 为准。
+    expect(mounted.service.socket!.endsWith(`${mounted.service.id}.sock`)).toBe(true);
+    expect(existsSync(mounted.service.socket!)).toBe(true);
+    expect(statSync(dirname(mounted.service.socket!)).mode & 0o777).toBe(0o700);
+    const socketDir = dirname(mounted.service.socket!);
+    expect(
+      socketDir === join(stateDir, "sockets") || /stoa-sock-[0-9a-f]{8}$/.test(socketDir),
+    ).toBe(true);
+    // 逻辑 URL = daemon 基址 + /i/<slug>/（浏览器通道，不再有自己的 TCP 端口）
+    expect(mounted.service.url).toBe(`${url}/i/it-board/`);
+    expect(new URL(mounted.service.url!).port).toBe(String(daemonPort));
+    // server.json 自证：port=null + unix
+    const info = readServerInfo(ws.dataDir)!;
+    expect(info.port).toBeNull();
+    expect(info.unix).toBe(mounted.service.socket);
+    // 健康探测走 UDS（instanceFetch）
+    const health = (await (await instanceFetch({ unix: info.unix }, "/healthz")).json()) as {
       ok: boolean;
       dataDir: string;
     };
     expect(health.ok).toBe(true);
     expect(health.dataDir).toBe(ws.dataDir);
+    // 实例进程**没有任何 TCP 监听**（单端口目标；lsof 存在时做机器断言）
+    const lsof = Bun.which("lsof");
+    if (lsof) {
+      const out = Bun.spawnSync([
+        lsof,
+        "-nP",
+        "-iTCP",
+        "-a",
+        "-p",
+        String(mounted.service.pid),
+      ]);
+      expect(out.stdout.toString().trim()).toBe("");
+    }
+    // 同一 daemon 端口的路径模式也能到达实例（P1 单入口）
+    const viaProxy = await fetch(`${url}/i/it-board/healthz`);
+    expect(viaProxy.status).toBe(200);
+    expect(((await viaProxy.json()) as { dataDir: string }).dataDir).toBe(ws.dataDir);
 
     // 幂等重挂载：不加新进程，直接复用既有登记
     const again = await daemonRequest<{ service: ServiceRecord; reused: boolean }>(
       url,
       "/api/daemon/services",
-      { method: "POST", body: { dataDir: ws.dataDir, port: servicePort } },
+      { method: "POST", body: { dataDir: ws.dataDir } },
     );
     expect(again.reused).toBe(true);
     expect(again.service.id).toBe(mounted.service.id);
@@ -140,6 +190,8 @@ test(
       body: { location: "temp", name: "it-temp" },
     });
     expect(temp.service.ephemeral).toBe(true);
+    expect(temp.service.port).toBeNull();
+    expect(temp.service.slug).toBe("it-temp");
     expect(existsSync(join(temp.service.dataDir, "report.sqlite"))).toBe(true);
     const tempSecret = await daemonRequest<{ mode: string; key: string | null; key_link: string | null }>(
       url,
@@ -147,13 +199,13 @@ test(
     );
     expect(tempSecret.mode).toBe("auth");
     expect(typeof tempSecret.key).toBe("string");
-    expect(tempSecret.key_link).toContain("/#key=");
+    expect(tempSecret.key_link).toContain(`/i/it-temp/#key=`);
     await daemonRequest(url, `/api/daemon/services/${temp.service.id}/stop`, { method: "POST" });
     expect(existsSync(temp.service.dataDir)).toBe(false);
     expect(readServices(stateDir).some((s) => s.id === temp.service.id)).toBe(false);
 
-    // stop（含登记降级为 stopped）。时限断言＝回归守卫：stop 子进程若回调 daemon 会重入死锁
-    // （实测悬挂到 20s HTTP 超时才回落），正常应在数秒内完成。
+    // stop（含登记降级为 stopped + socket 清理）。时限断言＝回归守卫：stop 子进程若回调
+    // daemon 会重入死锁（实测悬挂到 20s HTTP 超时才回落），正常应在数秒内完成。
     const stopStarted = Date.now();
     const stopped = await daemonRequest<{ service: ServiceRecord }>(
       url,
@@ -162,19 +214,18 @@ test(
     );
     expect(Date.now() - stopStarted).toBeLessThan(8_000);
     expect(stopped.service.status).toBe("stopped");
-    await waitFor(
-      async () => {
-        try {
-          await fetch(`${mounted.service.url}/healthz`, { signal: AbortSignal.timeout(300) });
-          return false;
-        } catch {
-          return true;
-        }
-      },
-      8_000,
-      "service death",
-    );
+    expect(stopped.service.socket).toBeNull();
     expect(pidAlive(mounted.service.pid)).toBe(false);
+    // socket 文件已清理：经 UDS 不再可达
+    expect(existsSync(mounted.service.socket!)).toBe(false);
+    const deadBytes = await instanceFetch({ unix: mounted.service.socket! }, "/healthz").then(
+      () => null,
+      (err) => err as Error,
+    );
+    expect(deadBytes).not.toBeNull();
+    // 路径模式也变成 502（不再回落控制台 HTML）
+    const deadProxy = await fetch(`${url}/i/it-board/healthz`);
+    expect(deadProxy.status).toBe(502);
 
     // 已停 → 可以移除登记；移除后列表为空
     const removed = await daemonRequest<{ removed: string }>(
@@ -200,7 +251,6 @@ test(
     const ws = initWorkspace({ open: true });
     const stateDir = mkdtempSync(join(tmpdir(), "stoa-daemon-state-"));
     const daemonPort = await pickFreePort(13670, 13679, RESERVED);
-    const servicePort = await pickFreePort(13680, 13699, new Set([...RESERVED, daemonPort]));
     registerCleanup(ws, stateDir, []);
 
     const env = {
@@ -209,7 +259,7 @@ test(
     };
 
     // 默认 serve：终端立即返回，stdout 单行 JSON（detached）
-    const res = await runCli(["serve", "--data-dir", ws.dataDir, "--port", String(servicePort)], {
+    const res = await runCli(["serve", "--data-dir", ws.dataDir], {
       cwd: ws.cwd,
       env,
       timeoutMs: 60_000,
@@ -222,17 +272,27 @@ test(
       detached: boolean;
       service_url: string;
       daemon_url: string;
-      service: { port: number; status: string };
+      service: { port: number | null; status: string; slug: string; socket?: string | null; url: string };
       daemon: { pid: number };
     };
     expect(out.ok).toBe(true);
     expect(out.detached).toBe(true);
-    expect(out.service.port).toBe(servicePort);
-    expect(out.service_url).toBe(`http://127.0.0.1:${servicePort}`);
+    // 单端口契约：托管实例不占 TCP，入口是 daemon 同一端口的 /i/<slug>/
+    expect(out.service.port).toBeNull();
+    expect(out.service_url).toBe(`http://127.0.0.1:${daemonPort}/i/${out.service.slug}/`);
+    expect(out.service_url).toBe(out.service.url);
     expect(out.daemon_url).toBe(`http://127.0.0.1:${daemonPort}`);
+    expect(typeof out.service.socket).toBe("string");
 
-    const health = (await (await fetch(`${out.service_url}/healthz`)).json()) as { ok: boolean };
+    const info = readServerInfo(ws.dataDir)!;
+    expect(info.port).toBeNull();
+    expect(info.unix).toBe(out.service.socket);
+    const health = (await (await instanceFetch({ unix: info.unix }, "/healthz")).json()) as {
+      ok: boolean;
+    };
     expect(health.ok).toBe(true);
+    // 浏览器通道（路径模式）同样可用
+    expect((await fetch(`${out.service_url}healthz`)).status).toBe(200);
 
     // daemon status（CLI）
     const status = await runCli(["daemon", "status", "--state-dir", stateDir], {
@@ -245,6 +305,8 @@ test(
     };
     expect(statusOut.running).toBe(true);
     expect(statusOut.services.filter((s) => s.status === "running")).toHaveLength(1);
+    expect(statusOut.services[0]!.port).toBeNull();
+    expect(statusOut.services[0]!.slug).toBe(out.service.slug);
 
     // serve --stop 走 daemon（登记同步收口；时限守卫防重入死锁回归）
     const stopStarted = Date.now();
@@ -282,11 +344,11 @@ test(
     for (const service of readServices(stateDir)) {
       expect(pidAlive(service.pid)).toBe(false);
     }
-    // 端口可能被其它进程复用：断言「不再返回我们那个实例」而不是盲测 reject。
-    const leftover = await fetch(`${out.service_url}/healthz`, { signal: AbortSignal.timeout(400) })
-      .then((res) => res.json())
-      .catch(() => null);
-    expect((leftover as { dataDir?: string } | null)?.dataDir).not.toBe(ws.dataDir);
+    // 路径模式在 daemon 退出后不再可用（不静默回落到别的实例）
+    const leftover = await fetch(`${out.service_url}healthz`, { signal: AbortSignal.timeout(500) })
+      .then(() => true)
+      .catch(() => false);
+    expect(leftover).toBe(false);
   },
   180_000,
 );

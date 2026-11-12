@@ -240,21 +240,42 @@ test(
     }>(url, `/api/daemon/services/${service.id}/secret`);
     expect(secret.mode).toBe("auth");
     expect((secret.key ?? "").length).toBeGreaterThanOrEqual(20);
-    expect(secret.key_link).toBe(`${service.url}/#key=${encodeURIComponent(secret.key!)}`);
+    // 逻辑 URL 以 `/i/<slug>/` 结尾（daemon 单入口）；链接基址不再拼第二个斜杠。
+    const serviceBase = service.url.replace(/\/+$/, "");
+    expect(secret.key_link).toBe(`${serviceBase}/#key=${encodeURIComponent(secret.key!)}`);
     expect(secret.source).toBe(join(service.dataDir, ".env"));
 
     // 用该口令登录并访问受保护接口
-    const login = await fetch(`${service.url}/api/auth/login`, {
+    const login = await fetch(`${serviceBase}/api/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secret: secret.key }),
     });
     expect(login.status).toBe(200);
     const token = ((await login.json()) as { token: string }).token;
-    const before = await fetch(`${service.url}/api/status`, {
+    const before = await fetch(`${serviceBase}/api/status`, {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(before.status).toBe(200);
+
+    // SSE ticket 两次请求（POST ticket → GET stream?ticket=）都能经代理（design §3.2）
+    const ticketRes = await fetch(`${serviceBase}/api/stream/ticket`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+    });
+    expect(ticketRes.status).toBe(200);
+    const ticket = ((await ticketRes.json()) as { ticket: string }).ticket;
+    const stream = await fetch(
+      `${serviceBase}/api/stream?ticket=${encodeURIComponent(ticket)}`,
+      { headers: { accept: "text/event-stream" } },
+    );
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type") ?? "").toContain("text/event-stream");
+    const reader = stream.body!.getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(new TextDecoder().decode(first.value).length).toBeGreaterThan(0);
+    await reader.cancel();
 
     // 重复挂载同 dataDir：幂等复用（不新建目录、不换 pid）
     const again = await daemonRequest<{ service: { id: string; pid: number }; reused: boolean }>(
@@ -274,11 +295,11 @@ test(
     }>(url, `/api/daemon/services/${service.id}/secret`, { method: "PUT", body: { generate: true } });
     expect(rotated.key).not.toBe(secret.key);
     expect(rotated.applied).toBe(true);
-    const oldToken = await fetch(`${service.url}/api/status`, {
+    const oldToken = await fetch(`${serviceBase}/api/status`, {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(oldToken.status).toBe(401);
-    const relogin = await fetch(`${service.url}/api/auth/login`, {
+    const relogin = await fetch(`${serviceBase}/api/auth/login`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secret: rotated.key }),
