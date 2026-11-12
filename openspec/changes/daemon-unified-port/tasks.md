@@ -11,8 +11,8 @@
 ## S2. P1 单端口虚拟主机与 UDS（daemon + serve + 发现）
 
 - [ ] S2-1. `serve`：daemon 托管实例 UDS 监听（`<stateDir>/sockets/<id>.sock`，目录 0700）；`--standalone` 保留 TCP；UDS 模式跳过 `verifyOwnership`；超长路径 fallback 短目录。
-- [ ] S2-2. `server.json`/`ServerInfo` 契约：`port: number|null` + `unix?`；`readServerInfo` 放宽（port/unix 至少一个）；新增 `instanceFetch(info,…)`——**单一实现用 `node:http`/`https` 的 `socketPath`（不用全局 `fetch({unix})`：Node 会静默忽略并拨 80）**，返回 `new Response(Readable.toWeb(res),…)`，ENOENT→不可达；判据含「bun 与 node 两 runtime 都通」。
-- [ ] S2-3. 消费者改接 `instanceFetch`：CLI 全部命令、`serve --stop`、daemon adopt/健康/`serviceAuthMode`/`tryLogin`、dsh `lib/host/session.js`、MCP 默认通道（daemon.json → 首个运行服务的 **`socket`**；`?ep` 链接用 `logicalUrl`；无 daemon 记录回退 13689）。
+- [ ] S2-2. `server.json`/`ServerInfo` 契约：`port: number|null` + `unix?`；`readServerInfo` 放宽（port/unix 至少一个）；新增 `instanceFetch(info,…)`——**单一实现用 `node:http`/`https` 的 `socketPath`（不用全局 `fetch({unix})`：Node 会静默忽略并拨 80）**，返回 `new Response(Readable.toWeb(res),…)`，ENOENT→不可达；**`status ∈ {204,205,304}` 与 HEAD 时 body 必须传 `null`**（Node 对带 body 的 204 抛 TypeError，Bun 不抛）；判据含「bun 与 node 两 runtime 都通」。
+- [ ] S2-3. 消费者改接 `instanceFetch`：CLI 全部命令、`serve --stop`、daemon adopt/健康/`serviceAuthMode`/`tryLogin`、dsh `lib/host/session.js` **与 `lib/host/watcher.js`（SSE `/api/stream` + ticket，注入 UDS-aware `fetchImpl`）**、MCP 默认通道（daemon.json → 首个运行服务的 **`socket`**；`?ep` 链接用 `logicalUrl`；无 daemon 记录回退 13689）。
 - [ ] S2-4. 路由四优先级（daemon host → hostname → `/i/<slug>/` → app）＋`/i/<idOrSlug>` 302；`--host` 与可选 `stoa.localhost`；尽力加 `[::1]:13679`。
 - [ ] S2-5. 服务记录：`slug`（独立生成，保留字/冲突后缀）/`hostnames[]`（RFC1123，跨实例唯一）/`socket`/逻辑 `url`/`authAccount`；`port` 兼容 null。
 - [ ] S2-6. 反代：剥前缀；GET/HEAD 不传 body；头处理顺序（删 hop-by-hop → 删客户端 authorization/x-report-account/cookie/x-stoa-* → 注入实例凭据 → `x-stoa-service`/`x-stoa-daemon-proxy`）；响应删 `content-encoding`/`content-length`；**不注入 CORS**。

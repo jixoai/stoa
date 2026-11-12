@@ -163,12 +163,10 @@ Range，本规格只要求「不额外破坏」（上游 206 原样透传）。
 
 ### Requirement: daemon 账号与登录会话
 
-daemon SHALL 拥有独立账号密码（密码哈希存 `<stateDir>/daemon-accounts.json`，0600；argon2id；
-SHALL NOT 存明文）；CLI SHALL 提供 `daemon account set|status` 创建/重置/查看。登录
-`POST /api/daemon/auth/login` SHALL 校验后下发 HttpOnly 会话 cookie（SameSite=Lax；TTL 7 天滑动；
-sessions 存 stateDir 0600，内存台账 + 批量落盘）；除 `/healthz`、`/login`、`/api/daemon/auth/*`、
-静态资产与 `/i/*/healthz` 外全部路由 SHALL 要求会话；`/preview/*` SHALL 仅对回环来源免登录。
-首启无账号时 SHALL 引导创建（仅账号数=0 时可用）。退出登录 SHALL 使该会话立即失效。
+daemon SHALL 有独立账号（argon2id 哈希存 `<stateDir>/daemon-accounts.json`，0600，禁明文）；
+CLI SHALL 提供 `daemon account set|status`。登录 `POST /api/daemon/auth/login` SHALL 下发
+HttpOnly 会话 cookie（SameSite=Lax；TTL 7 天滑动；sessions 0600，内存台账 + 批量落盘）。
+首启无账号 SHALL 引导创建（仅账号数=0 可用）；退出登录 SHALL 使该会话立即失效。
 
 #### Scenario: 首启创建与登录
 
@@ -189,6 +187,12 @@ sessions 存 stateDir 0600，内存台账 + 批量落盘）；除 `/healthz`、`
 
 - **WHEN** 执行 `stoa daemon account set`（无账号）与 `daemon account status`
 - **THEN** 创建账号并可登录；status 只报用户名与时间，不回显密码/哈希；已有账号重置需 `--force`
+
+### Requirement: daemon 路由门与豁免
+
+除豁免清单外的全部路由 SHALL 要求 daemon 会话。豁免＝`GET /healthz`、`/login`、
+`/api/daemon/auth/*`、静态资产、`/i/*/healthz`（任何来源）；`/api/daemon/*` 与 `/preview/*`
+仅当 loopback peer **且** Host ∈ 回环 host 集合（公网域名 Host 一律走登录门）。
 
 #### Scenario: 实例健康检查免登录
 

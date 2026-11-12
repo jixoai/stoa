@@ -51,6 +51,9 @@
   **判据：同一 helper 必须在 bun 与 node 两个 runtime 下都返回 200 + 实例 JSON。**
 - `probeHealthBody` / `serverStatus` / `stopServer` / daemon `adopt` / `serviceAuthMode` /
   `tryLogin` / CLI `ApiClient` / dsh `lib/host/session.js` 全部改走 `instanceFetch`。
+- **dsh SSE 通道**（`lib/host/watcher.js` 的 `/api/stream` + ticket 两次请求）：`fetchImpl(url)`
+  形状套不上 `instanceFetch(info,path)`，须换成 UDS-aware 适配器（同一 socket），否则健康探测
+  正常而 SSE 401/连错端口——最难查的半坏状态。
 
 ### 1.4 机器通道 vs 链接通道（N1）
 - **机器通道**（I/O）：`instanceFetch` over UDS，供 CLI/MCP/adapters/dsh/QA 读写数据。
