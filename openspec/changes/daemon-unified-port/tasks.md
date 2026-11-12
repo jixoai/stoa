@@ -54,3 +54,13 @@
 - [ ] S7-2. reviewer 复核（路由/鉴权/注入/流式/测试有效性）；处理后发 **0.7.0**（插件 lockstep＋bridge 钉版同步）。
 - [ ] S7-3. FDE2E companion change 立项登记（`stoa-session.sh`/隧道/文档迁移），**不在本 change 实现**。
 - [ ] S7-4. 发布门：companion change 就绪并与 v0.7.0 同窗口才发 `latest`；未就绪仅 beta/prerelease（避免一次性切断 FDE2E 会话链接）。
+
+## 后续登记（实现复核非阻塞项，不阻塞 v0.7.0 发布）
+
+- F1. 反代 chunked 请求体无长度头时流式直传（当前仅 content-length ≤8MiB 判限，已登录用户可打爆内存）。
+- F2. 机器通道 Origin 白名单 / `<stateDir>/daemon-token` 机器令牌（daemon 公网化前完成；companion 前置条件）。
+- F3. 登录/setup 失败速率限制与未知用户名常时比较（防枚举与爆破）。
+- F4. 控制台挂载表单隐藏端口输入（服务端已忽略并告警，UI 口径待收）。
+- F5. ZCode 插件钩子/看板脚本接 UDS 机器通道（当前仍按实例 baseUrl 直连；FDE2E 只走 CLI，暂不阻塞）。
+- F6. Bun fetch 客户端读 `node:http` 反代流的 ECONNRESET 复现与规避（浏览器/curl 正常）。
+- F7. `services.json`/`server.json` 读取加 mtime 缓存（当前每请求同步读文件）。
