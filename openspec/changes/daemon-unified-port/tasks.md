@@ -21,26 +21,26 @@
 
 ## S3. P2 daemon 账号、会话与凭据注入
 
-- [ ] S3-1. `daemon-accounts.json`（0600，`Bun.password.hash(pw,{algorithm:"argon2id"})`）；CLI `daemon account set|status`（set 需 `--force` 重置；status 不回显敏感内容）。
-- [ ] S3-2. 登录/退出/首启 setup API 与页面；cookie `HttpOnly; SameSite=Lax; Path=/`（Secure 条件、Domain 仅带点非 IP host）；sessions 0600，内存台账 + ≤30s 批量落盘，TTL 7 天滑动；退出立即失效。
-- [ ] S3-3. 路由门与豁免：页面 302 `/login?next=`、API 401；豁免 `GET /healthz`、`/login`、`/api/daemon/auth/*`、`/assets/**`、favicon、**`/i/*/healthz`**（daemon 侧过滤为 `{ok,instanceId,dataDir,uiVersion}`，实例 healthz 补 `uiVersion`）；**机器通道豁免**（loopback peer 且 Host ∈ 回环 host 集合）：`/api/daemon/*` 与 `/preview/*`（公网域名 Host 一律登录门，防 secret/preview 公网可读）；setup 仅账号数=0。
-- [ ] S3-4. 代理注入实例凭据（`authAccount` 默认 owner，0600 env，≤1s 缓存，401 时走 tryLogin 兜底）：auth → Bearer + `x-report-account`；open → 仅 `x-report-account`；**覆盖**客户端自带头防冒充；浏览器零 token。
-- [ ] S3-5. proxied 判定链：实例 `/api/auth/status` 增 `proxied`（判据＝带 `x-stoa-daemon-proxy` 头且实例自身 UDS 监听，**不用 peer IP**）；前端 `proxied` 时不进实例登录门、不落 token；`proxied` 下 401 显示「实例凭据不可用」错误态 + 重试，**不弹口令输入框**。
-- [ ] S3-6. UI 请求 `credentials:"same-origin"`（`api.ts` 三处、`ep.ts` 两处）；嵌入模式不读写 `report.ep`/`report.ep.history`。
+- [x] S3-1. `daemon-accounts.json`（0600，`Bun.password.hash(pw,{algorithm:"argon2id"})`）；CLI `daemon account set|status`（set 需 `--force` 重置；status 不回显敏感内容）。
+- [x] S3-2. 登录/退出/首启 setup API 与页面；cookie `HttpOnly; SameSite=Lax; Path=/`（Secure 条件、Domain 仅带点非 IP host）；sessions 0600，内存台账 + ≤30s 批量落盘，TTL 7 天滑动；退出立即失效。
+- [x] S3-3. 路由门与豁免：页面 302 `/login?next=`、API 401；豁免 `GET /healthz`、`/login`、`/api/daemon/auth/*`、`/assets/**`、favicon、**`/i/*/healthz`**（daemon 侧过滤为 `{ok,instanceId,dataDir,uiVersion}`，实例 healthz 补 `uiVersion`）；**机器通道豁免**（loopback peer 且 Host ∈ 回环 host 集合）：`/api/daemon/*` 与 `/preview/*`（公网域名 Host 一律登录门，防 secret/preview 公网可读）；setup 仅账号数=0。
+- [x] S3-4. 代理注入实例凭据（`authAccount` 默认 owner，0600 env，≤1s 缓存，401 时走 tryLogin 兜底）：auth → Bearer + `x-report-account`；open → 仅 `x-report-account`；**覆盖**客户端自带头防冒充；浏览器零 token。
+- [x] S3-5. proxied 判定链：实例 `/api/auth/status` 增 `proxied`（判据＝带 `x-stoa-daemon-proxy` 头且实例自身 UDS 监听，**不用 peer IP**）；前端 `proxied` 时不进实例登录门、不落 token；`proxied` 下 401 显示「实例凭据不可用」错误态 + 重试，**不弹口令输入框**。
+- [x] S3-6. UI 请求 `credentials:"same-origin"`（`api.ts` 三处、`ep.ts` 两处）；嵌入模式不读写 `report.ep`/`report.ep.history`。
   - 判据：未登录 302/401；登录后经 `/i/<slug>/` 直接可用且 `/api/auth/status.proxied===true`；页面/响应/日志无实例 token 与明文密码；多实例并发 iframe 无串台（第二实例不连到 daemon 根）。
 
 ## S4. P3 壳与浮动小球
 
-- [ ] S4-1. `/shell/<idOrSlug>` 服务端直出 HTML：`<base href="/">`、`__STOA_SHELL__`、CSP `frame-src 'self' + 已登记 hostname`；`uiResponse` 显式分支（`/index.html`→daemon、`/shell/*`→shell、`/login`→无注入），杜绝 SPA fallback 吞资产。
-- [ ] S4-2. 全屏 iframe + 右下浮动小球（44px、solid-glass、lucide 单色、无 HTML 阴影）；菜单：回到 daemon / 切换实例 / 刷新 / 复制链接 / 退出登录；键盘可达（Enter/Space/Esc＋焦点归还）；reduced-motion 降级。
-- [ ] S4-3. 控制台「打开」与行内入口改进入壳；控制台与壳页 fetch 一律绝对 `/api/…`。
+- [x] S4-1. `/shell/<idOrSlug>` 服务端直出 HTML：`<base href="/">`、`__STOA_SHELL__`、CSP `frame-src 'self' + 已登记 hostname`；`uiResponse` 显式分支（`/index.html`→daemon、`/shell/*`→shell、`/login`→无注入），杜绝 SPA fallback 吞资产。
+- [x] S4-2. 全屏 iframe + 右下浮动小球（44px、solid-glass、lucide 单色、无 HTML 阴影）；菜单：回到 daemon / 切换实例 / 刷新 / 复制链接 / 退出登录；键盘可达（Enter/Space/Esc＋焦点归还）；reduced-motion 降级。
+- [x] S4-3. 控制台「打开」与行内入口改进入壳；控制台与壳页 fetch 一律绝对 `/api/…`。
   - 判据：E2E——`/shell/<slug>` 首屏无白屏（资产 200 且 MIME 正确）；壳内可发帖/读板；切换实例 URL 与 iframe 同步；无 token 泄漏。
 
 ## S5. 前端基座补缺（相对基址现状验证 + 运行期修正）
 
-- [ ] S5-1. API 基址派生实例**根前缀**（`new URL("./", document.baseURI)`；`?ep` 覆盖优先）；`probeSameOriginEp` 探 `${root}healthz` 并校验 `instanceId`。
-- [ ] S5-2. `checkEp` 放行 `*.localhost`（`LOOPBACK_HOSTS` 扩展）。
-- [ ] S5-3. 静态导出相对引用现状复核（`./assets/`、`media/`）＋根路径/`/i/<slug>/` 两处同构建实测。
+- [x] S5-1. API 基址派生实例**根前缀**（`new URL("./", document.baseURI)`；`?ep` 覆盖优先）；`probeSameOriginEp` 探 `${root}healthz` 并校验 `instanceId`。
+- [x] S5-2. `checkEp` 放行 `*.localhost`（`LOOPBACK_HOSTS` 扩展）。
+- [x] S5-3. 静态导出相对引用现状复核（`./assets/`、`media/`）＋根路径/`/i/<slug>/` 两处同构建实测。
   - 判据：根路径与 `/i/<slug>/` 两处资产/API 全部落在正确前缀（无 `/api/api/`）；导出归档子目录可开；刷新与深链接正常。
 
 ## S6. QA 与迁移面
