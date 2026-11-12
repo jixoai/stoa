@@ -433,6 +433,39 @@ describe("MCP 默认机器通道（daemon.json → socket，design §1.4）", ()
     expect(cfg.baseUrl).toBe(cfg.logicalUrl);
   });
 
+  test("显式 dataDir 精确匹配（共享 daemon 多实例不串板）", () => {
+    const stateDir = tempDir("stoa-mcp-channel-");
+    const socketA = join(stateDir, "sockets", "a.sock");
+    const socketB = join(stateDir, "sockets", "b.sock");
+    writeDaemonInfo(stateDir, {
+      pid: 1,
+      port: 13679,
+      url: DAEMON_URL,
+      stateDir,
+      version: "0.7.0",
+      startedAt: 1,
+    });
+    writeServices(stateDir, [
+      record({ id: "svc-a", slug: "board-a", dataDir: "/data/a", socket: socketA }),
+      record({ id: "svc-b", slug: "board-b", dataDir: "/data/b", socket: socketB }),
+    ]);
+    const home = tempDir("stoa-mcp-home-");
+    const picked = resolveMcpConfig({
+      flags: { dataDir: "/data/b" },
+      env: { STOA_DAEMON_STATE_DIR: stateDir },
+      home,
+    });
+    expect(picked.socket).toBe(socketB);
+    expect(picked.logicalUrl).toBe(`${DAEMON_URL}/i/board-b/`);
+    // dataDir 不匹配任何 running → 回退首个 running（既有行为）
+    const fallback = resolveMcpConfig({
+      flags: { dataDir: "/data/zzz" },
+      env: { STOA_DAEMON_STATE_DIR: stateDir },
+      home,
+    });
+    expect(fallback.socket).toBe(socketA);
+  });
+
   test("显式 --base-url 优先（不读 daemon 通道）；无 daemon 记录回退 13689", () => {
     const { stateDir } = seedDaemon();
     const home = tempDir("stoa-mcp-home-");

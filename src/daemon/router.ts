@@ -364,6 +364,13 @@ export function createDaemonRouter(opts: DaemonRouterOptions): DaemonRouter {
     });
     if (gate.action === "login") return redirectLogin(gate.location);
     if (gate.action === "unauthorized") return unauthorizedResponse();
+    if (gate.action === "forbidden") {
+      return jsonResponse(403, {
+        ok: false,
+        code: "SETUP_LOCAL_ONLY",
+        error: "首启创建 daemon 账号只允许在本机回环地址完成（先在本机打开 daemon 建号，再暴露隧道）",
+      });
+    }
 
     // 1. 实例自定义 hostname（Host 模式：路径原样透传）。
     if (byHost) {
@@ -400,7 +407,7 @@ export function createDaemonRouter(opts: DaemonRouterOptions): DaemonRouter {
       return await proxyToService(req, record, {
         prefix: `/i/${rawKey}`,
         timeoutMs: opts.timeoutMs,
-        healthz: rest === "/healthz",
+        healthz: rest === "/healthz" || rest === "/healthz/",
         now: opts.now,
       });
     }

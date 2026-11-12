@@ -141,9 +141,16 @@ export function resolveMcpConfig(opts: ResolveMcpConfigOptions = {}): McpConfig 
   const explicitBaseUrl = stripTrailingSlashes(
     firstOf([flags.baseUrl, env.STOA_BASE_URL, env.REPORT_CHANNEL_BASE_URL, fileValue("baseUrl")]),
   );
+  const dataDir = firstOf([
+    flags.dataDir,
+    env.STOA_DATA_DIR,
+    env.REPORT_CHANNEL_DATA_DIR,
+    fileValue("dataDir"),
+  ]);
   // 无显式 baseUrl 时优先发现本机 daemon 的机器通道（UDS）：MCP 在 Node 上跑，
   // cookie 通道（/i/<slug>/）没有会话必 401，因此默认就是 socket。
-  const channel = explicitBaseUrl ? null : discoverDaemonChannel(opts, env);
+  // **有 dataDir 时必须按 dataDir 精确匹配**（共享 daemon 下多个实例，取「首个 running」会串板）。
+  const channel = explicitBaseUrl ? null : discoverDaemonChannel(opts, env, dataDir);
   const baseUrl = explicitBaseUrl || channel?.logicalUrl || DEFAULT_BASE_URL;
   const logicalUrl = explicitBaseUrl || channel?.logicalUrl || baseUrl;
   const socket = channel?.socket ?? "";
@@ -154,12 +161,6 @@ export function resolveMcpConfig(opts: ResolveMcpConfigOptions = {}): McpConfig 
       env.REPORT_CHANNEL_ACCOUNT,
       fileValue("account"),
     ]) || DEFAULT_ACCOUNT;
-  const dataDir = firstOf([
-    flags.dataDir,
-    env.STOA_DATA_DIR,
-    env.REPORT_CHANNEL_DATA_DIR,
-    fileValue("dataDir"),
-  ]);
   const publicUrl =
     stripTrailingSlashes(
       firstOf([
@@ -200,6 +201,7 @@ export interface DaemonChannel {
 export function discoverDaemonChannel(
   opts: ResolveMcpConfigOptions = {},
   env: Record<string, string | undefined> = opts.env ?? process.env,
+  preferredDataDir: string | null = null,
 ): DaemonChannel | null {
   let stateDir: string;
   try {
@@ -213,9 +215,13 @@ export function discoverDaemonChannel(
   }
   const info = readDaemonInfo(stateDir);
   if (!info) return null;
-  const running = readServices(stateDir).find(
+  const services = readServices(stateDir).filter(
     (service) => service.status === "running" && typeof service.socket === "string" && service.socket,
   );
+  const preferred = preferredDataDir
+    ? services.find((service) => resolve(service.dataDir) === resolve(preferredDataDir))
+    : null;
+  const running = preferred ?? services[0];
   if (!running?.socket) return null;
   const daemonUrl = (info.url || DEFAULT_DAEMON_URL).replace(/\/+$/, "");
   return {

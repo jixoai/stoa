@@ -167,7 +167,8 @@ Range，本规格只要求「不额外破坏」（上游 206 原样透传）。
 daemon SHALL 有独立账号（argon2id 哈希存 `<stateDir>/daemon-accounts.json`，0600，禁明文）；
 CLI SHALL 提供 `daemon account set|status`。登录 `POST /api/daemon/auth/login` SHALL 下发
 HttpOnly 会话 cookie（SameSite=Lax；TTL 7 天滑动；sessions 0600，内存台账 + 批量落盘）。
-首启无账号 SHALL 引导创建（仅账号数=0 可用）；退出登录 SHALL 使该会话立即失效。
+首启无账号 SHALL 引导创建（仅账号数=0 **且请求来自 loopback peer＋回环 Host**；其余来源 403）；
+退出登录 SHALL 使该会话立即失效。
 
 #### Scenario: 首启创建与登录
 
@@ -183,6 +184,11 @@ HttpOnly 会话 cookie（SameSite=Lax；TTL 7 天滑动；sessions 0600，内存
 
 - **WHEN** 检查 stateDir 与所有日志
 - **THEN** 只出现哈希与不透明会话 id，无明文密码
+
+#### Scenario: 首启建号仅限本机
+
+- **WHEN** 经公网域名 Host（隧道）请求 `POST /api/daemon/auth/setup`
+- **THEN** 返回 403 `SETUP_LOCAL_ONLY`；本机回环 Host 完成建号后才可从公网登录
 
 #### Scenario: CLI 账号管理
 

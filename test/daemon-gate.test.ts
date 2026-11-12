@@ -162,6 +162,18 @@ describe("decideDaemonGate（纯判定矩阵）", () => {
     ).toBe("unauthorized");
   });
 
+  test("首启 setup 只允许回环 peer＋回环 Host（防隧道抢先建号）", () => {
+    const setup = { ...base, pathname: "/api/daemon/auth/setup", method: "POST" };
+    expect(decideDaemonGate(setup).action).toBe("allow");
+    expect(decideDaemonGate({ ...setup, host: "stoa.example.com" }).action).toBe("forbidden");
+    expect(decideDaemonGate({ ...setup, peerAddress: "10.0.0.5" }).action).toBe("forbidden");
+    // 登录本身仍可从公网使用（已有账号场景）
+    expect(
+      decideDaemonGate({ ...setup, pathname: "/api/daemon/auth/login", host: "stoa.example.com" })
+        .action,
+    ).toBe("allow");
+  });
+
   test("next 保留 path+query", () => {
     expect(
       decideDaemonGate({ ...base, pathname: "/shell/board", search: "?tab=1" }),

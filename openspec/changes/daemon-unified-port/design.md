@@ -140,7 +140,9 @@ MCP 默认通道：读 `daemon.json` → 首个运行服务的 **`socket`（UDS�
 - 存储 `daemon-sessions.json`（0600）：**内存台账为准 + 变更/定时（≤30s）落盘**，避免每请求原子写；
   TTL 7 天**滑动**（内存里更新 `expiresAt`，落盘按批）；过期清理在读写路径顺手做。
 - 退出登录：删台账条目 + 落盘 + 清 cookie；该会话立即 401。
-- 首启 setup：`POST /api/daemon/auth/setup` 仅当账号数=0；页面同条件显示引导。
+- 首启 setup：`POST /api/daemon/auth/setup` 仅当账号数=0，**且只允许 loopback peer＋回环 Host**
+  （daemon 若先被隧道暴露，窗口内任何人都能抢先建号，随后用注入的 owner 凭据读全部实例）；
+  其余来源 403 `SETUP_LOCAL_ONLY`。页面同条件显示引导。
 
 ### 4.1 路由门与豁免清单
 需登录（会话 cookie）：`/`、`/shell/*`、`/i/*`（healthz 除外）。

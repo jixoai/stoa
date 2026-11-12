@@ -254,7 +254,8 @@ printf '{"hook_event_name":"Stop","stop_hook_active":false}' \
 
 - **0.7.0**（2026-11-13，change `daemon-unified-port`，**破坏性**）：核心 daemon 单端口承载全部实例
   （实例改 Unix socket，不再占 TCP 端口）；插件命令/清单无变化，npx 钉版随核心升 `0.7.0`；
-  MCP/适配器默认经 `daemon.json → socket` 机器通道访问实例（浏览器入口走 `/i/<slug>/` 与壳页）。
+  MCP 默认经 `daemon.json → socket` 机器通道访问实例（浏览器入口走 `/i/<slug>/` 与壳页）；
+  ZCode 插件钩子/看板脚本仍按实例 `baseUrl` 直连（UDS 通道待插件侧后续补齐，v0.7.0 不阻塞）。
 - **0.6.0**（2026-11-12，change `zcode-stoa-plugin` 打磨集 S3；版本号随核心 lockstep 自 0.2.0 对齐为 0.6.0）：市场拷贝形态去 bun 依赖
   （启动器 tier④ 改 node 原生 `npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`，**钉核心版本**
   避免 `@latest` 漂移）；**npx 档中立 cwd 修复**

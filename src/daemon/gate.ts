@@ -26,7 +26,8 @@ import { hostHeaderName, LOOPBACK_MACHINE_HOSTS } from "./slug.ts";
 export type DaemonGateDecision =
   | { action: "allow" }
   | { action: "login"; location: string }
-  | { action: "unauthorized" };
+  | { action: "unauthorized" }
+  | { action: "forbidden" };
 
 export interface DaemonGateInput {
   method: string;
@@ -96,8 +97,14 @@ export function decideDaemonGate(input: DaemonGateInput): DaemonGateDecision {
 
   // 1. daemon 自身健康检查。
   if (readOnly && pathname === "/healthz") return { action: "allow" };
-  // 2. 登录页与登录 API（首启 setup 也必须能进）。
+  // 2. 登录页与登录 API；**首启 setup 只允许本机回环面**（daemon 先被隧道暴露时，
+  //    窗口内谁都能抢先建号，随后用注入的 owner 凭据读全部实例）。
   if (pathname === "/login" || pathname.startsWith("/login/")) return { action: "allow" };
+  if (pathname === "/api/daemon/auth/setup") {
+    return isLoopbackAddress(input.peerAddress) && isLoopbackMachineHost(input.host)
+      ? { action: "allow" }
+      : { action: "forbidden" };
+  }
   if (pathname.startsWith("/api/daemon/auth/")) return { action: "allow" };
   // 3. daemon SPA 静态资产（登录页自身要能加载）。
   if (pathname.startsWith("/assets/") || pathname.startsWith("/favicon")) {

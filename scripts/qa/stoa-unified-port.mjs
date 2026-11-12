@@ -25,13 +25,17 @@ import { REPO_ROOT, argValue } from "./lib/qa-env.mjs";
 import { portIsListening } from "../../src/server/ports.ts";
 
 const NO_BUILD = process.argv.includes("--no-build");
-const REPORT_DIR = resolve(
-  argValue(
-    process.argv.slice(2),
-    "report-dir",
-    "/Users/kzf/Development/GitHub/jixoai/fde2e/.agents/reports/manager/daemon-unified-port",
-  ),
-);
+function defaultReportDir() {
+  const envDir = process.env.STOA_REPORT_DIR;
+  if (envDir) return resolve(envDir);
+  // stoa 检出通常在 <主仓>/.worktrees/<task>：报告落主仓 .agents/reports（幂等可重跑）。
+  const mainRoot = resolve(REPO_ROOT, "../..");
+  if (existsSync(join(mainRoot, ".agents"))) {
+    return join(mainRoot, ".agents/reports/manager/daemon-unified-port");
+  }
+  return join(REPO_ROOT, ".agents/reports/manager/daemon-unified-port");
+}
+const REPORT_DIR = resolve(argValue(process.argv.slice(2), "report-dir", defaultReportDir()));
 const BUN = process.execPath;
 const CLI = join(REPO_ROOT, "src/cli/main.ts");
 const RESERVED_PORTS = new Set([13679, 13689, 13690, 13696, 13697]);
@@ -123,6 +127,16 @@ async function main() {
   let browser = null;
 
   const cleanup = () => {
+    // 先走 daemon 优雅退出（会停掉全部挂载实例），再兜底 SIGKILL——避免遗留孤儿实例进程。
+    try {
+      spawnSync(
+        "curl",
+        ["-s", "-o", "/dev/null", "--max-time", "5", "-X", "POST", `${base}/api/daemon/shutdown`],
+        { timeout: 8000 },
+      );
+    } catch {
+      // ignore
+    }
     for (const child of children.reverse()) {
       try {
         child.kill("SIGKILL");
@@ -233,11 +247,13 @@ async function main() {
     check("S2-2", mountB.res.status === 200 && svcB?.slug !== svcA?.slug, "第二个实例独立 slug", `${svcA?.slug}/${svcB?.slug}`);
 
     const hz = await jsonFetch(`${base}/i/${svcA.slug}/healthz`);
+    const hzKeys = hz.body && typeof hz.body === "object" ? Object.keys(hz.body).sort() : [];
     check(
       "S2-3",
-      hz.res.status === 200 && hz.body?.instanceId && hz.body?.port === undefined,
-      "/i/<slug>/healthz 免登录且过滤为四字段",
-      String(hz.res.status),
+      hz.res.status === 200 &&
+        JSON.stringify(hzKeys) === JSON.stringify(["dataDir", "instanceId", "ok", "uiVersion"]),
+      "/i/<slug>/healthz 免登录且键集恰为四字段",
+      `${hz.res.status} keys=${hzKeys.join(",")}`,
     );
 
     const lsof = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", String(svcA.pid)], {
@@ -325,7 +341,9 @@ async function main() {
     const consoleShot = join(REPORT_DIR, "02-console.png");
     await ui.screenshot({ path: consoleShot });
     screenshots.push(consoleShot);
-    check("S4-1", true, "浏览器登录后进入控制台（服务行可见）");
+    const rowCount = await ui.locator(`[data-testid^="daemon-service-"]`).count();
+    const urlOk = ui.url() === `${base}/` || ui.url().startsWith(`${base}/?`);
+    check("S4-1", urlOk && rowCount >= 2, "浏览器登录后进入控制台（≥2 服务行可见）", `rows=${rowCount} url=${ui.url()}`);
 
     await ui.click(`[data-testid="daemon-open-${svcA.id}"]`);
     await ui.waitForURL(new RegExp(`/shell/${svcA.slug}`), { timeout: 10_000 });
@@ -370,7 +388,16 @@ async function main() {
     const mobileShot = join(REPORT_DIR, "06-shell-mobile.png");
     await mpage.screenshot({ path: mobileShot });
     screenshots.push(mobileShot);
-    check("S4-5", true, "壳页 390 视口可用（小球在右下）");
+    const ballBox = await mpage.locator('[data-testid="daemon-shell-ball"]').boundingBox();
+    const nearRight = ballBox ? ballBox.x + ballBox.width > 390 - 40 : false;
+    const nearBottom = ballBox ? ballBox.y + ballBox.height > 844 - 40 : false;
+    const frameVisible = await mpage.locator('[data-testid="daemon-shell-frame"]').isVisible();
+    check(
+      "S4-5",
+      frameVisible && nearRight && nearBottom,
+      "壳页 390 视口可用（iframe 可见＋小球右下）",
+      `ball=${ballBox ? `${Math.round(ballBox.x)},${Math.round(ballBox.y)}` : "none"}`,
+    );
     await mobile.close();
 
     // ── S5 退出 / 502 ────────────────────────────────────────────────────────

@@ -172,9 +172,11 @@ async function endpointHealthy(endpoint: InstanceEndpoint, timeoutMs = 600): Pro
 async function serviceHealthy(
   record: Pick<ServiceRecord, "dataDir" | "socket" | "url" | "port">,
 ): Promise<boolean> {
+  // 探测预算放宽到 1.5s：实例可能正忙于同步导出（`POST /api/export` 在请求线程跑），
+  // 600ms 会把「忙」误判成「死」，进而误降级（review B1）。
   const info = readServerInfo(record.dataDir);
-  if (info) return await probeHealth(info, 600);
-  return await endpointHealthy(endpointOfRecord(record), 600);
+  if (info) return await probeHealth(info, 1500);
+  return await endpointHealthy(endpointOfRecord(record), 1500);
 }
 
 /** 记录的当前端点：server.json 最新（重启/换 socket 后仍然准确），否则回退登记值。 */
@@ -190,14 +192,25 @@ async function reconcileServices(ctx: DaemonContext): Promise<ServiceRecord[]> {
   const list = readServices(ctx.stateDir);
   let changed = false;
   for (const record of list) {
-    if (record.status !== "running") continue;
+    if (record.status !== "running") {
+      // 自愈：曾被软探测误判为 stopped、但 server.json 仍在且探测通过 → 恢复 running。
+      if (record.status === "stopped") {
+        const info = readServerInfo(record.dataDir);
+        if (info && (await probeHealth(info, 1000))) {
+          record.status = "running";
+          delete record.stoppedAt;
+          if (info.unix && info.unix !== record.socket) record.socket = info.unix;
+          record.url = managedLogicalUrl(ctx, record.slug);
+          changed = true;
+        }
+      }
+      continue;
+    }
     if (!(await serviceHealthy(record))) {
+      // 只降级，**绝不**删 socket/清通道：探测超时可能是实例忙于导出（review B1），
+      // 破坏性清理会让活实例永久失联且重新挂载撞锁。清理职责只在 stopService/close。
       record.status = "stopped";
       record.stoppedAt = Date.now();
-      if (record.socket) {
-        removeSocketFile(record.socket);
-        record.socket = null;
-      }
       changed = true;
       continue;
     }

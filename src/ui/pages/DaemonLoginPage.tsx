@@ -45,6 +45,8 @@ export function daemonLoginModeFor(
 export function safeNextPath(raw: string | null | undefined): string {
   const value = String(raw ?? "").trim();
   if (!value.startsWith("/") || value.startsWith("//")) return "/";
+  // 反斜杠/控制字符会被 URL 规范化成站外地址（`/\evil.com` → `http://evil.com/`）。
+  if (/[\u0000-\u001f\\]/.test(value)) return "/";
   if (value === "/login" || value.startsWith("/login?") || value.startsWith("/login/")) return "/";
   return value;
 }
