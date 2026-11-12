@@ -2,7 +2,7 @@
 
 把 **Stoa 公示板**（AI↔人类共用的公开议事板，见仓根 `README.md`）做成 ZCode 的一等通道：
 **AI 汇报发得出去、Owner 回话收得到**。本目录是从 fde2e 主仓旧插件（0.4.0）迁入的适配器
-（change `stoa-adapters`，按 plugin-creator 标准开发；当前版本 `0.6.0`）：
+（change `stoa-adapters`，按 plugin-creator 标准开发；当前版本 `0.7.0`）：
 **业务能力全部在核心**（`stoa mcp`：MCP 工具/配置解析/面板资源在 `src/mcp/`），
 本目录只保留「ZCode 的注册方式」「行为脚本」与「订阅桥接」（`board_inbox` / `board_peek`，
 schema 由冒烟的漂移守卫与核心逐字比对）。
@@ -15,12 +15,12 @@ schema 由冒烟的漂移守卫与核心逐字比对）。
 | 形态 | 做法 | 仓根解析 |
 | --- | --- | --- |
 | **仓内直用**（`plugins.dirs`） | 项目级 `.zcode/config.json` 的 `plugins.dirs` 指向本目录（`<stoa-repo>/adapters/zcode/stoa`），源码直加载 | 启动器按插件内相对路径 `<插件根>/../../../../src/cli/main.ts` 找到核心 |
-| **复制/安装到缓存目录** | 插件被拷到别处（含 ZCode 的安装缓存）时插件内已不含核心：先试 `STOA_REPO` 指回 Stoa 仓根，再回退已安装包 / npm 包 `npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`（**node 原生，不需要 bun**） | 见下「仓根解析四档」 |
+| **复制/安装到缓存目录** | 插件被拷到别处（含 ZCode 的安装缓存）时插件内已不含核心：先试 `STOA_REPO` 指回 Stoa 仓根，再回退已安装包 / npm 包 `npx -y --package @jixoai/stoa@0.7.0 stoa-mcp`（**node 原生，不需要 bun**） | 见下「仓根解析四档」 |
 
 **运行时依赖**：仓内直用形态（tier①②）**需要 `bun`**（核心一律 bun 直跑 TypeScript，见仓根
 README；`STOA_BIN` 可覆盖可执行文件）。市场/缓存拷贝形态（tier③④）走 npm 包的 node 入口
 （`bin.stoa-mcp` → `dist/mcp/server.mjs`），只需 **node ≥22（自带 npm/npx），不需要 bun**
-（依据 `@jixoai/stoa@0.6.0` 的 `engines.node = ">=22"`；仓根 package.json 亦为 >=22.12）；
+（依据 `@jixoai/stoa@0.7.0` 的 `engines.node = ">=22"`；仓根 package.json 亦为 >=22.12）；
 `STOA_NPX` 可覆盖 npx 可执行文件。四档都找不到核心时会在 stderr 明确报错并以非 0 退出（不打印凭据）。
 **npx 档以中立 cwd 启动子进程**（默认 `os.tmpdir()`，`STOA_BRIDGE_CWD` 可覆盖）：npm/npx 会读取
 cwd 上层 `package.json` 的 `devEngines.packageManager`，pin 了 pnpm 的项目（含本仓）会让 npx 直接
@@ -34,7 +34,7 @@ cwd 上层 `package.json` 的 `devEngines.packageManager`，pin 了 pnpm 的项�
    插件内相对解析（`<插件根>/../../../../src/cli/main.ts`）也走 ①② 这两档；
 3. **已安装包 + node**：cwd / 插件根 `node_modules/@jixoai/stoa/dist/mcp/server.mjs`
    （或 `require.resolve("@jixoai/stoa/package.json")`）→ `node <pkg>/dist/mcp/server.mjs`；
-4. **node 原生 npm 兜底（钉版本）**：`npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`（npm 包的
+4. **node 原生 npm 兜底（钉版本）**：`npx -y --package @jixoai/stoa@0.7.0 stoa-mcp`（npm 包的
    bin＝预构建 `dist/mcp/server.mjs`，自带 `#!/usr/bin/env node`；市场安装缓存形态无需 `STOA_REPO`、
    无需 bun；子进程以**中立 cwd** 启动，避免项目 `devEngines` 让 npx 拒绝执行，见上「运行时依赖」）。
 
@@ -48,7 +48,7 @@ CLI 用户直接 `export STOA_REPO=...` 即可。`STOA_BASE_URL` / `STOA_ACCOUNT
 
 | 组件 | 作用 |
 | --- | --- |
-| `.zcode-plugin/plugin.json` | 插件清单（plugin-creator 标准：name `stoa`、version `0.6.0`（与核心 lockstep）；components 只声明真实资源；`ui.surfaces.server="stoa"`） |
+| `.zcode-plugin/plugin.json` | 插件清单（plugin-creator 标准：name `stoa`、version `0.7.0`（与核心 lockstep）；components 只声明真实资源；`ui.surfaces.server="stoa"`） |
 | `.mcp.json` | MCP server 注册为 `stoa` → 薄桥启动器 `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-bridge.mjs` |
 | `scripts/mcp-bridge.mjs` | 薄桥启动器：stdio 直通核心 `stoa mcp`（**四档解析**：①仓根+bun ②仓根 dist+node ③已安装包+node ④npx 钉版本兜底；**适配器零业务实现**；工具与 `resources/read` 面板都由核心提供） |
 | `scripts/watch.mjs` | 看板常驻脚本：**默认本地游标**（`board_peek(cursor=last)`，不消费；默认 state 为**会话级**）；`--consume` 保留旧的消费式 `board_inbox`（仅唯一主会话） |
@@ -111,7 +111,7 @@ Owner 2026-11-07 裁决（design §5/§6）：**插件模式与 MCP/CLI 模式�
 | 项 | 旧（fde2e 主仓插件 0.4.0） | 新（`adapters/zcode/stoa`） |
 | --- | --- | --- |
 | MCP server | 插件内 `scripts/mcp-server.mjs`（node，自带工具/面板实现） | 薄桥 `scripts/mcp-bridge.mjs` → 核心 `stoa mcp`；server 名 `stoa` |
-| 插件清单 | 旧插件清单（name 为旧产品名 0.4.0） | 独立插件根（plugin-creator 标准），name `stoa`，version `0.6.0` |
+| 插件清单 | 旧插件清单（name 为旧产品名 0.4.0） | 独立插件根（plugin-creator 标准），name `stoa`，version `0.7.0` |
 | 面板资源 | `scripts/lib/panel.mjs` 内嵌 HTML | 由核心提供；URI `ui://stoa/board.html` |
 | 收件自动化 | 只有 SessionStart/UserPromptSubmit 注水（模型仍需自己挂订阅） | **新增 Stop 钩子 `scripts/stop-wait.mjs`**（有界等待 + 自动续跑注入 + 游标推进防重复 + state 锁） |
 | 配置 | `~/.config/fde2e/report-channel.json` | `~/.config/stoa/report-channel.json` 主用，旧路径按 key 合并（历史兼容名） |
@@ -248,10 +248,13 @@ printf '{"hook_event_name":"Stop","stop_hook_active":false}' \
 
 ## 版本
 
-**插件版本与 Stoa 核心 lockstep**：当前 `0.6.0` ↔ 核心 `0.6.0`；发版同批 bump
+**插件版本与 Stoa 核心 lockstep**：当前 `0.7.0` ↔ 核心 `0.7.0`；发版同批 bump
 （`.zcode-plugin/plugin.json` 的 `version` 必须等于仓根 `package.json` 的 `version`，
 冒烟断言为运行时动态比对，不写死数字）。
 
+- **0.7.0**（2026-11-13，change `daemon-unified-port`，**破坏性**）：核心 daemon 单端口承载全部实例
+  （实例改 Unix socket，不再占 TCP 端口）；插件命令/清单无变化，npx 钉版随核心升 `0.7.0`；
+  MCP/适配器默认经 `daemon.json → socket` 机器通道访问实例（浏览器入口走 `/i/<slug>/` 与壳页）。
 - **0.6.0**（2026-11-12，change `zcode-stoa-plugin` 打磨集 S3；版本号随核心 lockstep 自 0.2.0 对齐为 0.6.0）：市场拷贝形态去 bun 依赖
   （启动器 tier④ 改 node 原生 `npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`，**钉核心版本**
   避免 `@latest` 漂移）；**npx 档中立 cwd 修复**
