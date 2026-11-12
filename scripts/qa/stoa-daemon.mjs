@@ -53,6 +53,16 @@ const PKG_VERSION = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "ut
 const RESERVED_PORTS = new Set([13689, 13690, 13696, 13697]);
 const KEEP = process.argv.includes("--keep");
 
+// v0.7.0（daemon-unified-port）起多端口/#key 前提已退役：本脚本的多端口控制台断言不再适用，
+// 由 scripts/qa/stoa-unified-port.mjs 取代（单端口/UDS/daemon 登录/壳+小球）。
+if (Number.parseInt(PKG_VERSION.split(".")[0] ?? "0", 10) >= 1 || PKG_VERSION.startsWith("0.7.")) {
+  console.log(
+    `SKIP stoa-daemon.mjs：v${PKG_VERSION} 已改为 daemon 单端口（实例 UDS），` +
+      "多端口/#key 断言退役；请跑 scripts/qa/stoa-unified-port.mjs。",
+  );
+  process.exit(0);
+}
+
 if (!NO_BUILD) {
   execFileSync("bun", ["run", "build"], { cwd: REPO_ROOT, stdio: "inherit" });
 }
