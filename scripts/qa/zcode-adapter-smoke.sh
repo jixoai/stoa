@@ -40,7 +40,10 @@
 #  10. **session-start 会话语义游标/横幅/去重/事件名**：首轮注入（不可信横幅置顶、按帖子 id
 #      去重计数）→ 连续 3 轮零 stdout（同一未读不重复注入）→ 新回话只注入新的 1 条；
 #      UserPromptSubmit 严格透传、默认 SessionStart、输出 `<stoa>…</stoa>` 闭合标签；
-#  11. 插件目录名 = manifest name（plugin-creator 标准）、version 0.2.0、Stop 钩子 timeout=130；
+#  11. 插件目录名 = manifest name（plugin-creator 标准）、**版本 lockstep**
+#      （plugin.json.version === 仓根 package.json.version，运行时动态比对、不写死数字）、
+#      Stop 钩子 timeout=130；**命令命名规则**（统一 `stoa` 前缀：commands/ 根下除 `stoa.md`
+#      外不得有其它 .md，其余必须进 `stoa/` 子目录 → `/stoa:report` / `/stoa:inbox`）；
 #      面板 `appInfo.version` = 核心 `VERSION`（package.json）；README Stop 超时文案（60s/130s）。
 #
 # 纪律：每个子进程都用 `env -i` 白名单 + HOME 指向 /tmp 沙箱；不打印任何 token；
@@ -219,21 +222,59 @@ else
   bad "isolated board on ${URL}" "qa-serve start failed; tail: $(tail -2 "${QA_OUT}" 2>/dev/null | tr '\n' ' ')"
 fi
 
-# ── Round 0b：plugin-creator 标准（目录名 = manifest name）+ 版本 + Stop 超时 ──────
+# ── Round 0b：plugin-creator 标准（目录名 = manifest name）+ 版本 lockstep + Stop 超时 ──
+# 版本断言是**不变量**：plugin.json.version 必须等于仓根 package.json.version（插件随核心
+# 同批发布），运行时动态读取两侧后比对，不写死数字——核心 bump 时冒烟不需要跟着改。
 PLUGIN_CHECK="$(sandbox /tmp "${NODE}" -e '
 const fs = require("fs");
 const path = require("path");
-const adapter = process.argv[1];
+const [adapter, repoPackage] = process.argv.slice(1);
 const manifest = JSON.parse(fs.readFileSync(path.join(adapter, ".zcode-plugin/plugin.json"), "utf8"));
 const dirName = path.basename(adapter);
 const hooks = JSON.parse(fs.readFileSync(path.join(adapter, "hooks/hooks.json"), "utf8"));
 const stopTimeout = hooks.hooks?.Stop?.[0]?.hooks?.[0]?.timeout;
-console.log(`dir=${dirName} name=${manifest.name} version=${manifest.version} stop_timeout=${stopTimeout}`);
-' "${ADAPTER}" 2>&1)"
+const coreVersion = JSON.parse(fs.readFileSync(repoPackage, "utf8")).version;
+console.log(
+  `dir=${dirName} name=${manifest.name} dir_eq_name=${dirName === manifest.name} ` +
+    `version=${manifest.version} core=${coreVersion} lockstep=${manifest.version === coreVersion} ` +
+    `stop_timeout=${stopTimeout}`,
+);
+' "${ADAPTER}" "${REPO}/package.json" 2>&1)"
 case "${PLUGIN_CHECK}" in
-  "dir=stoa name=stoa version=0.2.0 stop_timeout=130")
-    ok "插件标准：目录名=manifest name（stoa）+ version 0.2.0 + Stop 钩子 timeout=130" ;;
-  *) bad "插件标准/版本/Stop 超时" "${PLUGIN_CHECK}" ;;
+  "dir=stoa name=stoa dir_eq_name=true version=${PKG_VERSION} core=${PKG_VERSION} lockstep=true stop_timeout=130")
+    ok "插件标准：目录名=manifest name（stoa）+ 版本 lockstep（插件 ${PKG_VERSION} = 核心 ${PKG_VERSION}）+ Stop 钩子 timeout=130" ;;
+  *) bad "插件标准/版本 lockstep/Stop 超时" "${PLUGIN_CHECK}" ;;
+esac
+
+# ── Round 0b': 命令命名规则（统一 `stoa` 前缀；ZCode 官方：命令名＝文件名，子目录变 `:`）──
+# `commands/` 根下**只允许 `stoa.md`**（→ `/stoa`），其余命令必须进 `stoa/` 子目录
+# （→ `/stoa:report` `/stoa:inbox`）。根级散落的 .md 会暴露成裸 `/xxx`，即本规则要拦的坑。
+COMMAND_CHECK="$(sandbox /tmp "${NODE}" -e '
+const fs = require("fs");
+const path = require("path");
+const commandsDir = process.argv[1];
+const walk = (dir, prefix = "") => {
+  const out = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...walk(path.join(dir, entry.name), rel));
+    else if (entry.isFile() && entry.name.endsWith(".md")) out.push(rel);
+  }
+  return out;
+};
+const files = walk(commandsDir).sort();
+// 命令名派生（与 ZCode 同规则：相对路径去 .md，分隔符换 `:`）
+const names = files.map((f) => f.replace(/\.md$/, "").replace(/\//g, ":"));
+const rootStrays = files.filter((f) => !f.includes("/") && f !== "stoa.md");
+const missing = ["stoa", "stoa:inbox", "stoa:report"].filter((n) => !names.includes(n));
+console.log(
+  `commands=${names.join(",")} root_strays=${rootStrays.join(",") || "-"} missing=${missing.join(",") || "-"}`,
+);
+' "${ADAPTER}/commands" 2>&1)"
+case "${COMMAND_CHECK}" in
+  "commands=stoa,stoa:inbox,stoa:report root_strays=- missing=-")
+    ok "命令命名：全部 stoa 前缀（/stoa /stoa:inbox /stoa:report；commands/ 根下只有 stoa.md）" ;;
+  *) bad "命令命名规则（stoa 前缀 / 根下只留 stoa.md）" "${COMMAND_CHECK}" ;;
 esac
 
 # README Stop 超时文案（打磨集 S3-6）：宿主默认 60s、本插件 Stop 显式 130s；不得再写旧「30 秒级硬超时」。

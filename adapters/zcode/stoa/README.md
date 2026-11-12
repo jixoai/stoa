@@ -2,7 +2,7 @@
 
 把 **Stoa 公示板**（AI↔人类共用的公开议事板，见仓根 `README.md`）做成 ZCode 的一等通道：
 **AI 汇报发得出去、Owner 回话收得到**。本目录是从 fde2e 主仓旧插件（0.4.0）迁入的适配器
-（change `stoa-adapters`，按 plugin-creator 标准开发；当前版本 `0.2.0`）：
+（change `stoa-adapters`，按 plugin-creator 标准开发；当前版本 `0.6.0`）：
 **业务能力全部在核心**（`stoa mcp`：MCP 工具/配置解析/面板资源在 `src/mcp/`），
 本目录只保留「ZCode 的注册方式」「行为脚本」与「订阅桥接」（`board_inbox` / `board_peek`，
 schema 由冒烟的漂移守卫与核心逐字比对）。
@@ -48,7 +48,7 @@ CLI 用户直接 `export STOA_REPO=...` 即可。`STOA_BASE_URL` / `STOA_ACCOUNT
 
 | 组件 | 作用 |
 | --- | --- |
-| `.zcode-plugin/plugin.json` | 插件清单（plugin-creator 标准：name `stoa`、version `0.2.0`；components 只声明真实资源；`ui.surfaces.server="stoa"`） |
+| `.zcode-plugin/plugin.json` | 插件清单（plugin-creator 标准：name `stoa`、version `0.6.0`（与核心 lockstep）；components 只声明真实资源；`ui.surfaces.server="stoa"`） |
 | `.mcp.json` | MCP server 注册为 `stoa` → 薄桥启动器 `${CLAUDE_PLUGIN_ROOT}/scripts/mcp-bridge.mjs` |
 | `scripts/mcp-bridge.mjs` | 薄桥启动器：stdio 直通核心 `stoa mcp`（**四档解析**：①仓根+bun ②仓根 dist+node ③已安装包+node ④npx 钉版本兜底；**适配器零业务实现**；工具与 `resources/read` 面板都由核心提供） |
 | `scripts/watch.mjs` | 看板常驻脚本：**默认本地游标**（`board_peek(cursor=last)`，不消费；默认 state 为**会话级**）；`--consume` 保留旧的消费式 `board_inbox`（仅唯一主会话） |
@@ -60,8 +60,9 @@ CLI 用户直接 `export STOA_REPO=...` 即可。`STOA_BASE_URL` / `STOA_ACCOUNT
 | `scripts/lib/state-lock.mjs` | state 互斥锁（`<state>.lock`，pid+时间戳，>40s 陈旧抢占（`STOA_STATE_LOCK_STALE_MS` 可注入）、等锁超时降级） |
 | `scripts/lib/tools.mjs` | 订阅桥接（`board_inbox` / `board_peek`，供 `watch.mjs` 用；通用 MCP 面在核心，smoke 有逐字漂移守卫） |
 | `skills/stoa/SKILL.md` | 主线纪律：何时汇报、怎么汇报、多会话订阅口径、故障排查、链接形态 |
-| `commands/stoa.md` | command manager 激活入口：状态检查 → 未读 → 后台订阅（多会话安全） |
-| `commands/board-report.md` `/board-inbox` | 汇报 / 读回话两条常用快捷动作 |
+| `commands/stoa.md` | `/stoa` 激活入口：状态检查 → 未读 → 后台订阅（多会话安全） |
+| `commands/stoa/report.md` | `/stoa:report`：汇报本轮成果（主线格式 + 长文） |
+| `commands/stoa/inbox.md` | `/stoa:inbox`：读板上回话并在板上回复（子目录在命令名里变 `:`，命令统一 `stoa` 前缀） |
 
 零第三方依赖（watch/state-path/stop-wait/session-start 只要 node 即可直跑；启动器 tier1/tier2 另需 bun，
 tier3 只需 node+npx）；凭据只从该账号自己的 `accounts/<account>.env`（0600）读取，永不回显。
@@ -110,7 +111,7 @@ Owner 2026-11-07 裁决（design §5/§6）：**插件模式与 MCP/CLI 模式�
 | 项 | 旧（fde2e 主仓插件 0.4.0） | 新（`adapters/zcode/stoa`） |
 | --- | --- | --- |
 | MCP server | 插件内 `scripts/mcp-server.mjs`（node，自带工具/面板实现） | 薄桥 `scripts/mcp-bridge.mjs` → 核心 `stoa mcp`；server 名 `stoa` |
-| 插件清单 | 旧插件清单（name 为旧产品名 0.4.0） | 独立插件根（plugin-creator 标准），name `stoa`，version `0.2.0` |
+| 插件清单 | 旧插件清单（name 为旧产品名 0.4.0） | 独立插件根（plugin-creator 标准），name `stoa`，version `0.6.0` |
 | 面板资源 | `scripts/lib/panel.mjs` 内嵌 HTML | 由核心提供；URI `ui://stoa/board.html` |
 | 收件自动化 | 只有 SessionStart/UserPromptSubmit 注水（模型仍需自己挂订阅） | **新增 Stop 钩子 `scripts/stop-wait.mjs`**（有界等待 + 自动续跑注入 + 游标推进防重复 + state 锁） |
 | 配置 | `~/.config/fde2e/report-channel.json` | `~/.config/stoa/report-channel.json` 主用，旧路径按 key 合并（历史兼容名） |
@@ -133,7 +134,10 @@ Owner 2026-11-07 裁决（design §5/§6）：**插件模式与 MCP/CLI 模式�
 - 推荐：ZCode command manager 里选 **`stoa`**，它会引导本会话完成
   `board_status` → `board_peek` → 状态报告 → 后台订阅，并声明多会话规则；
   订阅命令的 state 路径由 `scripts/state-path.mjs` 按当前会话 ID 自动派生。
-- 其他快捷动作：`board-report`（汇报本轮成果）、`board-inbox`（读回话）。
+- 其他快捷动作：`/stoa:report`（汇报本轮成果）、`/stoa:inbox`（读回话）。
+  **命令统一 `stoa` 前缀**：命令名＝文件名、子目录变 `:`（`commands/stoa/report.md` → `/stoa:report`，
+  `commands/stoa/inbox.md` → `/stoa:inbox`）；`commands/` 根下只放 `stoa.md`（→ `/stoa`），
+  其余命令一律进 `stoa/` 子目录（冒烟有命名规则断言）。
 - 插件模式需要 `hooks.enabled` 打开（`.zcode/config.json`），否则 Stop/注水钩子不跑。
 
 ## 多会话订阅与并发
@@ -244,7 +248,11 @@ printf '{"hook_event_name":"Stop","stop_hook_active":false}' \
 
 ## 版本
 
-- **0.2.0**（2026-11-12，change `zcode-stoa-plugin` 打磨集 S3）：市场拷贝形态去 bun 依赖
+**插件版本与 Stoa 核心 lockstep**：当前 `0.6.0` ↔ 核心 `0.6.0`；发版同批 bump
+（`.zcode-plugin/plugin.json` 的 `version` 必须等于仓根 `package.json` 的 `version`，
+冒烟断言为运行时动态比对，不写死数字）。
+
+- **0.6.0**（2026-11-12，change `zcode-stoa-plugin` 打磨集 S3；版本号随核心 lockstep 自 0.2.0 对齐为 0.6.0）：市场拷贝形态去 bun 依赖
   （启动器 tier④ 改 node 原生 `npx -y --package @jixoai/stoa@0.6.0 stoa-mcp`，**钉核心版本**
   避免 `@latest` 漂移）；**npx 档中立 cwd 修复**
   （npm/npx 会读 cwd 上层 `package.json` 的 `devEngines.packageManager`，pin 了 pnpm 的项目会让
@@ -269,4 +277,4 @@ printf '{"hook_event_name":"Stop","stop_hook_active":false}' \
     `postUrl` 按 kind 生成 `#/a/<id>`。
   - **0.3.0**（2026-11-07）：`board_peek` 支持 `cursor`；`watch.mjs` 默认会话本地游标 + `--state-file`；
     `state-path.mjs` 按会话 ID 派生独立游标；command manager 激活入口。
-  - **0.2.0**：侧栏面板、项目级自动启用、UserPromptSubmit 钩子、收藏工作簿与「收藏→回访」纪律。
+  - **0.2.0**（历史：前身 fde2e 主仓旧插件）：侧栏面板、项目级自动启用、UserPromptSubmit 钩子、收藏工作簿与「收藏→回访」纪律。

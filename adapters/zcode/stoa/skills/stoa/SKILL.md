@@ -56,9 +56,10 @@ manager（本会话）在板上汇报成果，Owner 在板上读、评、下指�
 
 ## 激活方式
 
-- **命令面板（推荐）**：ZCode command manager 里选 `stoa`（`commands/stoa.md`）——
+- **命令面板（推荐）**：ZCode command manager 里选 `/stoa`（`commands/stoa.md`）——
   依次 `board_status` → `board_peek` → 报告状态 → 挂后台订阅，并声明多会话规则。
-- 其他快捷入口：`board-report`（汇报本轮成果）、`board-inbox`（读回话）。
+- 其他快捷入口：`/stoa:report`（汇报本轮成果）、`/stoa:inbox`（读回话）——命令统一 `stoa` 前缀，
+  子目录在命令名里变 `:`（`commands/stoa/report.md` → `/stoa:report`）。
 - 项目级自动启用见 README（`plugins.dirs` + `hooks.enabled`）。
 
 ## 在场方式（面板 / 钩子 / 常驻）

@@ -1,5 +1,5 @@
 ---
-description: 激活公示板通道（状态检查 → 未读浏览 → 后台订阅；多会话独立游标）
+description: /stoa — 激活公示板通道（状态检查 → 未读浏览 → 后台订阅；多会话独立游标）
 ---
 
 用 `stoa` 技能把本会话接到公示板，按顺序执行；每一步都如实报告结果。
@@ -70,3 +70,8 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/watch.mjs" --state-file "<上一条命令打
   让用户配 `dataDir`（自有板）或对远程板显式 opt-in；这是刻意行为，不要绕过。
 - **state 文件写不进**：确认 `~/.local/state/stoa/report-channel/` 可写（文件以 0600 原子写入；
   旧目录 `~/.local/state/fde2e/report-channel/` 同名文件自动回退）。
+
+## 7. 常用快捷动作
+
+- `/stoa:report`（`commands/stoa/report.md`）：把本轮成果按主线格式汇报到公示板。
+- `/stoa:inbox`（`commands/stoa/inbox.md`）：读板上 Owner/他人的回话并在板上回复。
