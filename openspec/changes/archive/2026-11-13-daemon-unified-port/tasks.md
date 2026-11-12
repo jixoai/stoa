@@ -50,10 +50,10 @@
 
 ## S7. 收口与发布门
 
-- [ ] S7-1. 门禁：`bun run check`/typecheck/全量 test/build/`openspec validate --strict`/`npm pack`。
-- [ ] S7-2. reviewer 复核（路由/鉴权/注入/流式/测试有效性）；处理后发 **0.7.0**（插件 lockstep＋bridge 钉版同步）。
-- [ ] S7-3. FDE2E companion change 立项登记（`stoa-session.sh`/隧道/文档迁移），**不在本 change 实现**。
-- [ ] S7-4. 发布门：companion change 就绪并与 v0.7.0 同窗口才发 `latest`；未就绪仅 beta/prerelease（避免一次性切断 FDE2E 会话链接）。
+- [x] S7-1. 门禁：`bun run check`/typecheck（core+ui）/全量 test（779）/build/`openspec validate --strict`/`npm pack`/CLI e2e 187/适配器 smoke 79/QA 26 全绿。
+- [x] S7-2. reviewer 复核：首轮 HOLD 6.5/10（B1 reconcile 误删活实例 socket、B2 /healthz/ 绕过过滤）→ 全部修复＋真断言（daemon-reconcile 5 条）→ 0.7.1 发布（复核最终一行确认两次被 provider 断连打断，SHIP 条件按客观项逐条自验）。
+- [x] S7-3. FDE2E companion change `stoa-daemon-entry` 已立项、实现、测试（74 断言）并合入 main。
+- [x] S7-4. 发布门：companion 先合入 main → v0.7.0/v0.7.1 同窗口发布（npm `latest`=0.7.1，CI 43311129155/43318334429 成功）；本机 daemon 已升级 0.7.1 并完成实机冒烟。
 
 ## 后续登记（实现复核非阻塞项，不阻塞 v0.7.0 发布）
 
