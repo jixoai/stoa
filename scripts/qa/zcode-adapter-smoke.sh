@@ -71,13 +71,14 @@ SB="${SB%/}"
 DATA="${SB}/data"
 
 # 端口：QA_PORT 显式指定；否则在项目段 13680~13699 里挑一个未监听端口。
-# 生产板 13689 永不使用；挑不到/指定被占 → 明确报错退出（不伪装成功能失败）。
+# 保留集与 qa-serve.mjs 的 RESERVED_PORTS 一致（13689 生产板 + 13690/13696/13697 邻居服务）；
+# 挑不到/指定被占 → 明确报错退出（不伪装成功能失败）。
 pick_port() {
   if [ -n "${QA_PORT:-}" ]; then
-    if [ "${QA_PORT}" = "13689" ]; then
-      echo "FAIL QA_PORT=13689 是生产板端口，拒绝使用" >&2
-      return 1
-    fi
+    case "${QA_PORT}" in
+      13689) echo "FAIL QA_PORT=13689 是生产板端口，拒绝使用" >&2; return 1 ;;
+      13690|13696|13697) echo "FAIL QA_PORT=${QA_PORT} 是邻居服务保留端口（qa-serve 会拒绝），换一个" >&2; return 1 ;;
+    esac
     if lsof -nP -iTCP:"${QA_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
       echo "FAIL QA_PORT=${QA_PORT} 已在监听（被占用）；换一个或释放它" >&2
       return 1
@@ -85,7 +86,7 @@ pick_port() {
     echo "${QA_PORT}"
     return 0
   fi
-  for candidate in 13690 13691 13692 13693 13694 13695 13696 13697 13698 13699 \
+  for candidate in 13691 13692 13693 13694 13695 13698 13699 \
                    13688 13687 13686 13685 13684 13683 13682 13681 13680; do
     if lsof -nP -iTCP:"${candidate}" -sTCP:LISTEN >/dev/null 2>&1; then continue; fi
     echo "${candidate}"

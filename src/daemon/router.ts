@@ -256,7 +256,15 @@ async function filterHealthBody(upstream: Response, headers: Headers): Promise<R
       uiVersion: body.uiVersion ?? body.version ?? null,
     });
   }
-  return new Response(text, { status: upstream.status, headers });
+  // 健康检查面**只出四字段 JSON**：上游若不是健康 JSON（例如 SPA 回退 HTML），
+  // 一律回 502 可读错误，绝不透传外壳（无论状态码是什么）。
+  return jsonResponse(502, {
+    ok: false,
+    code: "INSTANCE_UNHEALTHY",
+    error: `实例健康检查响应不合法（status ${upstream.status}，content-type ${
+      upstream.headers.get("content-type") ?? "?"
+    }）；实例可能未就绪或路由配置有误`,
+  });
 }
 
 /** 代理一次请求：`prefix` 为要剥掉的路径前缀（Host 模式为空）。 */
@@ -278,6 +286,9 @@ export async function proxyToService(
     pathname = pathname.slice(prefix.length) || "/";
   }
   if (!pathname.startsWith("/")) pathname = `/${pathname}`;
+  // `/healthz/` 与 `/healthz` 同义：先归一化，否则实例的 SPA 回退会把整页 HTML 当健康检查返回，
+  // 过滤逻辑只认 JSON，会把外壳原样透传出去（实现复核 B2 真栈复现）。
+  if (opts.healthz && pathname === "/healthz/") pathname = "/healthz";
   const target = `${pathname}${url.search}`;
   const method = req.method.toUpperCase();
   const hasBody = method !== "GET" && method !== "HEAD";

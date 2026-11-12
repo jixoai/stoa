@@ -45,6 +45,15 @@ function startUpstream(dir: string, name: string): string {
     unix: socketPath,
     fetch: (req) => {
       const url = new URL(req.url);
+      if (url.pathname === "/healthz") {
+        return Response.json({
+          ok: true,
+          instanceId: `inst-${name}`,
+          dataDir: `/tmp/${name}`,
+          uiVersion: "0.7.1",
+          port: null,
+        });
+      }
       return Response.json({ upstream: name, path: url.pathname, method: req.method });
     },
   });
@@ -202,7 +211,8 @@ describe("router 集成：门先于路由", () => {
       new Request("http://127.0.0.1:13679/i/board/healthz", { headers: { host: "127.0.0.1" } }),
     );
     expect(healthz.status).toBe(200);
-    expect(((await healthz.json()) as { upstream: string }).upstream).toBe("board");
+    const healthzBody = (await healthz.json()) as Record<string, unknown>;
+    expect(Object.keys(healthzBody).sort()).toEqual(["dataDir", "instanceId", "ok", "uiVersion"]);
 
     const instancePage = await router(
       new Request("http://127.0.0.1:13679/i/board/", { headers: { host: "127.0.0.1" } }),

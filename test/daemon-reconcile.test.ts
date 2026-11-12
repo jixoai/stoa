@@ -84,6 +84,13 @@ function slowUpstream(
     unix: socketPath,
     fetch: async (req) => {
       const url = new URL(req.url);
+      // 真实实例行为：`/healthz/` 命中 SPA 回退（200 HTML），只有精确 `/healthz` 是健康 JSON。
+      if (url.pathname === "/healthz/") {
+        return new Response("<!doctype html><html><body>spa shell</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
       if (url.pathname === "/healthz") {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         return Response.json({
@@ -179,7 +186,7 @@ describe("reconcile 安全边界（B1）", () => {
 });
 
 describe("healthz 过滤一致性（B2）", () => {
-  test("/healthz 与 /healthz/ 都过滤为四字段（未登录/已登录同口径）", async () => {
+  test("/healthz/ 被归一化后仍只出四字段（上游对尾斜杠回 SPA HTML）", async () => {
     const stateDir = tempDir("stoa-hz-state-");
     const hzDataDir = tempDir("stoa-hz-data-");
     const upstream = slowUpstream(tempDir("stoa-hz-up-"), 0, {
@@ -204,6 +211,39 @@ describe("healthz 过滤一致性（B2）", () => {
       expect(Object.keys(body).sort()).toEqual(["dataDir", "instanceId", "ok", "uiVersion"]);
       expect(body.port).toBeUndefined();
       expect(body.lease).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain("spa shell");
+    }
+  }, 20_000);
+
+  test("上游健康检查回 HTML/非 JSON → 502 可读错误（绝不透传外壳）", async () => {
+    const stateDir = tempDir("stoa-hz-state-");
+    const upDir = tempDir("stoa-hz-up-");
+    const socket = join(upDir, "bad.sock");
+    const server = Bun.serve({
+      unix: socket,
+      fetch: () =>
+        new Response("<!doctype html><html><body>spa shell</body></html>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    });
+    servers.push(server);
+    writeServices(stateDir, [record({ id: "board", slug: "board", socket })]);
+    const app = createDaemonApp(ctxFor(stateDir));
+    const router = createDaemonRouter({
+      stateDir,
+      daemonHosts: ["127.0.0.1"],
+      auth: { authenticated: () => false },
+      appFetch: (req) => app.fetch(req),
+    });
+    for (const path of ["/i/board/healthz", "/i/board/healthz/"]) {
+      const res = await router(
+        new Request(`http://127.0.0.1:13679${path}`, { headers: { host: "127.0.0.1" } }),
+      );
+      expect(res.status).toBe(502);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.code).toBe("INSTANCE_UNHEALTHY");
+      expect(JSON.stringify(body)).not.toContain("spa shell");
     }
   }, 20_000);
 });

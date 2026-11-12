@@ -24,7 +24,7 @@
  *
  * 为什么第③/④档用 node 而不是 bun：插件被市场安装后位于宿主的缓存目录，核心的 TS 源码
  * 不在插件内；`dist/mcp/server.mjs` 是 `bun build --target=node` 的预构建产物，
- * node ≥22 直接可跑（`@jixoai/stoa@0.7.0` 的 `engines.node = ">=22"`）。npx 一行同时完成
+ * node ≥22 直接可跑（`@jixoai/stoa@0.7.1` 的 `engines.node = ">=22"`）。npx 一行同时完成
  * 「解析/安装/执行」，且只用 node 生态（npm 自带），
  * 是拷贝形态不需要 bun 的稳定路径；自行猜 node_modules 布局会引入「装在哪」的隐含契约。
  *
@@ -54,7 +54,7 @@ const PLUGIN_ROOT = join(HERE, "..");
  * 发版/改核心版本时**同一批**改这里。smoke 用仓根 `package.json.version` 断言实际参数
  * （`-y --package @jixoai/stoa@<version> stoa-mcp`），漏改会直接 FAIL。
  */
-const NPM_PACKAGE_SPEC = "@jixoai/stoa@0.7.0";
+const NPM_PACKAGE_SPEC = "@jixoai/stoa@0.7.1";
 
 /** PATH 查找（无第三方依赖；支持绝对路径直给）。 */
 function which(command) {
