@@ -5,8 +5,8 @@
 
 ## S1. 契约与评审
 
-- [ ] S1-1. change 文档 v2（proposal/design/tasks/specs delta）定稿；`openspec validate daemon-unified-port --strict` 通过；reviewer 复核转 APPROVE。
-- [ ] S1-2. 传输前提复核（已实测）：`Bun.serve({unix})`、`fetch({unix})`、SSE 逐块、2MB POST、多 Set-Cookie、断开传播、EADDRINUSE、stop 自动删 socket、父目录须先建（0700）。
+- [x] S1-1. change 文档 v2（proposal/design/tasks/specs delta）定稿；`openspec validate daemon-unified-port --strict` 通过；reviewer 复核转 APPROVE（两轮 REJECT→修正→无条件 APPROVE）。
+- [x] S1-2. 传输前提复核（已实测）：`Bun.serve({unix})`、`fetch({unix})`、SSE 逐块、2MB POST、多 Set-Cookie、断开传播、EADDRINUSE、stop 自动删 socket、父目录须先建（0700）。
 
 ## S2. P1 单端口虚拟主机与 UDS（daemon + serve + 发现）
 
