@@ -663,14 +663,95 @@ async function writeServiceSecret(
   return { service: current, key, restarted, applied };
 }
 
-/** daemon SPA 的 index.html（`/` 与 `/login` 共用文件；`inject` 决定是否带 daemon boot 数据）。 */
-function uiIndexResponse(ctx: DaemonContext, inject: boolean): Response {
+/** 两段路径（`/shell/<slug>`）下 `base:'./'` 的资产会解析到 `/shell/assets/*` → 被回退吞成 HTML；
+ *  壳页/登录页统一注入 `<base href="/">`（design §6/§7）。 */
+function withRootBase(html: string): string {
+  if (/<base\s/i.test(html)) return html;
+  return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n    <base href="/">`);
+}
+
+export interface ShellInstance {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  iframeUrl: string;
+}
+
+export interface ShellBoot {
+  current: ShellInstance;
+  instances: ShellInstance[];
+}
+
+function shellInstanceOf(record: ServiceRecord): ShellInstance {
+  return {
+    id: record.id,
+    slug: record.slug,
+    name: record.name,
+    status: record.status,
+    // 托管实例走路径反代；收编的 standalone 实例直接用其 TCP origin。
+    iframeUrl: record.port === null ? `/i/${encodeURIComponent(record.slug)}/` : (record.url ?? `/i/${encodeURIComponent(record.slug)}/`),
+  };
+}
+
+/** `/shell/<idOrSlug>` 的服务端壳数据（找不到服务返回 null → 404）。 */
+function shellBootFor(ctx: DaemonContext, rawKey: string): ShellBoot | null {
+  let key = rawKey;
+  try {
+    key = decodeURIComponent(rawKey);
+  } catch {
+    key = rawKey;
+  }
+  const services = readServices(ctx.stateDir);
+  const record = findServiceByIdOrSlug(services, key);
+  if (!record) return null;
+  const current = shellInstanceOf(record);
+  const instances = services
+    .filter((item) => item.status === "running")
+    .map(shellInstanceOf);
+  if (!instances.some((item) => item.id === current.id)) instances.unshift(current);
+  return { current, instances };
+}
+
+/** 壳页 CSP：只允许自身与已登记自定义 hostname 被 iframe（design §7）。 */
+function shellCsp(hostnames: string[]): string {
+  const frameSrc = new Set(["'self'", "http://127.0.0.1:*", "http://localhost:*"]);
+  for (const host of hostnames) {
+    if (!host) continue;
+    frameSrc.add(`https://${host}`);
+    frameSrc.add(`http://${host}:*`);
+  }
+  return `frame-src ${[...frameSrc].join(" ")}; frame-ancestors 'self'`;
+}
+
+/** daemon SPA 的 index.html（`/`、`/login`、`/shell/<slug>` 共用文件；模式决定注入内容）。 */
+function uiIndexResponse(
+  ctx: DaemonContext,
+  mode: "daemon" | "login" | "shell",
+  shellBoot?: ShellBoot,
+): Response {
   const dir = ctx.uiDir!;
   const target = join(resolve(dir), "index.html");
-  const html = readFileSync(target, "utf8");
-  if (!inject) {
-    return new Response(html, {
-      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
+  const raw = readFileSync(target, "utf8");
+  const baseHeaders: Record<string, string> = {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-cache",
+  };
+  if (mode === "login") {
+    return new Response(withRootBase(raw), { headers: baseHeaders });
+  }
+  if (mode === "shell" && shellBoot) {
+    const boot = JSON.stringify(shellBoot).replace(/</g, "\\u003c");
+    const html = withRootBase(raw);
+    const injected = html.includes("</head>")
+      ? html.replace("</head>", `<script>window.__STOA_SHELL__=${boot};</script></head>`)
+      : `<script>window.__STOA_SHELL__=${boot};</script>${html}`;
+    const services = readServices(ctx.stateDir);
+    return new Response(injected, {
+      headers: {
+        ...baseHeaders,
+        "content-security-policy": shellCsp(services.flatMap((item) => item.hostnames)),
+      },
     });
   }
   const boot = JSON.stringify({
@@ -679,12 +760,10 @@ function uiIndexResponse(ctx: DaemonContext, inject: boolean): Response {
     pid: process.pid,
     startedAt: ctx.startedAt,
   }).replace(/</g, "\\u003c");
-  const injected = html.includes("</head>")
-    ? html.replace("</head>", `<script>window.__STOA_DAEMON__=${boot};</script></head>`)
-    : `<script>window.__STOA_DAEMON__=${boot};</script>${html}`;
-  return new Response(injected, {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
-  });
+  const injected = raw.includes("</head>")
+    ? raw.replace("</head>", `<script>window.__STOA_DAEMON__=${boot};</script></head>`)
+    : `<script>window.__STOA_DAEMON__=${boot};</script>${raw}`;
+  return new Response(injected, { headers: baseHeaders });
 }
 
 function uiResponse(ctx: DaemonContext, pathname: string): Response {
@@ -698,8 +777,14 @@ function uiResponse(ctx: DaemonContext, pathname: string): Response {
   const rel = pathname === "/" ? "/index.html" : pathname;
   // `/login`（daemon 登录/首启页）是单段路径：相对资产 `./assets/*` 自然落在 `/assets/*`，
   // 且**不注入** `__STOA_DAEMON__`（main.tsx 据此渲染登录页而不是控制台）。
-  if (rel === "/login" || rel === "/login/") return uiIndexResponse(ctx, false);
-  if (rel === "/index.html") return uiIndexResponse(ctx, true);
+  if (rel === "/login" || rel === "/login/") return uiIndexResponse(ctx, "login");
+  const shellMatch = /^\/shell\/([^/]+)\/?$/.exec(rel);
+  if (shellMatch) {
+    const boot = shellBootFor(ctx, shellMatch[1]!);
+    if (!boot) return textResponse(404, `no such service: ${shellMatch[1]}`);
+    return uiIndexResponse(ctx, "shell", boot);
+  }
+  if (rel === "/index.html") return uiIndexResponse(ctx, "daemon");
   if (rel.includes("..")) return new Response("bad path\n", { status: 400 });
   const target = join(root, rel);
   if (existsSync(target)) {
@@ -709,6 +794,8 @@ function uiResponse(ctx: DaemonContext, pathname: string): Response {
         : { "cache-control": "no-cache" },
     });
   }
+  // 缺失的静态资产绝不能回退成 HTML（`<script>` 收到 HTML → MIME 报错/白屏）。
+  if (rel.startsWith("/assets/")) return textResponse(404, "asset not found");
   // hash 路由回退：未知路径回首页（注入版）
   return uiResponse(ctx, "/index.html");
 }

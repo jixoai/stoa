@@ -208,25 +208,13 @@ function redactKeyLink(link: string | null): string {
 /** 行内口令链接恒短形态：`口令 ••••••`（6 圆点，永不被列宽截断；全链接只在复制/口令面板）。 */
 const KEY_MASK = "••••••";
 
-/** 「打开」/行内入口的目标：local＝service.url，public＝service.publicUrl。 */
-type OpenTarget = "local" | "public";
+/** 壳页地址：daemon 托管实例一律 `/shell/<slug>`（实例凭据由 daemon 注入）。 */
+function shellHrefOf(service: { id: string; slug?: string }): string {
+  return `/shell/${encodeURIComponent(service.slug ?? service.id)}`;
+}
 
 /** 同一行入口的重复点击去抖窗口（连点不连开多标签）。 */
 const OPEN_DEBOUNCE_MS = 1000;
-
-/**
- * 把口令附到目标 URL 的 fragment 上（`#key=<口令>`）：
- * fragment 不进服务端请求行/Referer；保留原 path/query（stoa-console-open-with-key design §2）。
- */
-function withKeyFragment(base: string, key: string): string {
-  try {
-    const url = new URL(base);
-    url.hash = `#key=${encodeURIComponent(key)}`;
-    return url.toString();
-  } catch {
-    return `${base.replace(/#.*$/, "")}#key=${encodeURIComponent(key)}`;
-  }
-}
 
 function LocationIcon({ location }: { location?: Location }) {
   const Icon = location === "path" ? MapPinIcon : location === "temp" ? ClockIcon : FolderIcon;
@@ -277,7 +265,7 @@ export function ServiceRow({
 }: {
   service: DaemonService;
   busy: boolean;
-  onOpen: (service: DaemonService, target: OpenTarget) => void;
+  onOpen: (service: DaemonService) => void;
   onSecret: (service: DaemonService) => void;
   onStop: (service: DaemonService) => void;
   onRemove: (service: DaemonService) => void;
@@ -303,19 +291,14 @@ export function ServiceRow({
   const previewTitle = "静态快照 · 只读 · 首次生成后自动缓存";
   const stoppedPreview = !running;
 
-  /**
-   * 普通左键走「读口令→附 #key=→打开」；修饰键（Cmd/Ctrl/Shift/Alt）不拦截，
-   * 保留浏览器原生「新标签/新窗口」语义（stoa-console-open-with-key design §2）。
-   */
-  const openOnClick =
-    (target: OpenTarget) =>
-    (event: ReactMouseEvent<HTMLAnchorElement>) => {
-      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
-        return;
-      }
-      event.preventDefault();
-      onOpen(service, target);
-    };
+  /** 普通左键进入壳；修饰键保留浏览器原生语义（新标签打开同一壳页）。 */
+  const openOnClick = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    onOpen(service);
+  };
 
   return (
     <Card
@@ -370,12 +353,10 @@ export function ServiceRow({
             running ? (
               <a
                 className="truncate font-mono text-xs hover:text-foreground hover:underline"
-                href={service.url}
-                target="_blank"
-                rel="noreferrer"
-                title={service.url}
+                href={shellHrefOf(service)}
+                title="在 daemon 壳中打开（实例凭据由 daemon 注入）"
                 data-testid={`daemon-entry-local-${service.id}`}
-                onClick={openOnClick("local")}
+                onClick={openOnClick}
               >
                 {service.url}
               </a>
@@ -403,7 +384,6 @@ export function ServiceRow({
                 rel="noreferrer"
                 title={service.publicUrl}
                 data-testid={`daemon-entry-public-${service.id}`}
-                onClick={openOnClick("public")}
               >
                 {service.publicUrl}
               </a>
@@ -417,21 +397,23 @@ export function ServiceRow({
             )}
           </div>
         ) : null}
-        <div className="flex min-w-0 items-center gap-2">
-          <EntryTag>口令</EntryTag>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-auto min-w-0 justify-start gap-1 px-0 py-0 font-mono text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground"
-            title={
-              entryBase ? `口令链接 ${entryBase}/#key=••••••（完整链接在口令面板复制）` : "查看口令"
-            }
-            onClick={() => onSecret(service)}
-          >
-            <KeyRoundIcon className="size-3 shrink-0" aria-hidden="true" />
-            <span className="whitespace-nowrap">{KEY_MASK}</span>
-          </Button>
-        </div>
+        {service.port !== null ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <EntryTag>口令</EntryTag>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-auto min-w-0 justify-start gap-1 px-0 py-0 font-mono text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground"
+              title={
+                entryBase ? `口令链接 ${entryBase}/#key=••••••（完整链接在口令面板复制）` : "查看口令"
+              }
+              onClick={() => onSecret(service)}
+            >
+              <KeyRoundIcon className="size-3 shrink-0" aria-hidden="true" />
+              <span className="whitespace-nowrap">{KEY_MASK}</span>
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {/* 元信息 */}
@@ -485,15 +467,10 @@ export function ServiceRow({
         {running && service.url ? (
           <Button
             render={
-              <a
-                href={service.url}
-                target="_blank"
-                rel="noreferrer"
-                onClick={openOnClick("local")}
-              />
+              <a href={shellHrefOf(service)} onClick={openOnClick} />
             }
             data-testid={`daemon-open-${service.id}`}
-            title={`打开 ${service.url}`}
+            title="在 daemon 壳中打开（实例凭据由 daemon 注入）"
           >
             <ExternalLinkIcon data-icon="inline-start" />
             打开
@@ -1016,54 +993,14 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
   const openClickAt = useRef(new Map<string, number>());
 
   /**
-   * 从控制台打开服务（stoa-console-open-with-key design §2）：
-   * 点击时按需读取口令 → `#key=<口令>` 附为 fragment → 新标签打开。
-   * 开放模式/无口令/读取失败一律退回不带 key 的原 URL，并给出可见提示（不阻断）。
+   * 从控制台打开服务：进入 **daemon 壳** `/shell/<slug>`（design §7）。
+   * 实例凭据由 daemon 服务端注入，浏览器不再接触实例 token，也不再拼 `#key=`。
    */
-  const openWithKey = useCallback(async (service: DaemonService, target: OpenTarget) => {
-    const base = ((target === "public" ? service.publicUrl : service.url) ?? "").trim();
-    if (!base) return;
+  const openShell = useCallback((service: DaemonService) => {
     const now = Date.now();
     if (now - (openClickAt.current.get(service.id) ?? 0) < OPEN_DEBOUNCE_MS) return;
     openClickAt.current.set(service.id, now);
-
-    let url = base;
-    let note: string | null = null;
-    try {
-      const out = await daemonApi<SecretView & { ok: boolean }>(
-        `/api/daemon/services/${service.id}/secret`,
-      );
-      const secret = (out.key ?? "").trim();
-      if (out.mode === "auth" && secret) {
-        url = withKeyFragment(base, secret);
-      } else {
-        note = out.mode === "open" ? "该服务为开放模式（无口令）。" : "未找到该服务的口令。";
-      }
-    } catch (err) {
-      note = `口令读取失败（${(err as Error).message}）。`;
-    }
-
-    // 规范：features 含 noopener 的 window.open 恒返回 null，无法区分「被拦截」。
-    // 这里普通打开后立即断开 opener（同等安全），保留可检测的返回值。
-    const opened = window.open(url, "_blank");
-    if (opened) opened.opener = null;
-    if (!opened) {
-      toast.add({
-        type: "error",
-        title: "新标签被浏览器拦截",
-        description: "请在「口令」面板复制口令链接后手动打开。",
-        timeout: 4200,
-      });
-      return;
-    }
-    if (note) {
-      toast.add({
-        type: "warning",
-        title: "已打开（未附带口令）",
-        description: note,
-        timeout: 3600,
-      });
-    }
+    window.location.assign(shellHrefOf(service));
   }, []);
 
   const resetMountForm = useCallback(() => {
@@ -1520,7 +1457,7 @@ export function DaemonConsolePage({ boot }: { boot: DaemonBoot }) {
                   key={service.id}
                   service={service}
                   busy={busyId === service.id}
-                  onOpen={(item, target) => void openWithKey(item, target)}
+                  onOpen={openShell}
                   onSecret={(item) => setSecretFor(item)}
                   onStop={(item) => setConfirm({ kind: "stop", service: item })}
                   onRemove={(item) => setConfirm({ kind: "remove", service: item })}

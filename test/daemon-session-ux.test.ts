@@ -243,7 +243,8 @@ test(
     expect((secret.key ?? "").length).toBeGreaterThanOrEqual(20);
     // 逻辑 URL 以 `/i/<slug>/` 结尾（daemon 单入口）；链接基址不再拼第二个斜杠。
     const serviceBase = service.url.replace(/\/+$/, "");
-    expect(secret.key_link).toBe(`${serviceBase}/#key=${encodeURIComponent(secret.key!)}`);
+    // daemon 托管实例（port=null）不再生成 #key 口令链接（design §8：仅 standalone 直连使用）
+    expect(secret.key_link).toBeNull();
     expect(secret.source).toBe(join(service.dataDir, ".env"));
 
     // daemon 会话是经代理访问实例的凭据（S3-3/S3-5）：先建 daemon 账号并登录。
@@ -347,7 +348,7 @@ test(
       url,
       `/api/daemon/services/${service.id}/secret`,
     );
-    expect(secret2.key_link).toBe(`https://board.example/#key=${encodeURIComponent(rotated.key)}`);
+    expect(secret2.key_link).toBeNull();
 
     // 开放模式目录挂载：自动生成口令并给出提示
     const openMount = await daemonRequest<{

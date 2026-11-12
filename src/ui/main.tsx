@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { DaemonConsolePage, readDaemonBoot } from "./pages/DaemonConsolePage";
 import { DaemonLoginPage } from "./pages/DaemonLoginPage";
+import { DaemonShellPage, readShellBoot } from "./pages/DaemonShellPage";
 import "./app.css";
 
 // 深色路径：系统偏好为默认，用户手动切换后以 localStorage 为准（solid-glass 只认 .dark）
@@ -36,13 +37,16 @@ applyTheme();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("#root not found");
-// 渲染开关：`/login`（daemon 登录/首启页，服务端不注入 boot）→ 登录页；
-// 注入 window.__STOA_DAEMON__ → daemon 控制台；否则渲染公示板壳。
-const isDaemonLogin = window.location.pathname.replace(/\/+$/, "") === "/login";
-const daemonBoot = isDaemonLogin ? null : readDaemonBoot();
+// 渲染开关：注入 window.__STOA_SHELL__ → 壳页（/shell/<slug>）；
+// `/login`（服务端不注入 boot）→ 登录页；注入 window.__STOA_DAEMON__ → 控制台；否则公示板。
+const shellBoot = readShellBoot();
+const isDaemonLogin = !shellBoot && window.location.pathname.replace(/\/+$/, "") === "/login";
+const daemonBoot = shellBoot || isDaemonLogin ? null : readDaemonBoot();
 createRoot(root).render(
   <StrictMode>
-    {isDaemonLogin ? (
+    {shellBoot ? (
+      <DaemonShellPage boot={shellBoot} />
+    ) : isDaemonLogin ? (
       <DaemonLoginPage />
     ) : daemonBoot ? (
       <DaemonConsolePage boot={daemonBoot} />

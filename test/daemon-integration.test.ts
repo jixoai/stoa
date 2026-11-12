@@ -199,7 +199,7 @@ test(
     );
     expect(tempSecret.mode).toBe("auth");
     expect(typeof tempSecret.key).toBe("string");
-    expect(tempSecret.key_link).toContain(`/i/it-temp/#key=`);
+    expect(tempSecret.key_link).toBeNull(); // 托管实例无 #key 链接（仅 standalone 直连）
     await daemonRequest(url, `/api/daemon/services/${temp.service.id}/stop`, { method: "POST" });
     expect(existsSync(temp.service.dataDir)).toBe(false);
     expect(readServices(stateDir).some((s) => s.id === temp.service.id)).toBe(false);

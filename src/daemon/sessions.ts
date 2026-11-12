@@ -152,8 +152,16 @@ export function setAuthKey(file: string, key: string): void {
   renameSync(tmp, target);
 }
 
-/** 口令链接：`<publicUrl|url>/#key=<key>`（fragment 不经服务端请求/日志）。 */
-export function keyLink(service: { url?: string | null; publicUrl?: string | null }, key: string): string | null {
+/**
+ * 口令链接：`<publicUrl|url>/#key=<key>`（fragment 不经服务端请求/日志）。
+ * daemon 托管实例（`port === null`，走 UDS + 注入凭据）没有直连形态，口令链接无意义：
+ * 该形态仅 `--standalone` 直连使用（design §8）。
+ */
+export function keyLink(
+  service: { url?: string | null; publicUrl?: string | null; port?: number | null },
+  key: string,
+): string | null {
+  if (service.port === null) return null;
   const base = (service.publicUrl ?? service.url ?? "").replace(/\/+$/, "");
   if (!base) return null;
   return `${base}/#key=${encodeURIComponent(key)}`;
