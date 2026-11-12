@@ -18,7 +18,16 @@ export interface EpCheck {
   error?: string;
 }
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+/**
+ * 回环 host 判定：`localhost`、`*.localhost`（Host 模式 `board.localhost` 与深链）、
+ * `127.0.0.1`、`[::1]`。`*.localhost` 被浏览器当本机安全上下文，http 可放行（S5-2）。
+ */
+export function isLoopbackEpHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host) return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+  return host.endsWith(".localhost");
+}
 
 /** Validate/normalize one user-supplied endpoint. */
 export function checkEp(raw: string): EpCheck {
@@ -40,12 +49,12 @@ export function checkEp(raw: string): EpCheck {
 
   if (url.protocol === "https:") {
     // ok
-  } else if (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname)) {
-    // 本机回环放行（开发实例）
+  } else if (url.protocol === "http:" && isLoopbackEpHost(url.hostname)) {
+    // 本机回环放行（开发实例 / *.localhost Host 模式）
   } else if (url.protocol === "http:") {
-    return { ok: false, error: "必须使用 https（仅 localhost / 127.0.0.1 可用 http）" };
+    return { ok: false, error: "必须使用 https（仅 localhost / 127.0.0.1 / *.localhost 可用 http）" };
   } else {
-    return { ok: false, error: "只支持 https:// 或 http://localhost|127.0.0.1" };
+    return { ok: false, error: "只支持 https:// 或 http://localhost|127.0.0.1|*.localhost" };
   }
 
   const path = url.pathname.replace(/\/+$/, "");
@@ -61,22 +70,55 @@ export function epFromLocation(search = window.location.search): { raw: string |
 }
 
 /**
- * 同源后端探测：页面本身由 report 后端托管时（`GET /healthz` 返回 report 协议），
+ * 实例根前缀（含子路径）：`new URL("./", document.baseURI)`——`base:'./'` 构建下，
+ * `/i/<slug>/` 里的相对引用按这个前缀解析（daemon-unified-port §6）。
+ */
+export function instanceRootUrl(base?: string): URL {
+  const raw =
+    base ??
+    (typeof document !== "undefined" && document.baseURI
+      ? document.baseURI
+      : typeof window !== "undefined"
+        ? `${window.location.origin}/`
+        : "http://localhost/");
+  return new URL("./", raw);
+}
+
+/** 实例根前缀（无尾斜杠；站点根返回空串）——嵌入判定与地址归一化用。 */
+export function instanceBasePath(base?: string): string {
+  return instanceRootUrl(base).pathname.replace(/\/+$/, "");
+}
+
+/** 嵌入路径模式：页面不在站点根（例如 `/i/<slug>/`）。 */
+export function isEmbeddedPathMode(base?: string): boolean {
+  return instanceBasePath(base) !== "";
+}
+
+/** 页面所在实例的逻辑基址（origin + 根前缀，无尾斜杠）。 */
+export function instanceBaseUrl(base?: string): string {
+  const root = instanceRootUrl(base);
+  return `${root.origin}${root.pathname.replace(/\/+$/, "")}`;
+}
+
+/**
+ * 同源后端探测：页面本身由 report 后端托管时（`GET <实例根>healthz` 返回 report 协议），
  * 首访直接连本站，不再要求用户手输地址。
  *
  * 这里刻意不套 checkEp：同源请求不存在 mixed-content，也不把 token 发给第三方；
  * 只有响应确实是 report 协议（ok + instanceId + protocol/dataDir）才算命中。
+ * **探测地址带实例根前缀**：`/i/<slug>/` 下必须探 `/i/<slug>/healthz`，
+ * 否则会命中 daemon 自己的 `/healthz`（无 instanceId）→ 误判不是 report 后端。
  */
 export async function probeSameOriginEp(): Promise<EpCheck> {
   if (typeof window === "undefined") return { ok: false, error: "无 window 环境" };
-  const { protocol, origin } = window.location;
-  if (protocol !== "http:" && protocol !== "https:") {
+  const root = instanceRootUrl();
+  if (root.protocol !== "http:" && root.protocol !== "https:") {
     return { ok: false, error: "当前页面不是 http(s) 托管" };
   }
   try {
-    const res = await fetch(`${origin}/healthz`, {
+    const res = await fetch(`${root.href}healthz`, {
       method: "GET",
-      credentials: "omit",
+      credentials: "same-origin",
       cache: "no-store",
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(2500),
@@ -92,7 +134,9 @@ export async function probeSameOriginEp(): Promise<EpCheck> {
       data?.ok === true &&
       typeof data.instanceId === "string" &&
       (typeof data.protocol === "number" || typeof data.dataDir === "string");
-    return isReport ? { ok: true, url: origin } : { ok: false, error: "本站不是 report 后端" };
+    return isReport
+      ? { ok: true, url: `${root.origin}${root.pathname.replace(/\/+$/, "")}` }
+      : { ok: false, error: "本站不是 report 后端" };
   } catch {
     return { ok: false, error: "本站未提供 /healthz" };
   }
@@ -120,7 +164,7 @@ export async function probeEpHealth(url: string, timeoutMs = 5000): Promise<EpHe
   try {
     res = await fetch(`${checked.url}/healthz`, {
       method: "GET",
-      credentials: "omit",
+      credentials: "same-origin",
       cache: "no-store",
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(timeoutMs),

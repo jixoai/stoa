@@ -13,6 +13,7 @@ import { VERSION } from "../core/protocol.ts";
 import { probeDaemon } from "./client.ts";
 import { createDaemonApp, defaultDaemonUiDir, shutdownAll, type DaemonContext, type DaemonEntry } from "./server.ts";
 import { createDaemonRouter } from "./router.ts";
+import { DaemonAuth } from "./daemon-auth.ts";
 import {
   appendDaemonLog,
   assertDaemonPort,
@@ -70,6 +71,9 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
   let secondary: Server<undefined> | null = null;
   let shuttingDown = false;
 
+  // daemon 账号/会话（S3-1~S3-2）：HTTP app 的登录 API 与 router 的路由门共享同一份内存台账。
+  const auth = new DaemonAuth({ stateDir });
+
   const ctx: DaemonContext = {
     stateDir,
     version: VERSION,
@@ -79,6 +83,7 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
     entry: opts.entry ?? daemonEntryFromProcess(),
     uiDir: opts.uiDir === undefined ? defaultDaemonUiDir() : opts.uiDir,
     log: (line) => appendDaemonLog(stateDir, line),
+    auth,
     shutdown: async () => {
       await shutdown("api");
     },
@@ -109,19 +114,28 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
   }
 
   const app = createDaemonApp(ctx);
-  // 单入口路由：daemon host → 实例 hostnames → /i/<idOrSlug>/ → daemon app（design §2）。
-  // 反代响应绕过 Hono，因此 daemon 的 CORS 中间件不会作用于实例响应（§3.2）。
+  // 单入口路由：实例 hostnames → /i/<idOrSlug>/ → daemon app（design §2）；
+  // 路由门（登录/豁免/机器通道）先于一切路由执行（§4.1）。
   const route = createDaemonRouter({
     stateDir,
     daemonHosts: [host],
     appFetch: (req) => app.fetch(req),
     log: ctx.log,
+    auth,
   });
+  /** 对端地址：路由门的机器通道豁免（loopback peer + loopback Host）依赖它。 */
+  const peerOf = (req: Request, srv: Server<undefined>) => {
+    try {
+      return { address: srv.requestIP(req)?.address ?? null };
+    } catch {
+      return { address: null };
+    }
+  };
   try {
     server = Bun.serve({
       hostname: host,
       port,
-      fetch: (req) => route(req),
+      fetch: (req, srv) => route(req, peerOf(req, srv)),
       idleTimeout: 0,
       development: false,
     });
@@ -135,7 +149,7 @@ export async function runDaemon(opts: RunDaemonOptions): Promise<number> {
       secondary = Bun.serve({
         hostname: "::1",
         port,
-        fetch: (req) => route(req),
+        fetch: (req, srv) => route(req, peerOf(req, srv)),
         idleTimeout: 0,
         development: false,
       });

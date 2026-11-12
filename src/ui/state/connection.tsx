@@ -32,6 +32,8 @@ import {
   clearCurrentEp,
   clearToken,
   epFromLocation,
+  instanceBaseUrl,
+  isEmbeddedPathMode,
   loadCurrentEp,
   loadToken,
   probeSameOriginEp,
@@ -42,6 +44,38 @@ import {
 } from "@/lib/ep";
 
 export type ConnectionPhase = "landing" | "connecting" | "login" | "ready" | "error";
+
+/**
+ * proxied 模式下「实例凭据不可用」的错误文案（S3-5）：用户没有实例口令，
+ * 绝不能弹实例登录门；只给错误态 + 重试。
+ */
+export const PROXIED_CREDENTIALS_ERROR =
+  "实例凭据不可用（daemon 代理）：daemon 未能向该实例注入有效身份。请在 daemon 控制台检查该服务的口令后重试。";
+
+/**
+ * 连接阶段决策（纯函数，单测覆盖 S3-5 的核心语义）：
+ *   - auth 模式 + 非 proxied + 无 token → 实例登录门；
+ *   - proxied → **永不**进登录门（凭据由 daemon 注入，浏览器不落 token）；
+ *   - open 模式 → 直接就绪。
+ */
+export function decideInstanceConnectPhase(input: {
+  mode: "open" | "auth";
+  proxied: boolean;
+  hasToken: boolean;
+}): "login" | "ready" {
+  if (input.proxied) return "ready";
+  if (input.mode === "auth" && !input.hasToken) return "login";
+  return "ready";
+}
+
+/** 401 的处置：proxied 下是「凭据不可用」错误态（不是口令输入框）。 */
+export function unauthorizedOutcome(proxied: boolean): {
+  phase: "login" | "error";
+  message: string;
+} {
+  if (proxied) return { phase: "error", message: PROXIED_CREDENTIALS_ERROR };
+  return { phase: "login", message: "登录已失效，请重新输入密码" };
+}
 
 /**
  * 离开 ready 后仍保留在内存里的连接摘要，供实例管理页的「当前连接」卡展示。
@@ -160,6 +194,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const whoTimer = useRef<number | null>(null);
   /** 上一次已就绪的 base：换实例时清空实体缓存（私域帖/线程/身份不得跨实例泄漏）。 */
   const cacheBaseRef = useRef<string | null>(null);
+  /** 当前连接是否 proxied（daemon 注入凭据）：401 时决定「错误态」而不是登录门。 */
+  const proxiedRef = useRef(false);
+  /**
+   * 嵌入模式（路径模式：页面不在站点根，或 proxied）：**不读写** `report.ep` /
+   * `report.ep.history`——per-origin 单键在 `/i/<slug>/` 多实例下会串台
+   * （第一个实例把 origin 钉死，第二个 iframe 连到 daemon 根）。
+   */
+  const embeddedRef = useRef(isEmbeddedPathMode());
 
   const refreshWho = useCallback(() => {
     const current = client;
@@ -214,8 +256,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
           clearEntityCache();
         }
         cacheBaseRef.current = current.base;
-        saveCurrentEp(current.base);
-        rememberEp(current.base);
+        // 嵌入模式（proxied 或路径模式）不写 per-origin 单键，防多实例串台。
+        if (!proxiedRef.current && !embeddedRef.current) {
+          saveCurrentEp(current.base);
+          rememberEp(current.base);
+        }
         setEp(current.base);
       } else {
         setEp(null);
@@ -236,10 +281,18 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       const token = tokenExpired(url) ? null : loadToken(url);
       const nextClient = new ReportClient(url, token);
       nextClient.setUnauthorizedHandler(() => {
-        clearToken(url);
-        clearMediaCache();
-        setLoginError("登录已失效，请重新输入密码");
-        setPhase("login");
+        // proxied：凭据由 daemon 注入，401 只可能是「注入失败」——给错误态+重试，
+        // 绝不弹实例口令输入框（用户没有该口令）。
+        const outcome = unauthorizedOutcome(proxiedRef.current);
+        if (outcome.phase === "login") {
+          clearToken(url);
+          clearMediaCache();
+          setLoginError(outcome.message);
+          setPhase("login");
+        } else {
+          setError(outcome.message);
+          setPhase("error");
+        }
       });
       pendingClient.current = nextClient;
       setEp(url);
@@ -248,23 +301,31 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
         await nextClient.health();
         const authStatus = await nextClient.authStatus();
         setAuth(authStatus);
-        if (authStatus.mode === "auth") {
-          if (!token) {
+        const proxied = authStatus.proxied === true;
+        proxiedRef.current = proxied;
+        if (proxied) {
+          // 浏览器零 token：不读也不落实例 token（daemon 在服务端注入）。
+          clearToken(url);
+          nextClient.setToken(null);
+        }
+        const decision = decideInstanceConnectPhase({
+          mode: authStatus.mode,
+          proxied,
+          hasToken: Boolean(token) && !proxied,
+        });
+        if (decision === "login") {
+          setPhase("login");
+          return "login";
+        }
+        try {
+          await finishReady(nextClient, authStatus);
+        } catch (err) {
+          if (err instanceof AuthError) {
+            clearToken(url);
             setPhase("login");
             return "login";
           }
-          try {
-            await finishReady(nextClient, authStatus);
-          } catch (err) {
-            if (err instanceof AuthError) {
-              clearToken(url);
-              setPhase("login");
-              return "login";
-            }
-            throw err;
-          }
-        } else {
-          await finishReady(nextClient, authStatus);
+          throw err;
         }
         return "ready";
       } catch (err) {
@@ -322,10 +383,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     if (ep) clearToken(ep);
-    clearCurrentEp();
+    if (!embeddedRef.current) clearCurrentEp();
     clearMediaCache();
     clearEntityCache();
     cacheBaseRef.current = null;
+    proxiedRef.current = false;
     setClient(null);
     setAccount(null);
     setWho([]);
@@ -341,10 +403,11 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   const switchBackend = useCallback(() => {
     setLoginPrefill(null);
-    clearCurrentEp();
+    if (!embeddedRef.current) clearCurrentEp();
     clearMediaCache();
     clearEntityCache();
     cacheBaseRef.current = null;
+    proxiedRef.current = false;
     setClient(null);
     setAccount(null);
     setWho([]);
@@ -365,6 +428,8 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 
   // Initial endpoint resolution: ?ep= wins; then the last successful ep; then the
   // same-origin backend (the shell is often served by the report backend itself).
+  // 嵌入路径模式（`/i/<slug>/`）：**不读** `report.ep`（per-origin 单键会串台），
+  // 直接按实例根前缀做同源探测。
   useEffect(() => {
     if (autoStarted.current) return;
     autoStarted.current = true;
@@ -379,13 +444,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       }
       return;
     }
-    const stored = loadCurrentEp();
-    if (stored) {
-      void connect(stored);
-      return;
+    if (!embeddedRef.current) {
+      const stored = loadCurrentEp();
+      if (stored) {
+        void connect(stored);
+        return;
+      }
     }
     let alive = true;
-    setEp(window.location.origin);
+    setEp(instanceBaseUrl());
     void probeSameOriginEp().then((probe) => {
       if (!alive) return;
       if (probe.ok && probe.url) {

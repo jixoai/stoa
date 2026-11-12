@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDaemonRouter } from "../src/daemon/router.ts";
 import { createDaemonApp, type DaemonContext } from "../src/daemon/server.ts";
+import { DaemonAuth } from "../src/daemon/daemon-auth.ts";
 import {
   readServices,
   writeDaemonInfo,
@@ -98,6 +99,9 @@ function seed(records: ServiceRecord[]): string {
 const DAEMON_URL = "http://127.0.0.1:13679";
 const appCalls: string[] = [];
 
+/** 路由矩阵测试只看路由：登录门由 daemon-gate.test.ts 覆盖（这里恒登录）。 */
+const authenticated = { authenticated: () => true };
+
 function routerFor(stateDir: string) {
   return createDaemonRouter({
     stateDir,
@@ -107,6 +111,7 @@ function routerFor(stateDir: string) {
       appCalls.push(path);
       return Response.json({ daemon: true, path });
     },
+    auth: authenticated,
   });
 }
 
@@ -303,6 +308,7 @@ describe("路由四优先级", () => {
       stateDir,
       daemonHosts: ["devbox.local"],
       appFetch: (req) => Response.json({ daemon: true, path: new URL(req.url).pathname }),
+      auth: authenticated,
     });
     const res = await route(
       new Request("http://devbox.local/api/daemon/info", { headers: { host: "devbox.local" } }),
@@ -322,6 +328,7 @@ describe("服务登记编辑（PATCH slug/hostnames）", () => {
       entry: { bin: process.execPath, args: [] },
       uiDir: null,
       log: () => {},
+      auth: new DaemonAuth({ stateDir, flushDelayMs: 0 }),
       shutdown: async () => {},
     };
   }

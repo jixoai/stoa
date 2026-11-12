@@ -132,7 +132,7 @@ describe("ep history", () => {
 });
 
 describe("probeEpHealth", () => {
-  test("report 协议 → online，请求带超时且不带凭据", async () => {
+  test("report 协议 → online，请求带超时且只带同源凭据", async () => {
     let seenUrl = "";
     let seenInit: RequestInit | undefined;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -147,7 +147,7 @@ describe("probeEpHealth", () => {
     const result = await probeEpHealth("https://a.example.com/");
     expect(result).toEqual({ ok: true, instanceId: "inst-1", version: "0.1.0" });
     expect(seenUrl).toBe("https://a.example.com/healthz");
-    expect(seenInit?.credentials).toBe("omit");
+    expect(seenInit?.credentials).toBe("same-origin");
     expect(seenInit?.cache).toBe("no-store");
     expect(seenInit?.signal).toBeInstanceOf(AbortSignal);
   });

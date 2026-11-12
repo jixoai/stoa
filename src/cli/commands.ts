@@ -21,6 +21,11 @@ import { runExport, setPendingExportFlag } from "../server/export.ts";
 import { daemonRequest, probeDaemon } from "../daemon/client.ts";
 import { openDaemonLogFd, daemonEntryFromProcess, runDaemon } from "../daemon/run.ts";
 import {
+  DaemonAccountExistsError,
+  daemonAccountStatus,
+  setDaemonAccount,
+} from "../daemon/accounts.ts";
+import {
   DAEMON_DEFAULT_PORT,
   DAEMON_PORT_ENV,
   daemonLogPath,
@@ -368,6 +373,22 @@ function daemonPortFromArgs(args: ParsedArgs): number | null {
 }
 
 /**
+ * daemon 账号密码输入（S3-1）：`--password-stdin` 读标准输入首行，否则读
+ * `STOA_DAEMON_PASSWORD`。**不接受**命令行明文参数（shell history / ps 会留痕）。
+ */
+function daemonPasswordFromInput(args: ParsedArgs): string {
+  if (hasFlag(args, "password-stdin")) {
+    try {
+      const text = readFileSync(0, "utf8");
+      return (text.split(/\r?\n/)[0] ?? "").trim();
+    } catch {
+      return "";
+    }
+  }
+  return (process.env.STOA_DAEMON_PASSWORD ?? "").trim();
+}
+
+/**
  * 确保 daemon 在跑（幂等）：已有健康 daemon 直接复用；没有则 detached 拉起并等
  * `/healthz` 就绪。候选端口：显式给值只用它；否则 13679→13670 向下找空位
  * （同机多会话各持一个 daemon 时不会互抢）。
@@ -505,11 +526,79 @@ async function serveViaDaemon(ctx: CliContext): Promise<number> {
   return 0;
 }
 
-/** `stoa daemon start|stop|status|run`（不需要 data-dir；state-dir 决定“哪一个 daemon”）。 */
+/** `stoa daemon start|stop|status|run|account`（不需要 data-dir；state-dir 决定“哪一个 daemon”）。 */
 async function cmdDaemon(args: ParsedArgs, cwd: string): Promise<number> {
   const sub = args.positionals[0] ?? "status";
   const human = hasFlag(args, "human");
   const stateDir = daemonStateDirFromArgs(args, cwd);
+
+  // `stoa daemon account set|status`（S3-1）：daemon 独立账号（与实例口令无关）。
+  // set 无账号=创建；有账号重置需 --force；密码只从 stdin 或 STOA_DAEMON_PASSWORD 读，
+  // **绝不**作为命令行参数（避免进 shell history/进程列表）。
+  if (sub === "account") {
+    const action = args.positionals[1] ?? "status";
+    if (action === "status") {
+      const status = daemonAccountStatus(stateDir);
+      if (human) {
+        if (status.configured) {
+          emitHuman(`daemon account : ${status.username}`);
+          emitHuman(`created         : ${formatTime(status.createdAt ?? 0)}`);
+          emitHuman(`updated         : ${formatTime(status.updatedAt ?? 0)}`);
+        } else {
+          emitHuman("no daemon account (create one: stoa daemon account set --password-stdin)");
+        }
+        emitHuman(`state           : ${stateDir}`);
+        return 0;
+      }
+      emit({
+        ok: true,
+        state_dir: stateDir,
+        configured: status.configured,
+        username: status.username,
+        created_at: status.createdAt,
+        updated_at: status.updatedAt,
+      });
+      return 0;
+    }
+    if (action === "set") {
+      const password = daemonPasswordFromInput(args);
+      if (!password) {
+        fail(
+          "BAD_REQUEST",
+          "daemon 密码缺失：用 --password-stdin 从标准输入读取，或设置环境变量 STOA_DAEMON_PASSWORD",
+        );
+      }
+      let out;
+      try {
+        out = await setDaemonAccount(stateDir, {
+          username: flagValue(args, "username"),
+          password,
+          force: hasFlag(args, "force"),
+        });
+      } catch (err) {
+        if (err instanceof DaemonAccountExistsError) fail("CONFLICT", err.message);
+        fail("BAD_REQUEST", (err as Error).message);
+      }
+      if (human) {
+        emitHuman(
+          out.created
+            ? `created daemon account ${out.account.username} (state ${stateDir})`
+            : `updated daemon account ${out.account.username} (state ${stateDir})`,
+        );
+      } else {
+        emit({
+          ok: true,
+          created: out.created,
+          username: out.account.username,
+          state_dir: stateDir,
+          created_at: out.account.createdAt,
+          updated_at: out.account.updatedAt,
+        });
+      }
+      return 0;
+    }
+    fail("BAD_REQUEST", `unknown daemon account subcommand "${action}" (expected set|status)`);
+  }
 
   if (sub === "run") {
     // daemon 自身没有 data-dir/服务端口语义：`--port`（或 `--daemon-port`/env）就是 daemon 端口。
@@ -634,7 +723,7 @@ async function cmdDaemon(args: ParsedArgs, cwd: string): Promise<number> {
     return 0;
   }
 
-  fail("BAD_REQUEST", `unknown daemon subcommand "${sub}" (expected start|stop|status|run)`);
+  fail("BAD_REQUEST", `unknown daemon subcommand "${sub}" (expected start|stop|status|run|account)`);
 }
 
 /**

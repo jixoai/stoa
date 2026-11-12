@@ -51,6 +51,12 @@ import {
   validateAuthKey,
   type SessionLocation,
 } from "./sessions.ts";
+import {
+  DaemonSetupUnavailableError,
+  type DaemonAuth,
+} from "./daemon-auth.ts";
+import { loginForToken, secretFilesFor, serviceEndpoint } from "./credentials.ts";
+import { validateDaemonPassword, validateDaemonUsername } from "./accounts.ts";
 import type { DaemonHealth } from "./client.ts";
 import {
   allHostnames,
@@ -86,6 +92,8 @@ export interface DaemonContext {
   entry: DaemonEntry;
   uiDir: string | null;
   log: (line: string) => void;
+  /** daemon 账号/会话（登录 API 与路由门共用；S3-1~S3-3）。 */
+  auth: DaemonAuth;
   /** 由 runDaemon 提供：停全部服务 → 移除 daemon.json → 关服 → 退出。 */
   shutdown: () => Promise<void>;
 }
@@ -171,9 +179,7 @@ async function serviceHealthy(
 
 /** 记录的当前端点：server.json 最新（重启/换 socket 后仍然准确），否则回退登记值。 */
 function recordEndpoint(record: ServiceRecord): InstanceEndpoint {
-  const info = readServerInfo(record.dataDir);
-  if (info) return endpointOfInfo(info);
-  return endpointOfRecord(record);
+  return serviceEndpoint(record);
 }
 
 /**
@@ -559,15 +565,6 @@ export async function shutdownAll(ctx: DaemonContext): Promise<ServiceRecord[]> 
   return stopped;
 }
 
-function uniquePaths(files: Array<string | null | undefined>): string[] {
-  const out: string[] = [];
-  for (const raw of files) {
-    const file = (raw ?? "").trim();
-    if (file && !out.includes(file)) out.push(file);
-  }
-  return out;
-}
-
 /** 服务的认证模式（以服务自身 `/api/auth/status` 为准；不可达返回 null）。 */
 async function serviceAuthMode(record: ServiceRecord): Promise<"auth" | "open" | null> {
   try {
@@ -585,22 +582,13 @@ async function serviceAuthMode(record: ServiceRecord): Promise<"auth" | "open" |
   }
 }
 
+/** 用实例口令登录（`tryLogin` 语义：换 access token 成功即 true）。 */
 async function tryLogin(record: ServiceRecord, key: string): Promise<boolean> {
-  try {
-    const res = await instanceFetch(recordEndpoint(record), "/api/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ secret: key }),
-      signal: AbortSignal.timeout(1500),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  return (await loginForToken(record, key, { endpoint: recordEndpoint(record) })) !== null;
 }
 
 function secretFiles(record: ServiceRecord): string[] {
-  return uniquePaths([record.secretFile, ...(record.envFiles ?? []), join(record.dataDir, ".env")]);
+  return secretFilesFor(record);
 }
 
 interface SecretView {
@@ -675,6 +663,30 @@ async function writeServiceSecret(
   return { service: current, key, restarted, applied };
 }
 
+/** daemon SPA 的 index.html（`/` 与 `/login` 共用文件；`inject` 决定是否带 daemon boot 数据）。 */
+function uiIndexResponse(ctx: DaemonContext, inject: boolean): Response {
+  const dir = ctx.uiDir!;
+  const target = join(resolve(dir), "index.html");
+  const html = readFileSync(target, "utf8");
+  if (!inject) {
+    return new Response(html, {
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
+    });
+  }
+  const boot = JSON.stringify({
+    version: ctx.version,
+    stateDir: ctx.stateDir,
+    pid: process.pid,
+    startedAt: ctx.startedAt,
+  }).replace(/</g, "\\u003c");
+  const injected = html.includes("</head>")
+    ? html.replace("</head>", `<script>window.__STOA_DAEMON__=${boot};</script></head>`)
+    : `<script>window.__STOA_DAEMON__=${boot};</script>${html}`;
+  return new Response(injected, {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
+  });
+}
+
 function uiResponse(ctx: DaemonContext, pathname: string): Response {
   if (!ctx.uiDir || !existsSync(join(ctx.uiDir, "index.html"))) {
     return new Response(
@@ -684,23 +696,12 @@ function uiResponse(ctx: DaemonContext, pathname: string): Response {
   }
   const root = resolve(ctx.uiDir);
   const rel = pathname === "/" ? "/index.html" : pathname;
+  // `/login`（daemon 登录/首启页）是单段路径：相对资产 `./assets/*` 自然落在 `/assets/*`，
+  // 且**不注入** `__STOA_DAEMON__`（main.tsx 据此渲染登录页而不是控制台）。
+  if (rel === "/login" || rel === "/login/") return uiIndexResponse(ctx, false);
+  if (rel === "/index.html") return uiIndexResponse(ctx, true);
   if (rel.includes("..")) return new Response("bad path\n", { status: 400 });
   const target = join(root, rel);
-  if (rel === "/index.html") {
-    const html = readFileSync(target, "utf8");
-    const boot = JSON.stringify({
-      version: ctx.version,
-      stateDir: ctx.stateDir,
-      pid: process.pid,
-      startedAt: ctx.startedAt,
-    }).replace(/</g, "\\u003c");
-    const injected = html.includes("</head>")
-      ? html.replace("</head>", `<script>window.__STOA_DAEMON__=${boot};</script></head>`)
-      : `<script>window.__STOA_DAEMON__=${boot};</script>${html}`;
-    return new Response(injected, {
-      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" },
-    });
-  }
   if (existsSync(target)) {
     return new Response(Bun.file(target), {
       headers: rel.startsWith("/assets/")
@@ -864,6 +865,92 @@ export function createDaemonApp(ctx: DaemonContext): Hono {
       services: { total: list.length, running },
     };
     return c.json(body);
+  });
+
+  // ── daemon 账号 / 登录会话（daemon-unified-port design §4，S3-1~S3-2）──────────
+  // 这三个路径在路由门豁免清单里（`/api/daemon/auth/*`）：登录页自身必须能打它们。
+  app.get("/api/daemon/auth/status", (c) => {
+    const status = ctx.auth.status();
+    c.header("cache-control", "no-store");
+    return c.json({
+      ok: true,
+      configured: status.configured,
+      setup_available: !status.configured,
+      authenticated: ctx.auth.authenticated(c.req.raw),
+    });
+  });
+
+  app.post("/api/daemon/auth/setup", async (c) => {
+    let raw: unknown = null;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ ok: false, code: "BAD_REQUEST", error: "invalid JSON body" }, 400);
+    }
+    const body = (typeof raw === "object" && raw !== null ? raw : {}) as {
+      username?: unknown;
+      password?: unknown;
+    };
+    let account: { username: string };
+    try {
+      account = await ctx.auth.setup({
+        username: typeof body.username === "string" ? body.username : null,
+        password: body.password,
+      });
+    } catch (err) {
+      if (err instanceof DaemonSetupUnavailableError) {
+        return c.json({ ok: false, code: err.code, error: err.message }, 409);
+      }
+      return c.json({ ok: false, code: "BAD_REQUEST", error: (err as Error).message }, 400);
+    }
+    const session = ctx.auth.startSession(account.username);
+    ctx.log(`daemon account created (${account.username}); session started`);
+    c.header("set-cookie", ctx.auth.cookieFor(c.req.raw, session.id));
+    c.header("cache-control", "no-store");
+    return c.json({ ok: true, username: account.username, setup: true });
+  });
+
+  app.post("/api/daemon/auth/login", async (c) => {
+    let raw: unknown = null;
+    try {
+      raw = await c.req.json();
+    } catch {
+      return c.json({ ok: false, code: "BAD_REQUEST", error: "invalid JSON body" }, 400);
+    }
+    const body = (typeof raw === "object" && raw !== null ? raw : {}) as {
+      username?: unknown;
+      password?: unknown;
+    };
+    if (!ctx.auth.configured()) {
+      return c.json(
+        { ok: false, code: "SETUP_REQUIRED", error: "还没有 daemon 账号，请先创建（/login 首启引导）" },
+        409,
+      );
+    }
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!password) {
+      return c.json({ ok: false, code: "BAD_REQUEST", error: "密码不能为空" }, 400);
+    }
+    const account = await ctx.auth.login(
+      typeof body.username === "string" ? body.username : null,
+      password,
+    );
+    if (!account) {
+      // 统一文案：不区分「用户名不存在」与「密码错」。
+      return c.json({ ok: false, code: "UNAUTHORIZED", error: "用户名或密码不正确" }, 401);
+    }
+    const session = ctx.auth.startSession(account.username);
+    ctx.log(`daemon login ok (${account.username})`);
+    c.header("set-cookie", ctx.auth.cookieFor(c.req.raw, session.id));
+    c.header("cache-control", "no-store");
+    return c.json({ ok: true, username: account.username });
+  });
+
+  app.post("/api/daemon/auth/logout", (c) => {
+    const removed = ctx.auth.endSession(c.req.raw);
+    c.header("set-cookie", ctx.auth.clearCookieFor(c.req.raw));
+    c.header("cache-control", "no-store");
+    return c.json({ ok: true, removed });
   });
 
   app.get("/api/daemon/info", (c) =>

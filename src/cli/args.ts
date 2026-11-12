@@ -21,6 +21,9 @@ const BOOLEAN_FLAGS = new Set([
   "unfollow",
   "follow",
   "remove",
+  // stoa daemon account（S3-1）：密码只从 stdin/env 读，重置需 --force。
+  "password-stdin",
+  "force",
 ]);
 
 const VALUE_FLAGS = new Set([
@@ -34,6 +37,8 @@ const VALUE_FLAGS = new Set([
   "state-dir",
   "daemon-port",
   "name",
+  // daemon 账号（S3-1）。
+  "username",
   // daemon 托管（UDS）实例的内部开关（由 daemon 传给子进程；也可手动调试）。
   "unix",
   "url",
@@ -187,6 +192,8 @@ Usage:
                             [--state-dir S] [--daemon-port N] [--name S]
                             [--unix SOCKET --url LOGICAL_URL]  (daemon-managed instances)
   stoa daemon start|status|stop|run [--port N] [--host H] [--state-dir S]
+  stoa daemon account set [--username U] [--password-stdin] [--force] [--state-dir S]
+  stoa daemon account status [--state-dir S]
   stoa open --as <acct> --data-dir D
   stoa who --data-dir D
   stoa accounts create <id> [--role agent] [--display S] [--profile S]

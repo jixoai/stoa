@@ -20,6 +20,7 @@ import {
   validateAuthKey,
 } from "../src/daemon/sessions.ts";
 import { readServices } from "../src/daemon/state.ts";
+import { instanceFetch } from "../src/server/instance-client.ts";
 import { BUN, CLI, initWorkspace, type TestWorkspace } from "./helpers.ts";
 import { portIsListening } from "../src/server/ports.ts";
 
@@ -245,29 +246,55 @@ test(
     expect(secret.key_link).toBe(`${serviceBase}/#key=${encodeURIComponent(secret.key!)}`);
     expect(secret.source).toBe(join(service.dataDir, ".env"));
 
-    // 用该口令登录并访问受保护接口
-    const login = await fetch(`${serviceBase}/api/auth/login`, {
+    // daemon 会话是经代理访问实例的凭据（S3-3/S3-5）：先建 daemon 账号并登录。
+    const authStatus0 = await daemonRequest<{ configured: boolean }>(url, "/api/daemon/auth/status");
+    expect(authStatus0.configured).toBe(false);
+    const setup = await fetch(`${url}/api/daemon/auth/setup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "owner", password: "daemon-pass-123" }),
+    });
+    expect(setup.status).toBe(200);
+    const daemonLogin = await fetch(`${url}/api/daemon/auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "owner", password: "daemon-pass-123" }),
+    });
+    expect(daemonLogin.status).toBe(200);
+    const cookie = (daemonLogin.headers.get("set-cookie") ?? "").split(";")[0]!;
+    expect(cookie.startsWith("stoa_daemon=")).toBe(true);
+
+    // 未登录经代理访问实例 API：daemon 门 401（不再是实例登录门）
+    const gated = await fetch(`${serviceBase}/api/status`);
+    expect(gated.status).toBe(401);
+
+    // 带 daemon 会话经代理：实例 API 直接可用，proxied=true（注入 owner 凭据）
+    const before = await fetch(`${serviceBase}/api/status`, { headers: { cookie } });
+    expect(before.status).toBe(200);
+    const authStatus = await fetch(`${serviceBase}/api/auth/status`, { headers: { cookie } });
+    expect(authStatus.status).toBe(200);
+    expect(((await authStatus.json()) as { proxied: boolean }).proxied).toBe(true);
+
+    // 实例自身的口令登录（机器通道 UDS，不经 daemon 门）——轮换断言要用到它的 token
+    const socket = readServices(stateDir).find((item) => item.id === service.id)!.socket!;
+    const instLogin = await instanceFetch({ unix: socket }, "/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secret: secret.key }),
     });
-    expect(login.status).toBe(200);
-    const token = ((await login.json()) as { token: string }).token;
-    const before = await fetch(`${serviceBase}/api/status`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    expect(before.status).toBe(200);
+    expect(instLogin.status).toBe(200);
+    const token = ((await instLogin.json()) as { token: string }).token;
 
     // SSE ticket 两次请求（POST ticket → GET stream?ticket=）都能经代理（design §3.2）
     const ticketRes = await fetch(`${serviceBase}/api/stream/ticket`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+      headers: { cookie, accept: "application/json" },
     });
     expect(ticketRes.status).toBe(200);
     const ticket = ((await ticketRes.json()) as { ticket: string }).ticket;
     const stream = await fetch(
       `${serviceBase}/api/stream?ticket=${encodeURIComponent(ticket)}`,
-      { headers: { accept: "text/event-stream" } },
+      { headers: { accept: "text/event-stream", cookie } },
     );
     expect(stream.status).toBe(200);
     expect(stream.headers.get("content-type") ?? "").toContain("text/event-stream");
@@ -295,16 +322,19 @@ test(
     }>(url, `/api/daemon/services/${service.id}/secret`, { method: "PUT", body: { generate: true } });
     expect(rotated.key).not.toBe(secret.key);
     expect(rotated.applied).toBe(true);
-    const oldToken = await fetch(`${serviceBase}/api/status`, {
+    const oldToken = await instanceFetch({ unix: socket }, "/api/status", {
       headers: { authorization: `Bearer ${token}` },
     });
     expect(oldToken.status).toBe(401);
-    const relogin = await fetch(`${serviceBase}/api/auth/login`, {
+    const relogin = await instanceFetch({ unix: socket }, "/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ secret: rotated.key }),
     });
     expect(relogin.status).toBe(200);
+    // 代理侧不受实例口令轮换影响：注入的是 owner 账号 token（S3-4）
+    const afterRotate = await fetch(`${serviceBase}/api/status`, { headers: { cookie } });
+    expect(afterRotate.status).toBe(200);
 
     // publicUrl（隧道域名）写入后，口令链接改用公网地址
     const patched = await daemonRequest<{ service: { publicUrl?: string | null } }>(

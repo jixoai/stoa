@@ -130,11 +130,15 @@ function seed(socketPath: string, overrides: Partial<ServiceRecord> = {}): strin
   return stateDir;
 }
 
+/** 反代语义测试只看代理层：路由门由 daemon-gate.test.ts 单独覆盖（这里恒登录）。 */
+const authenticated = { authenticated: () => true };
+
 function routerFor(stateDir: string, timeoutMs?: number) {
   return createDaemonRouter({
     stateDir,
     daemonHosts: ["127.0.0.1"],
     appFetch: () => Response.json({ daemon: true }),
+    auth: authenticated,
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   });
 }
@@ -183,7 +187,7 @@ describe("请求语义", () => {
     expect(last()!.headers["content-type"]).toBe("application/json");
   });
 
-  test("头语义：hop-by-hop 删除、代理标记覆盖、cookie 删除、authorization 透传（P1 seam）", async () => {
+  test("头语义：hop-by-hop 删除、代理标记覆盖、cookie 删除、客户端凭据头被丢弃（S3-4 覆盖）", async () => {
     const dir = tempDir("stoa-proxy-");
     const { socketPath, last } = startUpstream(dir);
     const route = routerFor(seed(socketPath));
@@ -204,9 +208,9 @@ describe("请求语义", () => {
           "x-stoa-daemon-proxy": "svc-evil",
           // daemon 会话 cookie 不得泄漏给实例
           cookie: "stoa_daemon=session-id-1",
-          // P1 seam：实例凭据注入是 P2，这里透传浏览器自带身份/令牌
-          authorization: "Bearer instance-token",
-          "x-report-account": "owner",
+          // 伪造的实例凭据：daemon 一律删除后按服务记录注入（防身份冒充）
+          authorization: "Bearer forged-instance-token",
+          "x-report-account": "intruder",
         },
         body: "{}",
       }),
@@ -233,7 +237,9 @@ describe("请求语义", () => {
     );
     expect(seen.headers["x-stoa-service"]).toBe("board");
     expect(seen.headers["x-stoa-daemon-proxy"]).toBe("svc-proxy");
-    expect(seen.headers.authorization).toBe("Bearer instance-token");
+    // 该实例目录没有 accounts/owner.env → open 模式：只注入 x-report-account=owner，
+    // 客户端伪造的 Bearer 不落地（auth 模式的 Bearer 注入见 daemon-inject.test.ts）。
+    expect(seen.headers.authorization).toBeUndefined();
     expect(seen.headers["x-report-account"]).toBe("owner");
   });
 });

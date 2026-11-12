@@ -277,6 +277,8 @@ export function createApp(deps: AppDeps): Hono {
       port: deps.port,
       protocol: capabilities().protocol,
       version: capabilities().version,
+      // daemon 的 `/i/<slug>/healthz` 过滤体字段（监控/适配器身份守卫用；无数据面）。
+      uiVersion: capabilities().version,
       lease: deps.lease?.snapshot() ?? null,
       hub: hub.snapshot(),
       ...(deps.previews ? { preview_policy: deps.previews.policySnapshot() } : {}),
@@ -285,7 +287,16 @@ export function createApp(deps: AppDeps): Hono {
 
   app.get("/api/capabilities", (c) => c.json({ ok: true, ...capabilities() }));
 
-  app.get("/api/auth/status", (c) => c.json({ ok: true, ...deps.auth.status(deps.openExposed) }));
+  // `proxied`：经 daemon 反代（带 `x-stoa-daemon-proxy` 头）**且自身以 UDS 监听**
+  // 时为 true——前端据此跳过实例登录门、不落 token（daemon-unified-port §5/S3-5）。
+  // 不用 peer IP 判定：UDS 上 requestIP() 为 null，frp 下 peer 恒为回环，两者都不可靠。
+  app.get("/api/auth/status", (c) =>
+    c.json({
+      ok: true,
+      ...deps.auth.status(deps.openExposed),
+      proxied: isDaemonProxiedRequest(c.req.raw, deps),
+    }),
+  );
 
   app.post("/api/auth/login", async (c) => {
     const body = await readJson(c);

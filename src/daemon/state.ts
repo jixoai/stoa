@@ -135,7 +135,7 @@ export function ensureDaemonDirs(stateDir: string): void {
   ensureDir(daemonLogsDir(stateDir), 0o700);
 }
 
-function readJsonFile<T>(path: string): T | null {
+export function readJsonFile<T>(path: string): T | null {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
   } catch {
@@ -143,7 +143,8 @@ function readJsonFile<T>(path: string): T | null {
   }
 }
 
-function writeJsonAtomic(path: string, value: unknown): void {
+/** 0600 原子写（tmp+rename；父目录 0700）：daemon 状态文件的统一纪律。 */
+export function writeJsonAtomic(path: string, value: unknown): void {
   ensureDir(dirname(path), 0o700);
   const tmp = `${path}.tmp-${process.pid}`;
   const fd = openSync(tmp, "w", 0o600);

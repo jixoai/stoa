@@ -67,6 +67,11 @@ export interface AuthStatus {
   env_files_missing: string[];
   access_token_ttl_ms: number;
   open_mode_warning: string | null;
+  /**
+   * 本页经 daemon 反代打开（daemon 在服务端注入了实例凭据）：
+   * 前端跳过实例登录门、不落 token（daemon-unified-port §5/S3-5）。
+   */
+  proxied?: boolean;
 }
 
 export interface ServerStatus {
@@ -204,7 +209,7 @@ export class ReportClient {
         opts.body !== undefined ? { "content-type": "application/json" } : undefined,
         auth,
       ),
-      credentials: "omit",
+      credentials: "same-origin",
       cache: "no-store",
       signal: opts.signal,
     };
@@ -658,7 +663,7 @@ export class ReportClient {
         "content-type": contentType,
       }),
       body: file,
-      credentials: "omit",
+      credentials: "same-origin",
       cache: "no-store",
     });
     if (res.status === 401) {
@@ -679,7 +684,7 @@ export class ReportClient {
     try {
       res = await fetch(`${this.base}/api/media/${encodeURIComponent(hash)}`, {
         headers: this.headers(undefined, true),
-        credentials: "omit",
+        credentials: "same-origin",
         cache: "force-cache",
       });
     } catch (err) {

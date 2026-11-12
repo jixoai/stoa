@@ -12,6 +12,7 @@ import { accountTokenEnvKey } from "../src/core/auth.ts";
 import { parseEnv } from "../src/core/env.ts";
 import { LINK_PREVIEW } from "../src/core/plugins/builtin.ts";
 import { VERSION } from "../src/core/protocol.ts";
+import { DaemonAuth } from "../src/daemon/daemon-auth.ts";
 import { ensurePreview, previewExportDir } from "../src/daemon/preview.ts";
 import { createDaemonApp, type DaemonContext } from "../src/daemon/server.ts";
 import { writeServices, type ServiceRecord } from "../src/daemon/state.ts";
@@ -62,8 +63,9 @@ function previewRecord(dataDir: string, overrides: Partial<ServiceRecord> = {}):
 }
 
 function makeDaemonCtx(uiDir: string): DaemonContext {
+  const stateDir = tempDir("preview-daemon-state-");
   return {
-    stateDir: tempDir("preview-daemon-state-"),
+    stateDir,
     version: VERSION,
     startedAt: 1_700_000_000_000,
     url: "http://127.0.0.1:13679",
@@ -71,6 +73,7 @@ function makeDaemonCtx(uiDir: string): DaemonContext {
     entry: { bin: process.execPath, args: [] },
     uiDir,
     log: () => {},
+    auth: new DaemonAuth({ stateDir, flushDelayMs: 0 }),
     shutdown: async () => {},
   };
 }
